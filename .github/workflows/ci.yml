@@ -1,0 +1,242 @@
+# Lindos CI (SPEC §1 / §12, SPEC-VM §25)
+#
+#   lint-test   every push / PR: tests/run.sh (bash -n, sh -n, py_compile,
+#               shellcheck, JSON/XML/.desktop, CRLF, pytest, compat-doc check)
+#               on Ubuntu 24.04 (noble = the Lindos base) and — for the
+#               "importable on any OS" rule of SPEC §4 — a pytest-only run on
+#               Windows.
+#   debs        every push / PR: build/mkdeb.sh all (+ lintian) and upload
+#               out/debs/*.deb as an artifact.  mkdeb.sh 'all' auto-discovers
+#               every packages/<name>/ with a DEBIAN/control, so the SPEC-VM
+#               packages lindos-vm and lindos-winapps are built the moment they
+#               exist — no change to this job is needed for them.
+#   kernel      workflow_dispatch input build_kernel, and on tags (SPEC-VM §25):
+#               the real Linux work this Windows dev host cannot do — compile
+#               the Lindos-tuned kernel .debs on the Ubuntu runner.  Slow and
+#               optional; caches the source tree; uploads linux-image/-headers.
+#   iso         workflow_dispatch only (needs ~15 GB and a Mint base ISO):
+#               build/build-iso.sh in the privileged builder container.  It
+#               optionally downloads the 'kernel' artifact into out/kernel/
+#               first so 35-kernel.sh installs the Lindos kernel; the ISO still
+#               builds if no kernel artifact is present.
+#
+# The Windows pytest job globs packages/*/tests, so lindos-vm/tests and
+# lindos-winapps/tests (SPEC-VM §26) run on both Ubuntu (via tests/run.sh) and
+# Windows automatically once those packages land — no change needed here.
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_iso:
+        description: "Also build the ISO (slow; downloads the Mint base ISO)"
+        type: boolean
+        default: false
+      build_kernel:
+        description: "Also build the Lindos-tuned kernel .debs (very slow)"
+        type: boolean
+        default: false
+      include_wine:
+        description: "INCLUDE_WINE (1 = WineHQ stack on the ISO)"
+        type: string
+        default: "1"
+      include_steam:
+        description: "INCLUDE_STEAM (1 = Steam/Lutris/Heroic on the ISO)"
+        type: string
+        default: "1"
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  lint-test:
+    name: lint + pytest (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            shellcheck desktop-file-utils python3 python3-pytest dash
+
+      - name: tests/run.sh
+        run: bash tests/run.sh --verbose
+
+      - name: docs/COMPATIBILITY.md is generated from compat-matrix.json
+        run: python3 tests/gen-compat-doc.py --check
+
+  pytest-windows:
+    name: pytest (Windows, gi stub)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install --quiet pytest
+      - name: pytest
+        shell: bash
+        run: |
+          python -m pytest -q -c tests/pytest.ini --rootdir . -p lindos_testsupport \
+            tests packages/*/tests build/tests
+
+  debs:
+    name: build .deb packages
+    runs-on: ubuntu-24.04
+    needs: lint-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dpkg-dev + lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev lintian fakeroot
+
+      - name: build/mkdeb.sh all
+        run: bash build/mkdeb.sh --lintian all
+
+      - name: List results
+        run: ls -l out/debs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindos-debs
+          path: out/debs/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  kernel:
+    name: build Lindos kernel (manual / tags)
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' && inputs.build_kernel)
+          || startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    needs: lint-test
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dpkg-dev build-essential \
+            libncurses-dev rsync cpio kmod xz-utils
+
+      - name: Resolve kernel version from the manifest
+        id: ver
+        run: |
+          v="$(python3 -c 'import json;print(json.load(open("packages/lindos-kernel/root/usr/share/lindos/kernel/manifest.json",encoding="utf-8"))["recommended"]["series"])')"
+          echo "series=${v}" >> "$GITHUB_OUTPUT"
+          echo "Lindos kernel series: ${v}"
+
+      - name: Cache kernel source tree
+        uses: actions/cache@v4
+        with:
+          path: out/kernel-src
+          key: kernel-src-${{ steps.ver.outputs.series }}-${{ hashFiles('packages/lindos-kernel/root/usr/share/lindos/kernel/lindos.config') }}
+          restore-keys: |
+            kernel-src-${{ steps.ver.outputs.series }}-
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h /
+
+      - name: build/kernel/build-kernel.sh
+        run: |
+          bash build/kernel/build-kernel.sh \
+            --version "${{ steps.ver.outputs.series }}" \
+            --jobs "$(nproc)"
+
+      - name: List kernel artifacts
+        run: ls -l out/kernel/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindos-kernel-debs
+          path: |
+            out/kernel/linux-image-*.deb
+            out/kernel/linux-headers-*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  iso:
+    name: build ISO (manual)
+    # always() so a skipped 'kernel' dependency does not skip the ISO; the ISO
+    # still builds without a Lindos kernel (35-kernel.sh falls back to stock).
+    if: >-
+      ${{ always()
+          && needs.debs.result == 'success'
+          && github.event_name == 'workflow_dispatch'
+          && inputs.build_iso }}
+    runs-on: ubuntu-24.04
+    needs: [debs, kernel]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h /
+
+      # Optional: pull the kernel .debs built by the 'kernel' job (same run)
+      # into out/kernel/ so 35-kernel.sh installs the Lindos kernel.  If the
+      # kernel job did not run (build_kernel not requested) this download fails
+      # harmlessly and the ISO is built with the stock Mint/Ubuntu kernel.
+      - name: Download Lindos kernel artifact (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: lindos-kernel-debs
+          path: out/kernel
+
+      - name: Stage kernel .debs into the chroot deb pool
+        run: |
+          # build-iso.sh stages out/debs/ into the chroot (/tmp/lindos/debs);
+          # it does not stage out/kernel/.  35-kernel.sh scans that same deb
+          # pool, so copy the downloaded kernel .debs into out/debs/ where they
+          # will be picked up and installed (grub is regenerated to default to
+          # the Lindos kernel).  No-op — and stock kernel — if none were built.
+          if ls out/kernel/*.deb >/dev/null 2>&1; then
+            mkdir -p out/debs
+            cp -f out/kernel/*.deb out/debs/
+            echo "Lindos kernel .debs staged into out/debs/ — 35-kernel.sh will install them:"
+            ls -l out/kernel/
+          else
+            echo "No Lindos kernel artifact — ISO will use the stock kernel."
+          fi
+
+      - name: Build the ISO in the builder container
+        env:
+          INCLUDE_WINE: ${{ inputs.include_wine }}
+          INCLUDE_STEAM: ${{ inputs.include_steam }}
+        run: |
+          # docker-build.sh builds build/Dockerfile and runs build-iso.sh
+          # (which itself runs mkdeb.sh and fetch-assets.sh) with --privileged.
+          bash build/docker-build.sh -- --no-cleanup
+
+      - name: Checksums
+        run: ls -l out/*.iso out/*.sha256 && cat out/*.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindos-iso
+          path: |
+            out/*.iso
+            out/*.sha256
+            out/build.log
+          if-no-files-found: error
+          retention-days: 7
