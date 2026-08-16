@@ -1,0 +1,49 @@
+Lindos — a Linux Mint XFCE remaster with a Windows-11-style desktop
+Copyright (C) 2025-2026  Lindos Team <team@lindos.dev>
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+--------------------------------------------------------------------------
+
+Scope
+-----
+The licence above covers every file authored by the Lindos Team in this
+repository: the build pipeline (build/), the packages (packages/*/), the
+tests (tests/), the documentation (docs/, README.md, CONTRIBUTING.md,
+SPEC.md) and the original SVG artwork (wallpapers, logo, icons) shipped in
+packages/lindos-desktop, packages/lindos-compat and packages/lindos-gaming.
+
+The verbatim text of the GNU General Public License version 3 is published
+by the Free Software Foundation at <https://www.gnu.org/licenses/gpl-3.0.txt>
+and is installed on every Debian/Ubuntu/Mint system (and therefore on every
+Lindos system) at /usr/share/common-licenses/GPL-3.
+
+Third-party components
+----------------------
+Lindos is a remaster of Linux Mint XFCE (Ubuntu LTS base). Everything the
+build downloads or installs from other projects — the Fluent GTK/icon/cursor
+themes, the Selawik and Inter fonts, Wine/Proton/umu-launcher, Steam and the
+other launchers, drivers, Flatpaks — keeps its own licence. THIRD_PARTY.md
+lists each of them with its licence and source. Microsoft Edge and Google
+Chrome are never redistributed inside the ISO; they are downloaded from the
+vendors' own apt repositories at first login, subject to their licences.
+
+Trademarks
+----------
+"Windows", "Microsoft Edge", "Google Chrome", "Steam", "Roblox", "Minecraft",
+"Adobe" and the other product names mentioned in this repository are
+trademarks of their respective owners. Lindos is not affiliated with,
+endorsed by or sponsored by any of them.

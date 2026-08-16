@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Compositor
+Comment=Starts the picom compositor with the Lindos profile (skipped in Lite mode or without GLX)
+Exec=lindos-compositor start
+TryExec=lindos-compositor
+Icon=preferences-desktop-effects
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Phase=WindowManager
+X-GNOME-Autostart-Delay=1
+StartupNotify=false
+X-Lindos-Component=desktop

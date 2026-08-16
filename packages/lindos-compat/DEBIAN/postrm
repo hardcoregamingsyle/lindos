@@ -1,0 +1,145 @@
+#!/bin/sh
+# postrm for lindos-compat — undo what postinst merged into shared config files.
+#  * removes our lindos-run.desktop entries from /etc/xdg/mimeapps.list
+#  * removes our Thunar custom actions (matched by <unique-id>) from /etc/xdg/Thunar/uca.xml
+#  * refreshes the MIME / desktop databases
+# User data (C:\ drives under ~/.local/share/lindos/prefixes, apps.json, Start Menu entries)
+# is never touched by the package: it belongs to the user.
+set -e
+
+# (overridable through the environment so the cleanup logic can be tested against scratch files)
+LINDOS_MIMEAPPS_DST="${LINDOS_MIMEAPPS_DST:-/etc/xdg/mimeapps.list}"
+LINDOS_UCA_DST="${LINDOS_UCA_DST:-/etc/xdg/Thunar/uca.xml}"
+LINDOS_UCA_IDS="1755000000000001-1 1755000000000002-2 1755000000000003-3"
+export LINDOS_MIMEAPPS_DST LINDOS_UCA_DST LINDOS_UCA_IDS
+
+log() {
+    printf 'lindos-compat: %s\n' "$*" >&2
+}
+
+unmerge_mimeapps() {
+    [ -f "$LINDOS_MIMEAPPS_DST" ] || return 0
+    command -v python3 >/dev/null 2>&1 || { log "python3 missing; leaving $LINDOS_MIMEAPPS_DST"; return 0; }
+    python3 - <<'PYEOF' || log "mimeapps.list cleanup failed (non-fatal)"
+import os, re
+
+dst = os.environ["LINDOS_MIMEAPPS_DST"]
+OURS = "lindos-run.desktop"
+with open(dst, "r", encoding="utf-8", errors="replace") as fh:
+    lines = fh.read().splitlines()
+
+out, section, changed = [], None, False
+for raw in lines:
+    line = raw.strip()
+    m = re.match(r"^\[(.+)\]$", line)
+    if m:
+        section = m.group(1).strip()
+        out.append(raw)
+        continue
+    if "=" in line and not line.startswith("#") and section in ("Default Applications", "Added Associations"):
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if section == "Default Applications":
+            if value == OURS or value == OURS + ";":
+                changed = True
+                continue
+        else:
+            apps = [a for a in value.split(";") if a]
+            if OURS in apps:
+                apps = [a for a in apps if a != OURS]
+                changed = True
+                if not apps:
+                    continue
+                out.append(f"{key}={';'.join(apps)};")
+                continue
+    out.append(raw)
+
+if changed:
+    # drop sections that became empty
+    cleaned, i = [], 0
+    while i < len(out):
+        cur = out[i]
+        if re.match(r"^\[.+\]$", cur.strip()):
+            j = i + 1
+            body = []
+            while j < len(out) and not re.match(r"^\[.+\]$", out[j].strip()):
+                body.append(out[j])
+                j += 1
+            if any(b.strip() and not b.strip().startswith("#") for b in body):
+                cleaned.append(cur)
+                cleaned.extend(body)
+            i = j
+        else:
+            cleaned.append(cur)
+            i += 1
+    text = "\n".join(cleaned).strip("\n")
+    if text.strip():
+        tmp = dst + ".lindos-tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dst)
+    else:
+        os.remove(dst)
+PYEOF
+}
+
+unmerge_thunar_actions() {
+    [ -f "$LINDOS_UCA_DST" ] || return 0
+    command -v python3 >/dev/null 2>&1 || { log "python3 missing; leaving $LINDOS_UCA_DST"; return 0; }
+    python3 - <<'PYEOF' || log "Thunar uca.xml cleanup failed (non-fatal)"
+import os, sys
+import xml.etree.ElementTree as ET
+
+dst = os.environ["LINDOS_UCA_DST"]
+ids = set(os.environ["LINDOS_UCA_IDS"].split())
+try:
+    tree = ET.parse(dst)
+except ET.ParseError:
+    sys.exit(0)
+root = tree.getroot()
+if root.tag != "actions":
+    sys.exit(0)
+removed = 0
+for action in list(root.findall("action")):
+    if (action.findtext("unique-id") or "").strip() in ids:
+        root.remove(action)
+        removed += 1
+if not removed:
+    sys.exit(0)
+if len(root) == 0:
+    os.remove(dst)
+    sys.exit(0)
+tmp = dst + ".lindos-tmp"
+tree.write(tmp, encoding="UTF-8", xml_declaration=True)
+with open(tmp, "ab") as fh:
+    fh.write(b"\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, dst)
+PYEOF
+}
+
+case "${1:-}" in
+    remove|purge)
+        unmerge_mimeapps
+        unmerge_thunar_actions
+        if command -v update-mime-database >/dev/null 2>&1; then
+            update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        if [ "${1:-}" = "purge" ]; then
+            rm -f /var/log/lindos/install-compat.log 2>/dev/null || true
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

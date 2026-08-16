@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "dxvk": {
+    "repo": "doitsujin/dxvk",
+    "tag": "v2.7.1",
+    "asset": "dxvk-2.7.1.tar.gz",
+    "sha256": ""
+  },
+  "vkd3d_proton": {
+    "repo": "HansKristian-Work/vkd3d-proton",
+    "tag": "v2.14.1",
+    "asset": "vkd3d-proton-2.14.1.tar.zst",
+    "sha256": ""
+  },
+  "gamescope": {
+    "repo": "ValveSoftware/gamescope",
+    "min": "3.16.4"
+  }
+}

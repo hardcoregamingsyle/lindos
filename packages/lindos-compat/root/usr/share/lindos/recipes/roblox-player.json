@@ -1,0 +1,22 @@
+{
+  "id": "roblox-player",
+  "name": "Roblox Player (Windows client)",
+  "vendor": "Roblox Corporation",
+  "category": "gaming",
+  "status": "broken",
+  "summary": "The Windows Roblox client is blocked on Wine by Roblox's anti-cheat; play Roblox through Sober instead (works).",
+  "notes": "Roblox's Windows client (RobloxPlayerInstaller.exe / RobloxPlayerBeta.exe) does NOT run through Wine or Proton: since 2023 Roblox's Hyperion (Byfron) anti-cheat detects Wine and refuses to start ('Wine is not supported'), and Roblox has said it will stay that way. Nothing you can tweak in Wine changes this - do not run installers or 'fixes' from random websites.\nRoblox does work on Lindos through Sober: a Flatpak that runs the official Roblox *Android* client, made by the Vinegar project. It supports keyboard/mouse and controllers, sign-in with your normal account, most experiences and Rich Presence; things Sober cannot do: some experiences that block the Android client, and voice chat depends on the experience. Install it with 'lindos-game install sober' (or Lindos Settings > Gaming > Roblox), then start 'Roblox' from the Start Menu.\nRoblox Studio (the creation tool) also does not run through Wine on current versions - the Vinegar project's Studio support was retired; use Studio on Windows/macOS or the web tools.",
+  "installer_hint": "",
+  "homepage": "https://www.roblox.com",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Sober (Roblox for Linux)", "how": "official Roblox Android client wrapped by the Vinegar project: lindos-game install sober  (Flatpak org.vinegarhq.Sober)"},
+    {"name": "Roblox in Lindos Settings", "how": "Lindos Settings > Gaming > Roblox: one-click Sober install, then Start Menu > Roblox"}
+  ]
+}

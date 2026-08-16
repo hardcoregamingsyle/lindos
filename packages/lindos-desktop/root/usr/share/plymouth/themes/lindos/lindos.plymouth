@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Lindos
+Description=Lindos boot splash: logo, spinner dots and progress bar on #202020 (script plugin)
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/lindos
+ScriptFile=/usr/share/plymouth/themes/lindos/lindos.script

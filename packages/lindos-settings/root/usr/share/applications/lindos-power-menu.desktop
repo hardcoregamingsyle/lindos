@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Power menu
+Comment=Sleep, restart, shut down, sign out, lock (Win+X)
+Exec=lindos-settings --power-menu
+Icon=system-shutdown
+Terminal=false
+NoDisplay=true
+Categories=System;
+Keywords=power;shutdown;restart;sleep;lock;sign out;
+OnlyShowIn=XFCE;
+StartupNotify=false

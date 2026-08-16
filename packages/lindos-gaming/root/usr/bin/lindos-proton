@@ -1,0 +1,1112 @@
+#!/usr/bin/env python3
+"""lindos-proton — manage GE-Proton (Proton-GE) builds for Steam and umu-launcher.
+
+Usage:
+  lindos-proton list    [--json] [--check] [--no-link] [--system]
+  lindos-proton update  [--json] [--tag TAG] [--force] [--keep-download] [--no-verify]
+  lindos-proton install --system [<tag>] [--json] [--force] [--keep-download] [--no-verify]
+  lindos-proton path    [--profile PATH] [--json]
+  lindos-proton remove  <tag> [--json]
+
+`install --system` places a GE-Proton build in the system-wide directory
+`/usr/share/lindos/proton/<tag>/` (in addition to the per-user
+`compatibilitytools.d`); mutating that directory needs root, so when not run as
+root the command re-execs itself under `pkexec` (never `sudo`).  `list --system`
+lists those system builds and `path` prints the Proton a launcher would pick,
+following the documented resolution order:
+
+    UMU_PROTONPATH / profile  >  newest system GE-Proton  >  newest user GE-Proton
+
+Proton is a translation layer (Wine + DXVK/VKD3D), not Windows: it is near-native
+for most titles, never bit-identical, and it does NOT make VM-blocking anti-cheat
+titles run.
+
+GE-Proton releases are downloaded from GitHub
+(https://github.com/GloriousEggroll/proton-ge-custom — the x86_64 tarball,
+'GE-Proton11-5-x86_64.tar.gz', or the classic 'GE-Proton9-20.tar.gz' for older
+releases), verified against the published .sha512sum and extracted into
+Steam's compatibility-tools directory (~/.steam/root/compatibilitytools.d).  Every installed build is shared with
+umu-launcher (~/.local/share/umu/compatibilitytools) through a symlink and vice
+versa, so `lindos-run` (umu) and Steam see the same versions.  If Steam is not
+installed the build is placed in the umu directory instead.
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 offline (network unreachable).
+
+Environment: LINDOS_HOME (replaces ~ — used by tests), GITHUB_TOKEN (optional,
+raises the GitHub API rate limit), NO_COLOR.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import platform
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+LOG = logging.getLogger("lindos-proton")
+
+GITHUB_REPO = "GloriousEggroll/proton-ge-custom"
+API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+API_TAG = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{{tag}}"
+USER_AGENT = "lindos-proton/1.0 (+https://lindos.dev)"
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_OFFLINE = 3
+
+CHUNK = 1024 * 1024
+
+# --------------------------------------------------------------------------- #
+# Version / naming helpers (pure, unit-tested)
+# --------------------------------------------------------------------------- #
+RE_GE_NEW = re.compile(r"^GE-Proton(\d+)-(\d+)$")
+RE_GE_OLD = re.compile(r"^Proton-(\d+)\.(\d+)-GE-(\d+)(?:-[A-Za-z0-9]+)?$")
+
+
+def parse_version(name: str) -> Optional[tuple[int, ...]]:
+    """Return a sortable version tuple for a GE-Proton directory/tag name.
+
+    'GE-Proton9-20'      -> (9, 20)
+    'Proton-6.21-GE-2'   -> (6, 21, 2)   (legacy naming)
+    anything else        -> None
+    """
+    name = name.strip()
+    m = RE_GE_NEW.match(name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    m = RE_GE_OLD.match(name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def is_ge_name(name: str) -> bool:
+    return parse_version(name) is not None
+
+
+def dir_name_for_tag(tag: str) -> str:
+    """The tarball for release <tag> extracts to a top-level directory named <tag>.
+
+    (Both the classic 'GE-Proton9-20.tar.gz' and the newer per-architecture
+    'GE-Proton11-5-x86_64.tar.gz' archives unpack to a directory named after
+    the tag; extract_tarball() double-checks at runtime.)
+    """
+    return tag.strip()
+
+
+def host_arch() -> str:
+    """'x86_64' or 'aarch64' (GE-Proton's asset suffixes) for the running machine."""
+    m = platform.machine().lower()
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return "x86_64"
+
+
+ARCH_MARKERS = {"x86_64": ("x86_64", "amd64"), "aarch64": ("aarch64", "arm64")}
+OTHER_ARCH_MARKERS = ("aarch64", "arm64", "armv7", "armhf", "i386", "i686", "x86_64", "amd64")
+
+
+def asset_candidates(tag: str, arch: Optional[str] = None) -> list[tuple[str, str]]:
+    """Ordered (tarball, checksum) name pairs a release <tag> may publish.
+
+    GE-Proton11 and later ship per-architecture assets
+    ('GE-Proton11-5-x86_64.tar.gz' + 'GE-Proton11-5-x86_64.sha512sum');
+    earlier releases ship 'GE-Proton9-20.tar.gz' + 'GE-Proton9-20.sha512sum'.
+    """
+    tag = tag.strip()
+    arch = arch or host_arch()
+    return [
+        (f"{tag}-{arch}.tar.gz", f"{tag}-{arch}.sha512sum"),
+        (f"{tag}.tar.gz", f"{tag}.sha512sum"),
+    ]
+
+
+def asset_names_for_tag(tag: str, arch: Optional[str] = None) -> tuple[str, str]:
+    """Preferred (tarball name, checksum file name) for a release tag (first candidate)."""
+    return asset_candidates(tag, arch)[0]
+
+
+def _foreign_arch(name: str, arch: str) -> bool:
+    """True when an asset name carries an architecture marker that is not ours."""
+    low = name.lower()
+    ours = ARCH_MARKERS.get(arch.lower(), (arch.lower(),))
+    return any(marker in low for marker in OTHER_ARCH_MARKERS if marker not in ours)
+
+
+def parse_sha512sum(text: str) -> dict[str, str]:
+    """Parse the contents of a .sha512sum file ('<hex>  <file>' per line).
+
+    Accepts the GNU coreutils formats ('hash  file' and 'hash *file') and
+    ignores blank lines / comments.  Returns {filename: hexdigest}.
+    """
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, fname = parts[0].lower(), parts[1].strip()
+        if fname.startswith("*"):
+            fname = fname[1:]
+        if re.fullmatch(r"[0-9a-f]{128}", digest):
+            out[os.path.basename(fname)] = digest
+    return out
+
+
+def pick_assets(release: dict, arch: Optional[str] = None) -> dict:
+    """Extract tag + download URLs from a GitHub release JSON document.
+
+    Prefers the asset pair for this machine's architecture, then the classic
+    un-suffixed pair, then any .tar.gz that is not for a foreign architecture
+    (with the .sha512sum sharing its stem).  Never picks an aarch64 tarball on
+    x86_64 (or vice versa).
+    """
+    tag = str(release.get("tag_name", "")).strip()
+    if not tag:
+        raise ValueError("release JSON has no tag_name")
+    arch = arch or host_arch()
+    assets = [a for a in (release.get("assets") or []) if isinstance(a, dict)]
+    by_name = {str(a.get("name", "")): a for a in assets}
+    tar = sums = None
+    for tar_name, sum_name in asset_candidates(tag, arch):
+        if tar_name in by_name:
+            tar = by_name[tar_name]
+            sums = by_name.get(sum_name)
+            break
+    if tar is None:  # fall back to "any .tar.gz" for our arch (name scheme changed?)
+        for name, a in by_name.items():
+            if name.endswith(".tar.gz") and not _foreign_arch(name, arch):
+                tar = a
+                stem = name[: -len(".tar.gz")]
+                sums = by_name.get(f"{stem}.sha512sum")
+                break
+    if tar is None:
+        raise ValueError(f"release {tag} has no .tar.gz asset for {arch}")
+    if sums is None:  # last resort: any checksum file that is not for a foreign arch
+        sums = next((a for name, a in by_name.items()
+                     if name.endswith(".sha512sum") and not _foreign_arch(name, arch)), None)
+    return {
+        "tag": tag,
+        "tar_name": str(tar.get("name")),
+        "tar_url": str(tar.get("browser_download_url")),
+        "tar_size": int(tar.get("size") or 0),
+        "sum_name": str(sums.get("name")) if sums else None,
+        "sum_url": str(sums.get("browser_download_url")) if sums else None,
+        "published_at": str(release.get("published_at") or ""),
+        "html_url": str(release.get("html_url") or ""),
+    }
+
+
+def human_size(n: float) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024.0
+    return f"{n:.1f} GiB"
+
+
+# --------------------------------------------------------------------------- #
+# Locations
+# --------------------------------------------------------------------------- #
+def home_dir() -> Path:
+    h = os.environ.get("LINDOS_HOME")
+    return Path(h).expanduser() if h else Path.home()
+
+
+def steam_installed() -> bool:
+    if shutil.which("steam"):
+        return True
+    return any(Path(p).exists() for p in ("/usr/bin/steam", "/usr/games/steam", "/usr/lib/steam/bin_steam.sh"))
+
+
+def steam_data_dir(h: Optional[Path] = None) -> Optional[Path]:
+    """Steam's data directory (where compatibilitytools.d lives) or None if no Steam."""
+    h = h or home_dir()
+    root = h / ".steam" / "root"          # symlink created by Steam's bootstrap
+    if root.exists():
+        return root
+    local = h / ".local" / "share" / "Steam"
+    if local.is_dir():
+        return local
+    if steam_installed():
+        return local                       # Steam will point ~/.steam/root here on first run
+    return None
+
+
+def umu_compat_dir(h: Optional[Path] = None) -> Path:
+    h = h or home_dir()
+    return h / ".local" / "share" / "umu" / "compatibilitytools"
+
+
+@dataclass
+class Locations:
+    primary: Path
+    others: list[Path] = field(default_factory=list)
+    steam_present: bool = True
+
+    @property
+    def all(self) -> list[Path]:
+        return [self.primary, *self.others]
+
+
+def resolve_locations(h: Optional[Path] = None) -> Locations:
+    h = h or home_dir()
+    umu = umu_compat_dir(h)
+    steam = steam_data_dir(h)
+    if steam is None:
+        return Locations(primary=umu, others=[], steam_present=False)
+    return Locations(primary=steam / "compatibilitytools.d", others=[umu], steam_present=True)
+
+
+def pretty(p: Path, h: Optional[Path] = None) -> str:
+    h = h or home_dir()
+    try:
+        return "~/" + str(p.relative_to(h)).replace(os.sep, "/")
+    except ValueError:
+        return str(p)
+
+
+# --------------------------------------------------------------------------- #
+# Inventory + symlink sharing
+# --------------------------------------------------------------------------- #
+def scan_location(loc: Path) -> list[dict]:
+    """List GE-Proton entries in one directory."""
+    entries: list[dict] = []
+    if not loc.is_dir():
+        return entries
+    for child in sorted(loc.iterdir()):
+        if not is_ge_name(child.name):
+            continue
+        is_link = child.is_symlink()
+        target = None
+        broken = False
+        if is_link:
+            try:
+                target = os.readlink(str(child))
+            except OSError:
+                target = None
+            broken = not child.exists()
+        elif not child.is_dir():
+            continue
+        entries.append({
+            "tag": child.name,
+            "path": str(child),
+            "symlink": is_link,
+            "target": target,
+            "broken": broken,
+            "version": list(parse_version(child.name) or ()),
+        })
+    return entries
+
+
+def share_links(locs: Locations, *, dry_run: bool = False) -> list[dict]:
+    """Make every real GE-Proton directory visible in every location via symlinks.
+
+    Broken symlinks are removed.  Returns a list of {"action","path","target"}.
+    """
+    actions: list[dict] = []
+    real: dict[str, Path] = {}
+    for loc in locs.all:
+        for e in scan_location(loc):
+            p = Path(e["path"])
+            if e["symlink"]:
+                if e["broken"]:
+                    actions.append({"action": "unlink-broken", "path": str(p), "target": e["target"]})
+                    if not dry_run:
+                        try:
+                            p.unlink()
+                        except OSError as exc:
+                            LOG.warning("could not remove broken link %s: %s", p, exc)
+                continue
+            real.setdefault(e["tag"], p)
+    for tag, src in real.items():
+        for loc in locs.all:
+            dst = loc / tag
+            if dst.exists() or dst.is_symlink():
+                continue
+            actions.append({"action": "link", "path": str(dst), "target": str(src)})
+            if dry_run:
+                continue
+            try:
+                loc.mkdir(parents=True, exist_ok=True)
+                os.symlink(str(src), str(dst), target_is_directory=True)
+            except OSError as exc:
+                LOG.warning("could not link %s -> %s: %s", dst, src, exc)
+                actions[-1]["action"] = "link-failed"
+                actions[-1]["error"] = str(exc)
+    return actions
+
+
+def inventory(locs: Locations) -> list[dict]:
+    """Merged view: one row per tag with all locations it is installed in."""
+    rows: dict[str, dict] = {}
+    for loc in locs.all:
+        for e in scan_location(loc):
+            row = rows.setdefault(e["tag"], {"tag": e["tag"], "version": e["version"], "installed_in": []})
+            row["installed_in"].append({
+                "dir": str(loc),
+                "kind": ("broken-link" if e["broken"] else "symlink") if e["symlink"] else "real",
+                "path": e["path"],
+                "target": e["target"],
+            })
+    ordered = sorted(rows.values(), key=lambda r: tuple(r["version"]), reverse=True)
+    return ordered
+
+
+def newest_installed(locs: Locations) -> Optional[str]:
+    inv = inventory(locs)
+    return inv[0]["tag"] if inv else None
+
+
+# --------------------------------------------------------------------------- #
+# System-wide location (/usr/share/lindos/proton) + resolution order
+# --------------------------------------------------------------------------- #
+def is_root() -> bool:
+    """True only when running as uid 0 (never on Windows / dev boxes)."""
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid and geteuid() == 0)
+
+
+def system_proton_dir() -> Path:
+    """System-wide GE-Proton directory (LINDOS_ROOT-aware for tests)."""
+    return Path(os.environ.get("LINDOS_ROOT", "") + "/usr/share/lindos/proton")
+
+
+def newest_in_dir(directory: Path) -> Optional[tuple[str, Path]]:
+    """(tag, path) of the highest-versioned real GE-Proton build in one directory."""
+    best: Optional[tuple[tuple[int, ...], str, Path]] = None
+    for e in scan_location(directory):
+        if e["broken"]:
+            continue
+        key = tuple(e["version"])
+        if best is None or key > best[0]:
+            best = (key, e["tag"], Path(e["path"]))
+    return (best[1], best[2]) if best else None
+
+
+def newest_user(locs: Locations) -> Optional[tuple[str, Path]]:
+    """(tag, path) of the newest per-user GE-Proton build across Steam/umu."""
+    inv = inventory(locs)
+    if not inv:
+        return None
+    row = inv[0]
+    entry = next((x for x in row["installed_in"] if x["kind"] == "real"), row["installed_in"][0])
+    return row["tag"], Path(entry["path"])
+
+
+# Sentinels a profile may use to mean "the newest GE-Proton", handled by resolution below.
+_LATEST_SENTINELS = {"ge-proton", "ge-proton-latest", "latest"}
+
+
+def read_profile_proton(path: Path) -> Optional[str]:
+    """The ``proton`` field of a per-title profile JSON, or None."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, dict):
+        val = data.get("proton")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def resolve_proton(h: Optional[Path] = None, *, profile_proton: Optional[str] = None,
+                   env: Optional[dict] = None) -> dict:
+    """Resolve the Proton a launcher (umu / lindos-run) would use.
+
+    Order (SPEC-VM §23): ``UMU_PROTONPATH`` / profile > newest system GE-Proton >
+    newest user GE-Proton.  A profile whose ``proton`` is a "latest" sentinel does
+    not pin a build; it falls through to the system-then-user newest search.
+    Returns {"source", "tag", "path"} — path is None only when nothing is found.
+    """
+    env = os.environ if env is None else env
+    h = h or home_dir()
+    umu = env.get("UMU_PROTONPATH")
+    if umu and umu.strip():
+        val = umu.strip()
+        return {"source": "UMU_PROTONPATH", "tag": val if is_ge_name(val) else None, "path": val}
+    if profile_proton and profile_proton.strip():
+        pp = profile_proton.strip()
+        if pp.lower() not in _LATEST_SENTINELS:
+            return {"source": "profile", "tag": pp if is_ge_name(pp) else None, "path": pp}
+    sys_new = newest_in_dir(system_proton_dir())
+    if sys_new:
+        return {"source": "system", "tag": sys_new[0], "path": str(sys_new[1])}
+    user_new = newest_user(resolve_locations(h))
+    if user_new:
+        return {"source": "user", "tag": user_new[0], "path": str(user_new[1])}
+    return {"source": "none", "tag": None, "path": None}
+
+
+# --------------------------------------------------------------------------- #
+# Network (injectable)
+# --------------------------------------------------------------------------- #
+class OfflineError(RuntimeError):
+    """Raised when the network is unreachable."""
+
+
+def _request(url: str, accept: str) -> urllib.request.Request:
+    headers = {"User-Agent": USER_AGENT, "Accept": accept}
+    tok = os.environ.get("GITHUB_TOKEN")
+    if tok and "api.github.com" in url:
+        headers["Authorization"] = f"Bearer {tok}"
+    return urllib.request.Request(url, headers=headers)
+
+
+def _classify(exc: BaseException) -> BaseException:
+    """Turn low-level connectivity failures into OfflineError."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+        return OfflineError(f"network unreachable ({getattr(exc, 'reason', exc)})")
+    return exc
+
+
+def http_get_json(url: str, timeout: float = 25.0) -> dict:
+    """GET a JSON document (GitHub API)."""
+    try:
+        with urllib.request.urlopen(_request(url, "application/vnd.github+json"), timeout=timeout) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        remaining = str(exc.headers.get("X-RateLimit-Remaining", "")) if exc.headers else ""
+        if exc.code in (403, 429) and (remaining == "0" or "rate limit" in str(exc.reason).lower()):
+            raise RuntimeError("GitHub API rate limit reached — retry later or set GITHUB_TOKEN") from exc
+        if exc.code == 404:
+            raise RuntimeError(f"not found on GitHub: {url}") from exc
+        raise RuntimeError(f"HTTP {exc.code} for {url}: {exc.reason}") from exc
+    except Exception as exc:  # noqa: BLE001 - classified below
+        raise _classify(exc) from exc
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid JSON from {url}: {exc}") from exc
+
+
+ProgressCB = Callable[[int, Optional[int]], None]
+
+
+def http_download(url: str, dest: Path, progress: Optional[ProgressCB] = None, timeout: float = 60.0) -> int:
+    """Stream <url> to <dest> (via a .part file).  Returns bytes written."""
+    part = dest.with_name(dest.name + ".part")
+    written = 0
+    try:
+        with urllib.request.urlopen(_request(url, "application/octet-stream"), timeout=timeout) as resp:
+            total_hdr = resp.headers.get("Content-Length")
+            total = int(total_hdr) if total_hdr and total_hdr.isdigit() else None
+            with open(part, "wb") as fh:
+                while True:
+                    chunk = resp.read(CHUNK)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    written += len(chunk)
+                    if progress:
+                        progress(written, total)
+    except urllib.error.HTTPError as exc:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"HTTP {exc.code} downloading {url}") from exc
+    except Exception as exc:  # noqa: BLE001
+        part.unlink(missing_ok=True)
+        raise _classify(exc) from exc
+    os.replace(part, dest)
+    return written
+
+
+FetchJSON = Callable[[str], dict]
+Download = Callable[[str, Path, Optional[ProgressCB]], int]
+
+
+# --------------------------------------------------------------------------- #
+# Progress output
+# --------------------------------------------------------------------------- #
+class Progress:
+    """Prints a single-line progress meter to stderr (or 10 % steps when not a TTY)."""
+
+    def __init__(self, label: str, quiet: bool = False) -> None:
+        self.label = label
+        self.quiet = quiet
+        self.tty = sys.stderr.isatty()
+        self.last_pct = -1
+        self.last_t = 0.0
+        self.width = shutil.get_terminal_size((80, 20)).columns
+
+    def __call__(self, done: int, total: Optional[int]) -> None:
+        if self.quiet:
+            return
+        now = time.monotonic()
+        if total:
+            pct = int(done * 100 / total)
+            if self.tty:
+                if now - self.last_t < 0.1 and pct < 100:
+                    return
+                self.last_t = now
+                bar_w = max(10, min(30, self.width - 60))
+                filled = int(bar_w * pct / 100)
+                bar = "#" * filled + "-" * (bar_w - filled)
+                line = f"\r  {self.label} [{bar}] {pct:3d}%  {human_size(done)} / {human_size(total)}"
+                sys.stderr.write(line[: self.width - 1])
+                sys.stderr.flush()
+            elif pct // 10 > self.last_pct // 10 or pct == 100 and self.last_pct != 100:
+                self.last_pct = pct
+                sys.stderr.write(f"  {self.label}: {pct}% ({human_size(done)} / {human_size(total)})\n")
+        else:
+            if self.tty and now - self.last_t >= 0.25:
+                self.last_t = now
+                sys.stderr.write(f"\r  {self.label} {human_size(done)}")
+                sys.stderr.flush()
+
+    def finish(self) -> None:
+        if not self.quiet and self.tty:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+
+
+def sha512_file(path: Path, progress: Optional[ProgressCB] = None) -> str:
+    h = hashlib.sha512()
+    total = path.stat().st_size
+    done = 0
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+            done += len(chunk)
+            if progress:
+                progress(done, total)
+    return h.hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# Extraction
+# --------------------------------------------------------------------------- #
+def _safe_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    members = []
+    for m in tar.getmembers():
+        name = m.name
+        if name.startswith("/") or name.startswith("\\") or ".." in Path(name).parts:
+            raise RuntimeError(f"refusing to extract unsafe path in archive: {name!r}")
+        if (m.issym() or m.islnk()) and m.linkname.startswith("/"):
+            # relative links are allowed; tarfile's data filter rejects any that escape the destination
+            raise RuntimeError(f"refusing to extract absolute link in archive: {name!r} -> {m.linkname!r}")
+        members.append(m)
+    return members
+
+
+def extract_tarball(tar_path: Path, into: Path) -> Path:
+    """Extract <tar_path> into <into>; return the (single) top-level directory."""
+    into.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tar_path, "r:*") as tar:
+        members = _safe_members(tar)
+        tops = {Path(m.name).parts[0] for m in members if Path(m.name).parts}
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(path=into, members=members, filter="data")  # type: ignore[call-arg]
+        else:  # pragma: no cover - Python < 3.12 without the backport
+            tar.extractall(path=into, members=members)
+    if len(tops) != 1:
+        raise RuntimeError(f"archive does not contain exactly one top-level directory: {sorted(tops)}")
+    top = into / tops.pop()
+    if not top.is_dir():
+        raise RuntimeError(f"archive top-level entry {top.name!r} is not a directory")
+    return top
+
+
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
+def emit(obj: dict, as_json: bool, text: str = "") -> None:
+    if as_json:
+        print(json.dumps(obj, indent=2, sort_keys=True))
+    elif text:
+        print(text)
+
+
+def cmd_list_system(args: argparse.Namespace) -> int:
+    d = system_proton_dir()
+    entries = [e for e in scan_location(d) if not e["broken"]]
+    entries.sort(key=lambda e: tuple(e["version"]), reverse=True)
+    result = {
+        "system_dir": str(d),
+        "installed": entries,
+        "newest_installed": entries[0]["tag"] if entries else None,
+    }
+    if args.json:
+        emit(result, True)
+        return EXIT_OK
+    print(f"System dir: {d}")
+    if not entries:
+        print("\nNo system-wide GE-Proton builds installed.  Run:")
+        print("  pkexec lindos-proton install --system")
+    else:
+        print(f"\n{'TAG':<22} KIND")
+        for e in entries:
+            print(f"{e['tag']:<22} {'symlink' if e['symlink'] else 'real'}")
+    return EXIT_OK
+
+
+def cmd_list(args: argparse.Namespace, fetch_json: FetchJSON) -> int:
+    if getattr(args, "system", False):
+        return cmd_list_system(args)
+    h = home_dir()
+    locs = resolve_locations(h)
+    link_actions = [] if args.no_link else share_links(locs)
+    inv = inventory(locs)
+    latest = None
+    latest_error = None
+    if args.check:
+        try:
+            latest = pick_assets(fetch_json(API_LATEST))["tag"]
+        except OfflineError as exc:
+            latest_error = f"offline: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            latest_error = str(exc)
+    result = {
+        "steam_present": locs.steam_present,
+        "primary_dir": str(locs.primary),
+        "dirs": [str(p) for p in locs.all],
+        "installed": inv,
+        "newest_installed": inv[0]["tag"] if inv else None,
+        "latest_available": latest,
+        "latest_error": latest_error,
+        "link_actions": link_actions,
+    }
+    if args.json:
+        emit(result, True)
+        return EXIT_OK
+    print(f"Steam:   {'found' if locs.steam_present else 'not installed (using umu directory only)'}")
+    print(f"Primary: {pretty(locs.primary, h)}")
+    for extra in locs.others:
+        print(f"Shared:  {pretty(extra, h)}")
+    if not inv:
+        print("\nNo GE-Proton builds installed.  Run:  lindos-proton update")
+    else:
+        print(f"\n{'TAG':<22} {'WHERE':<40} KIND")
+        for row in inv:
+            first = True
+            for loc in row["installed_in"]:
+                print(f"{(row['tag'] if first else ''):<22} {pretty(Path(loc['dir']), h):<40} {loc['kind']}")
+                first = False
+    for a in link_actions:
+        verb = {"link": "linked", "unlink-broken": "removed broken link", "link-failed": "could not link"}[a["action"]]
+        print(f"  {verb}: {pretty(Path(a['path']), h)}" + (f" -> {a['target']}" if a.get("target") and a["action"] == "link" else ""))
+    if args.check:
+        if latest:
+            state = "up to date" if inv and inv[0]["tag"] == latest else "update available (lindos-proton update)"
+            print(f"\nLatest release: {latest} — {state}")
+        else:
+            print(f"\nCould not check latest release: {latest_error}")
+    return EXIT_OK
+
+
+def cmd_update(args: argparse.Namespace, fetch_json: FetchJSON, download: Download) -> int:
+    h = home_dir()
+    locs = resolve_locations(h)
+    quiet = bool(args.json or args.quiet)
+    log = LOG.info
+
+    # 1. release metadata
+    url = API_TAG.format(tag=args.tag) if args.tag else API_LATEST
+    try:
+        release = fetch_json(url)
+        info = pick_assets(release)
+    except OfflineError as exc:
+        emit({"status": "offline", "error": str(exc)}, args.json,
+             f"lindos-proton: {exc}\nGE-Proton updates need internet access to github.com.")
+        return EXIT_OFFLINE
+    except Exception as exc:  # noqa: BLE001
+        emit({"status": "error", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_ERROR
+
+    tag = info["tag"]
+    target_dir = locs.primary
+    final = target_dir / dir_name_for_tag(tag)
+    log("Release: %s%s", tag, f" (published {info['published_at'][:10]})" if info["published_at"] else "")
+    log("Target:  %s%s", pretty(target_dir, h), "" if locs.steam_present else "  (Steam not found — installing for umu only)")
+
+    # 2. already installed?
+    already = [Path(e["path"]) for loc in locs.all for e in scan_location(loc) if e["tag"] == tag and not e["symlink"]]
+    if already and not args.force:
+        links = share_links(locs)
+        emit({"status": "up-to-date", "tag": tag, "path": str(already[0]), "links": links}, args.json,
+             f"{tag} is already installed at {pretty(already[0], h)} (use --force to reinstall).")
+        return EXIT_OK
+
+    # 3. download
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        emit({"status": "error", "error": f"cannot create {target_dir}: {exc}"}, args.json,
+             f"lindos-proton: cannot create {target_dir}: {exc}")
+        return EXIT_ERROR
+    tmp = Path(tempfile.mkdtemp(prefix=".lindos-proton-", dir=str(target_dir)))
+    tar_path = tmp / info["tar_name"]
+    try:
+        log("Downloading %s (%s) …", info["tar_name"], human_size(info["tar_size"]) if info["tar_size"] else "size unknown")
+        prog = Progress(info["tar_name"], quiet=quiet)
+        nbytes = download(info["tar_url"], tar_path, prog)
+        prog.finish()
+
+        # 4. verify
+        verified = False
+        if args.no_verify:
+            LOG.warning("checksum verification skipped (--no-verify)")
+        elif not info["sum_url"]:
+            emit({"status": "error", "error": "release has no .sha512sum asset"}, args.json,
+                 "lindos-proton: release has no .sha512sum asset; refusing to install (use --no-verify to override).")
+            return EXIT_ERROR
+        else:
+            sum_path = tmp / info["sum_name"]
+            download(info["sum_url"], sum_path, None)
+            sums = parse_sha512sum(sum_path.read_text(encoding="utf-8", errors="replace"))
+            expected = sums.get(info["tar_name"]) or (next(iter(sums.values())) if len(sums) == 1 else None)
+            if not expected:
+                emit({"status": "error", "error": "checksum file does not mention the tarball"}, args.json,
+                     "lindos-proton: checksum file does not mention the tarball; aborting.")
+                return EXIT_ERROR
+            vprog = Progress("verifying", quiet=quiet)
+            actual = sha512_file(tar_path, vprog)
+            vprog.finish()
+            if actual != expected:
+                emit({"status": "error", "error": "sha512 mismatch", "expected": expected, "actual": actual}, args.json,
+                     "lindos-proton: SHA-512 mismatch — the download is corrupt or tampered with. Nothing installed.")
+                return EXIT_ERROR
+            verified = True
+            log("Checksum OK (sha512)")
+
+        # 5. extract
+        log("Extracting …")
+        top = extract_tarball(tar_path, tmp / "x")
+        if top.name != dir_name_for_tag(tag):
+            LOG.warning("archive top-level dir is %r (expected %r); keeping archive name", top.name, tag)
+            final = target_dir / top.name
+        if final.exists() or final.is_symlink():
+            if final.is_symlink() or not final.is_dir():
+                final.unlink()
+            else:
+                shutil.rmtree(final)
+        os.replace(str(top), str(final))
+        log("Installed %s", pretty(final, h))
+        if args.keep_download:
+            keep = target_dir / info["tar_name"]
+            shutil.move(str(tar_path), str(keep))
+            log("Kept tarball at %s", pretty(keep, h))
+    except OfflineError as exc:
+        emit({"status": "offline", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_OFFLINE
+    except (RuntimeError, OSError, tarfile.TarError) as exc:
+        emit({"status": "error", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_ERROR
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 6. share with the other location(s)
+    links = share_links(locs)
+    for a in links:
+        if a["action"] == "link":
+            log("Linked %s -> %s", pretty(Path(a["path"]), h), pretty(Path(a["target"]), h))
+    result = {
+        "status": "installed",
+        "tag": tag,
+        "path": str(final),
+        "bytes": nbytes,
+        "verified": verified,
+        "links": links,
+        "steam_present": locs.steam_present,
+    }
+    if args.json:
+        emit(result, True)
+    else:
+        print(f"\n{tag} installed to {pretty(final, h)}")
+        if locs.steam_present:
+            print("Restart Steam, then pick it under Properties → Compatibility for a game.")
+        print("umu-launcher / lindos-run can use it via PROTONPATH=" + tag)
+    return EXIT_OK
+
+
+def _perform_install(target_dir: Path, info: dict, *, no_verify: bool, keep_download: bool,
+                     quiet: bool, download: Download) -> tuple[Path, int, bool]:
+    """Download + verify + extract <info> into <target_dir>; return (final, bytes, verified).
+
+    Raises OfflineError / RuntimeError / OSError / tarfile.TarError on failure; the
+    temp directory is always cleaned up.  Shared by system and (future) callers.
+    """
+    tag = info["tag"]
+    final = target_dir / dir_name_for_tag(tag)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".lindos-proton-", dir=str(target_dir)))
+    try:
+        tar_path = tmp / info["tar_name"]
+        prog = Progress(info["tar_name"], quiet=quiet)
+        nbytes = download(info["tar_url"], tar_path, prog)
+        prog.finish()
+
+        verified = False
+        if no_verify:
+            LOG.warning("checksum verification skipped (--no-verify)")
+        elif not info["sum_url"]:
+            raise RuntimeError("release has no .sha512sum asset; refusing to install (use --no-verify to override).")
+        else:
+            sum_path = tmp / info["sum_name"]
+            download(info["sum_url"], sum_path, None)
+            sums = parse_sha512sum(sum_path.read_text(encoding="utf-8", errors="replace"))
+            expected = sums.get(info["tar_name"]) or (next(iter(sums.values())) if len(sums) == 1 else None)
+            if not expected:
+                raise RuntimeError("checksum file does not mention the tarball; aborting.")
+            vprog = Progress("verifying", quiet=quiet)
+            actual = sha512_file(tar_path, vprog)
+            vprog.finish()
+            if actual != expected:
+                raise RuntimeError("SHA-512 mismatch — the download is corrupt or tampered with. Nothing installed.")
+            verified = True
+
+        top = extract_tarball(tar_path, tmp / "x")
+        if top.name != dir_name_for_tag(tag):
+            LOG.warning("archive top-level dir is %r (expected %r); keeping archive name", top.name, tag)
+            final = target_dir / top.name
+        if final.exists() or final.is_symlink():
+            if final.is_symlink() or not final.is_dir():
+                final.unlink()
+            else:
+                shutil.rmtree(final)
+        os.replace(str(top), str(final))
+        if keep_download:
+            shutil.move(str(tar_path), str(target_dir / info["tar_name"]))
+        return final, nbytes, verified
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _escalate_system(args: argparse.Namespace) -> int:
+    """Re-run `install --system` as root via pkexec (never sudo); print the exact command."""
+    cmd = ["pkexec", os.path.abspath(sys.argv[0]), "install", "--system"]
+    if args.tag:
+        cmd.append(args.tag)
+    if args.force:
+        cmd.append("--force")
+    if args.no_verify:
+        cmd.append("--no-verify")
+    if args.keep_download:
+        cmd.append("--keep-download")
+    if args.json:
+        cmd.append("--json")
+    printed = " ".join(shlex.quote(c) for c in cmd)
+    if args.json:
+        emit({"status": "needs-root", "command": cmd, "command_line": printed}, True)
+    else:
+        print("System-wide install needs root.  Run:")
+        print("  " + printed)
+    if shutil.which("pkexec"):
+        try:
+            return subprocess.run(cmd, check=False).returncode
+        except OSError as exc:
+            LOG.error("pkexec failed: %s", exc)
+            return EXIT_ERROR
+    LOG.error("pkexec not found — run the command above as root yourself.")
+    return EXIT_ERROR
+
+
+def cmd_install(args: argparse.Namespace, fetch_json: FetchJSON, download: Download) -> int:
+    if not args.system:
+        emit({"status": "error", "error": "install requires --system"}, args.json,
+             "lindos-proton: 'install' installs system-wide and requires --system.\n"
+             "For a per-user install use:  lindos-proton update")
+        return EXIT_USAGE
+    if args.tag and not is_ge_name(args.tag):
+        emit({"status": "error", "error": f"not a GE-Proton tag: {args.tag}"}, args.json,
+             f"lindos-proton: {args.tag!r} does not look like a GE-Proton tag (e.g. GE-Proton11-5)")
+        return EXIT_USAGE
+    if not is_root():
+        return _escalate_system(args)
+
+    quiet = bool(args.json or args.quiet)
+    target_dir = system_proton_dir()
+    url = API_TAG.format(tag=args.tag) if args.tag else API_LATEST
+    try:
+        info = pick_assets(fetch_json(url))
+    except OfflineError as exc:
+        emit({"status": "offline", "error": str(exc)}, args.json,
+             f"lindos-proton: {exc}\nGE-Proton updates need internet access to github.com.")
+        return EXIT_OFFLINE
+    except Exception as exc:  # noqa: BLE001
+        emit({"status": "error", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_ERROR
+
+    tag = info["tag"]
+    final = target_dir / dir_name_for_tag(tag)
+    if final.is_dir() and not args.force:
+        emit({"status": "up-to-date", "scope": "system", "tag": tag, "path": str(final)}, args.json,
+             f"{tag} is already installed system-wide at {final} (use --force to reinstall).")
+        return EXIT_OK
+    try:
+        final, nbytes, verified = _perform_install(
+            target_dir, info, no_verify=args.no_verify, keep_download=args.keep_download,
+            quiet=quiet, download=download)
+    except OfflineError as exc:
+        emit({"status": "offline", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_OFFLINE
+    except (RuntimeError, OSError, tarfile.TarError) as exc:
+        emit({"status": "error", "error": str(exc)}, args.json, f"lindos-proton: {exc}")
+        return EXIT_ERROR
+
+    result = {"status": "installed", "scope": "system", "tag": tag, "path": str(final),
+              "bytes": nbytes, "verified": verified}
+    if args.json:
+        emit(result, True)
+    else:
+        print(f"\n{tag} installed system-wide to {final}")
+        print("It is available to every user; launchers prefer the newest system build over a user build.")
+    return EXIT_OK
+
+
+def cmd_path(args: argparse.Namespace) -> int:
+    h = home_dir()
+    profile_proton = None
+    if args.profile:
+        try:
+            profile_proton = read_profile_proton(Path(os.path.expanduser(args.profile)))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            emit({"status": "error", "error": str(exc)}, args.json,
+                 f"lindos-proton: cannot read profile {args.profile}: {exc}")
+            return EXIT_USAGE
+    res = resolve_proton(h, profile_proton=profile_proton)
+    if args.json:
+        emit(res, True)
+        return EXIT_OK if res["path"] else EXIT_ERROR
+    if not res["path"]:
+        LOG.error("no GE-Proton found (system or user); install one:  lindos-proton update")
+        return EXIT_ERROR
+    print(res["path"])
+    return EXIT_OK
+
+
+def cmd_remove(args: argparse.Namespace) -> int:
+    h = home_dir()
+    locs = resolve_locations(h)
+    tag = args.tag.strip()
+    if not is_ge_name(tag):
+        emit({"status": "error", "error": f"not a GE-Proton tag: {tag}"}, args.json,
+             f"lindos-proton: {tag!r} does not look like a GE-Proton tag (e.g. GE-Proton9-20)")
+        return EXIT_USAGE
+    removed: list[dict] = []
+    errors: list[str] = []
+    for loc in locs.all:
+        p = loc / tag
+        if p.is_symlink():
+            try:
+                p.unlink()
+                removed.append({"path": str(p), "kind": "symlink"})
+            except OSError as exc:
+                errors.append(f"{p}: {exc}")
+        elif p.is_dir():
+            try:
+                shutil.rmtree(p)
+                removed.append({"path": str(p), "kind": "real"})
+            except OSError as exc:
+                errors.append(f"{p}: {exc}")
+    if not removed and not errors:
+        emit({"status": "not-found", "tag": tag}, args.json, f"{tag} is not installed.")
+        return EXIT_ERROR
+    ok = not errors
+    emit({"status": "removed" if ok else "error", "tag": tag, "removed": removed, "errors": errors}, args.json,
+         "\n".join([f"removed {pretty(Path(r['path']), h)} ({r['kind']})" for r in removed] + [f"error: {e}" for e in errors]))
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lindos-proton", description="Manage GE-Proton builds for Steam and umu-launcher.")
+    p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    pl = sub.add_parser("list", help="list installed GE-Proton builds (and share them between Steam and umu)")
+    pl.add_argument("--json", action="store_true")
+    pl.add_argument("--check", action="store_true", help="also query GitHub for the latest release")
+    pl.add_argument("--no-link", action="store_true", help="do not create sharing symlinks")
+    pl.add_argument("--system", action="store_true",
+                    help="list system-wide builds in /usr/share/lindos/proton instead")
+
+    pu = sub.add_parser("update", help="download + verify + install the latest GE-Proton")
+    pu.add_argument("--json", action="store_true")
+    pu.add_argument("--tag", help="install this specific release tag instead of the latest")
+    pu.add_argument("--force", action="store_true", help="reinstall even if already present")
+    pu.add_argument("--keep-download", action="store_true", help="keep the downloaded tarball next to the install")
+    pu.add_argument("--no-verify", action="store_true", help="skip SHA-512 verification (not recommended)")
+    pu.add_argument("-q", "--quiet", action="store_true", help="no progress output")
+
+    pi = sub.add_parser("install",
+                        help="install a GE-Proton build system-wide (root via pkexec) to /usr/share/lindos/proton")
+    pi.add_argument("--system", action="store_true", help="install to the system-wide directory (required)")
+    pi.add_argument("tag", nargs="?", help="release tag to install (default: the latest release)")
+    pi.add_argument("--json", action="store_true")
+    pi.add_argument("--force", action="store_true", help="reinstall even if already present")
+    pi.add_argument("--keep-download", action="store_true", help="keep the downloaded tarball next to the install")
+    pi.add_argument("--no-verify", action="store_true", help="skip SHA-512 verification (not recommended)")
+    pi.add_argument("-q", "--quiet", action="store_true", help="no progress output")
+
+    pp = sub.add_parser("path",
+                        help="print the effective Proton path (UMU_PROTONPATH/profile > system GE > user GE)")
+    pp.add_argument("--profile", metavar="PATH", help="read the 'proton' field from a per-title profile JSON")
+    pp.add_argument("--json", action="store_true")
+
+    pr = sub.add_parser("remove", help="remove an installed GE-Proton build from all locations")
+    pr.add_argument("tag")
+    pr.add_argument("--json", action="store_true")
+    return p
+
+
+def _tolerant_streams() -> None:
+    """Never crash on a non-UTF-8 console (progress/log text contains '…', '—')."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def main(argv: Optional[list[str]] = None, *, fetch_json: FetchJSON = http_get_json,
+         download: Download = http_download) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _tolerant_streams()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(message)s", stream=sys.stderr)
+    if getattr(args, "json", False):
+        LOG.setLevel(logging.WARNING)
+    if args.cmd == "list":
+        return cmd_list(args, fetch_json)
+    if args.cmd == "update":
+        return cmd_update(args, fetch_json, download)
+    if args.cmd == "install":
+        return cmd_install(args, fetch_json, download)
+    if args.cmd == "path":
+        return cmd_path(args)
+    if args.cmd == "remove":
+        return cmd_remove(args)
+    parser.print_help()
+    return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.stderr.write("\ninterrupted\n")
+        sys.exit(130)

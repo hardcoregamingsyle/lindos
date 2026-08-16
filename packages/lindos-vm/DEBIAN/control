@@ -1,0 +1,32 @@
+Package: lindos-vm
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), lindos-core
+Recommends: qemu-system-x86 | qemu-kvm, libvirt-daemon-system, libvirt-clients, ovmf, virt-manager, virtiofsd
+Suggests: looking-glass-client
+Homepage: https://lindos.dev
+Description: Honest KVM/QEMU Windows virtual machine with optional GPU passthrough
+ lindos-vm creates and manages a real, honestly-labelled Windows virtual
+ machine on top of KVM/QEMU and libvirt: a q35 machine with OVMF/UEFI firmware,
+ an emulated TPM 2.0, virtio disk/net and (optionally) VFIO GPU passthrough for
+ near-native graphics.  It is meant for Windows software and VM-tolerant games
+ (Adobe, Office, most single-player titles).
+ .
+ It is deliberately truthful.  The generated libvirt XML and every shipped
+ template use standard values: there is NO hypervisor hiding (no kvm=off, no
+ hv-vendor-id masquerading, no hiding the hypervisor CPUID bit), and NO
+ SMBIOS / motherboard-UUID / serial / ACPI-table / CPUID spoofing of any kind.
+ A unit test greps the generated XML and all templates and fails if any
+ evasion token is present.  As a consequence, kernel-mode anti-cheat that
+ blocks virtual machines (Riot Vanguard and similar) will NOT run in this VM,
+ and Lindos does nothing to change that.
+ .
+ lindos-vm requires a user-supplied, licensed Windows and licensed apps.  It
+ never downloads Windows, never enters or stores your credentials, and never
+ bypasses activation.  The /usr/bin/lindos-vm tool probes host capability,
+ prints (never auto-applies) the exact privileged passthrough steps, and
+ defines/starts/stops the VM through virsh.  Reading never needs root; every
+ mutating step is printed as a copy-pasteable pkexec/virsh command.

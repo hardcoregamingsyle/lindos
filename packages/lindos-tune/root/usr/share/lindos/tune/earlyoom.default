@@ -1,0 +1,3 @@
+# /etc/default/earlyoom — managed by lindos-tune (lindos-tune apply)
+# -m: act below N % free RAM (Lite mode: 8), -s: swap threshold, --avoid: never kill the desktop
+EARLYOOM_ARGS="-m 4 -s 100 --avoid '(^|/)(Xorg|xfwm4|xfce4-panel|lightdm)$'"

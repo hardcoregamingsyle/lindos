@@ -1,0 +1,59 @@
+#!/bin/sh
+# postinst for lindos-setup -- idempotent, offline
+set -e
+
+log() { printf 'lindos-setup: %s\n' "$*"; }
+
+AUTOSTART_DIR=/etc/xdg/autostart
+AUTOSTART=/etc/xdg/autostart/lindos-setup.desktop
+AUTOSTART_SRC=/usr/share/lindos/setup/autostart/lindos-setup.desktop
+STATE_DIR=/var/lib/lindos-setup
+MARKER=/var/lib/lindos-setup/autostart.installed
+
+# The first-run autostart entry (SPEC §6) is normally shipped by lindos-desktop
+# (SPEC §5).  To guarantee the OOBE starts even without lindos-desktop -- and to
+# never collide with a package that does ship it -- install our reference copy
+# only when no file and no package claims that path, and remember that we did.
+install_autostart() {
+    if [ -e "$AUTOSTART" ]; then
+        return 0
+    fi
+    if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$AUTOSTART" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ ! -f "$AUTOSTART_SRC" ]; then
+        log "reference autostart entry $AUTOSTART_SRC missing (skipped)"
+        return 0
+    fi
+    mkdir -p "$AUTOSTART_DIR" "$STATE_DIR"
+    if cp "$AUTOSTART_SRC" "$AUTOSTART" && chmod 0644 "$AUTOSTART"; then
+        : > "$MARKER"
+        log "installed $AUTOSTART (first-run gate)"
+    else
+        log "could not install $AUTOSTART (ignored)"
+    fi
+}
+
+case "${1:-}" in
+    configure)
+        # byte-compile the wizard for faster start-up (best effort)
+        if command -v py3compile >/dev/null 2>&1; then
+            py3compile /usr/lib/lindos-setup 2>/dev/null || log "py3compile failed (ignored)"
+        fi
+        # make sure the launcher is executable even if the builder missed it
+        if [ -f /usr/bin/lindos-setup ] && [ ! -x /usr/bin/lindos-setup ]; then
+            chmod 0755 /usr/bin/lindos-setup
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        install_autostart
+        # per-user SETUP_DONE markers decide whether the wizard shows; nothing else system-wide
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

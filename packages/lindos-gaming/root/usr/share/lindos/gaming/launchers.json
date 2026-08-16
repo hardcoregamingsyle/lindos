@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "updated": "2026-08",
+  "note": "Catalogue of the gaming launchers Lindos can install. Used by `lindos-game` (list/status/install/launch) and by Lindos Settings → Gaming. `id` values are exactly the items accepted by /usr/libexec/lindos/install-gaming.sh and by the helper action install-gaming ({\"items\": [...]}). `check` is evaluated in order dpkg → flatpak → which. Honesty: Wine/Proton are translation layers, not Windows; Sober is a community Roblox runtime (not the Windows client); mcpelauncher is unofficial; whether a Steam game runs online depends on its anti-cheat (see compat-matrix.json).",
+  "launchers": [
+    {
+      "id": "steam",
+      "name": "Steam",
+      "description": "Valve's store and launcher. Windows games run through Proton (Steam Play); enable it for all titles in Settings → Compatibility.",
+      "install": "apt",
+      "sources": {
+        "apt": ["steam-launcher", "steam-installer"],
+        "apt_repo": "deb [arch=amd64,i386 signed-by=/usr/share/keyrings/steam.gpg] https://repo.steampowered.com/steam/ stable steam",
+        "flatpak": "com.valvesoftware.Steam"
+      },
+      "check": {
+        "dpkg": ["steam-launcher", "steam-installer", "steam"],
+        "flatpak": ["com.valvesoftware.Steam"],
+        "which": ["steam"]
+      },
+      "desktop": "steam.desktop",
+      "icon": "steam",
+      "run": ["steam"],
+      "flatpak_run": ["flatpak", "run", "com.valvesoftware.Steam"],
+      "category": "store",
+      "modes_default": ["gaming", "everyday"],
+      "homepage": "https://store.steampowered.com/",
+      "note": "Multiplayer titles only work when the developer enabled their anti-cheat for Proton — check areweanticheatyet.com and protondb.com."
+    },
+    {
+      "id": "lutris",
+      "name": "Lutris",
+      "description": "Open-source game manager: Battle.net, EA app, Ubisoft Connect, GOG, Amazon, emulators and any Windows installer, with Wine/Proton runners.",
+      "install": "apt",
+      "sources": {
+        "apt": ["lutris"],
+        "flatpak": "net.lutris.Lutris"
+      },
+      "check": {
+        "dpkg": ["lutris"],
+        "flatpak": ["net.lutris.Lutris"],
+        "which": ["lutris"]
+      },
+      "desktop": "net.lutris.Lutris.desktop",
+      "icon": "lutris",
+      "run": ["lutris"],
+      "flatpak_run": ["flatpak", "run", "net.lutris.Lutris"],
+      "category": "manager",
+      "modes_default": ["gaming"],
+      "homepage": "https://lutris.net/",
+      "note": "Ubuntu 'universe' ships Lutris 0.5.x; falls back to the Flathub package."
+    },
+    {
+      "id": "heroic",
+      "name": "Heroic Games Launcher",
+      "description": "Epic Games Store, GOG and Amazon Prime Gaming library — Windows titles run through Proton/Wine.",
+      "install": "deb",
+      "sources": {
+        "github": "Heroic-Games-Launcher/HeroicGamesLauncher",
+        "flatpak": "com.heroicgameslauncher.hgl"
+      },
+      "check": {
+        "dpkg": ["heroic"],
+        "flatpak": ["com.heroicgameslauncher.hgl"],
+        "which": ["heroic"]
+      },
+      "desktop": "heroic.desktop",
+      "icon": "heroic",
+      "run": ["heroic"],
+      "flatpak_run": ["flatpak", "run", "com.heroicgameslauncher.hgl"],
+      "category": "store",
+      "modes_default": ["gaming"],
+      "homepage": "https://heroicgameslauncher.com/",
+      "note": "Fortnite is NOT playable: Epic keeps Easy Anti-Cheat for Linux disabled. Other Epic titles generally work."
+    },
+    {
+      "id": "prism",
+      "name": "Prism Launcher",
+      "description": "Minecraft Java Edition launcher (native Linux) with instances, mod loaders and bundled Java runtimes. Requires a Microsoft account that owns Minecraft.",
+      "install": "flatpak",
+      "sources": {
+        "flatpak": "org.prismlauncher.PrismLauncher",
+        "apt": ["prismlauncher"]
+      },
+      "check": {
+        "dpkg": ["prismlauncher"],
+        "flatpak": ["org.prismlauncher.PrismLauncher"],
+        "which": ["prismlauncher", "PrismLauncher"]
+      },
+      "desktop": "lindos-minecraft.desktop",
+      "icon": "lindos-minecraft",
+      "run": ["prismlauncher"],
+      "flatpak_run": ["flatpak", "run", "org.prismlauncher.PrismLauncher"],
+      "category": "minecraft",
+      "modes_default": ["gaming"],
+      "homepage": "https://prismlauncher.org/",
+      "note": "Java edition only. Bedrock is a separate, unofficial launcher (mcpelauncher)."
+    },
+    {
+      "id": "sober",
+      "name": "Roblox (Sober)",
+      "description": "Roblox through Sober — a community Linux runtime for the Android build. Roblox's own Windows client does not run on Linux (Hyperion anti-cheat).",
+      "install": "flatpak",
+      "sources": {
+        "flatpak": "org.vinegarhq.Sober"
+      },
+      "check": {
+        "dpkg": [],
+        "flatpak": ["org.vinegarhq.Sober"],
+        "which": []
+      },
+      "desktop": "lindos-roblox.desktop",
+      "icon": "lindos-roblox",
+      "run": ["flatpak", "run", "org.vinegarhq.Sober"],
+      "flatpak_run": ["flatpak", "run", "org.vinegarhq.Sober"],
+      "category": "roblox",
+      "modes_default": ["gaming"],
+      "homepage": "https://sober.vinegarhq.org/",
+      "note": "Not affiliated with Roblox Corporation. Works with the normal Roblox account; some experiences that need Windows-only features may differ."
+    },
+    {
+      "id": "vinegar",
+      "name": "Roblox Studio (Vinegar)",
+      "description": "Roblox Studio (the game editor) through Vinegar, which manages a Wine prefix for the Windows Studio build.",
+      "install": "flatpak",
+      "sources": {
+        "flatpak": "org.vinegarhq.Vinegar"
+      },
+      "check": {
+        "dpkg": [],
+        "flatpak": ["org.vinegarhq.Vinegar"],
+        "which": []
+      },
+      "desktop": "lindos-roblox-studio.desktop",
+      "icon": "lindos-roblox",
+      "run": ["flatpak", "run", "org.vinegarhq.Vinegar"],
+      "flatpak_run": ["flatpak", "run", "org.vinegarhq.Vinegar"],
+      "category": "roblox",
+      "modes_default": [],
+      "homepage": "https://vinegarhq.org/",
+      "note": "Studio only — Vinegar no longer runs the Roblox player; use Sober for playing."
+    },
+    {
+      "id": "mcpelauncher",
+      "name": "Minecraft Bedrock (mcpelauncher)",
+      "description": "Unofficial launcher that runs the Android build of Minecraft Bedrock Edition. You must own Minecraft on Google Play and sign in with that account.",
+      "install": "flatpak",
+      "sources": {
+        "flatpak": "io.mrarm.mcpelauncher"
+      },
+      "check": {
+        "dpkg": [],
+        "flatpak": ["io.mrarm.mcpelauncher"],
+        "which": ["mcpelauncher-ui-qt"]
+      },
+      "desktop": "io.mrarm.mcpelauncher.desktop",
+      "icon": "io.mrarm.mcpelauncher",
+      "run": ["flatpak", "run", "io.mrarm.mcpelauncher"],
+      "flatpak_run": ["flatpak", "run", "io.mrarm.mcpelauncher"],
+      "category": "minecraft",
+      "modes_default": [],
+      "homepage": "https://mcpelauncher.readthedocs.io/",
+      "note": "Not affiliated with Mojang/Microsoft; marketplace and Realms may not work; treat as 'partial'."
+    },
+    {
+      "id": "bottles",
+      "name": "Bottles",
+      "description": "Friendly manager for Wine prefixes ('bottles') with per-app runners, DXVK/VKD3D and dependency installers — used by the Lindos Creator recipes.",
+      "install": "flatpak",
+      "sources": {
+        "flatpak": "com.usebottles.bottles"
+      },
+      "check": {
+        "dpkg": ["bottles"],
+        "flatpak": ["com.usebottles.bottles"],
+        "which": ["bottles"]
+      },
+      "desktop": "com.usebottles.bottles.desktop",
+      "icon": "com.usebottles.bottles",
+      "run": ["flatpak", "run", "com.usebottles.bottles"],
+      "flatpak_run": ["flatpak", "run", "com.usebottles.bottles"],
+      "category": "wine",
+      "modes_default": ["creator"],
+      "homepage": "https://usebottles.com/",
+      "note": "Wine is a compatibility layer, not Windows: recent Adobe releases and apps with kernel drivers/anti-cheat do not work."
+    }
+  ]
+}

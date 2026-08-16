@@ -1,0 +1,29 @@
+{
+  "id": "everyday",
+  "name": "Everyday",
+  "description": "Balanced default for browsing, media and everyday work.",
+  "tagline": "The Lindos default — fast, quiet, familiar.",
+  "icon": "user-home",
+  "ram_hint": "Idle target 350–500 MB",
+  "packages": [],
+  "flatpaks": [],
+  "services_disable": [],
+  "services_enable": [
+    "earlyoom",
+    "fstrim.timer"
+  ],
+  "sysctl": {},
+  "governor": "schedutil",
+  "pins": [
+    "lindos-files.desktop",
+    "firefox.desktop",
+    "lindos-store.desktop",
+    "lindos-settings.desktop",
+    "lindos-terminal.desktop"
+  ],
+  "compositor": "picom",
+  "zram_percent": 50,
+  "gamemode_auto": true,
+  "mangohud": false,
+  "animations": true
+}

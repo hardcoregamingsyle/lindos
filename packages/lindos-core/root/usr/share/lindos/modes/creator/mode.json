@@ -1,0 +1,55 @@
+{
+  "id": "creator",
+  "name": "Creator",
+  "description": "Creative apps and Adobe-era recipes through Wine/Bottles; GIMP, Krita, Kdenlive suggested.",
+  "tagline": "Bottles + Lindos recipes ready; colour-managed profile hint.",
+  "icon": "applications-graphics",
+  "ram_hint": "Idle target 350–500 MB",
+  "packages": [
+    "winetricks",
+    "cabextract",
+    "icoutils",
+    "fonts-liberation",
+    "colord"
+  ],
+  "flatpaks": [
+    "com.usebottles.bottles"
+  ],
+  "suggested_packages": [
+    "gimp",
+    "krita",
+    "kdenlive",
+    "inkscape",
+    "blender",
+    "obs-studio"
+  ],
+  "services_disable": [],
+  "services_enable": [
+    "colord",
+    "earlyoom"
+  ],
+  "sysctl": {
+    "fs.inotify.max_user_watches": "524288"
+  },
+  "governor": "schedutil",
+  "pins": [
+    "lindos-files.desktop",
+    "firefox.desktop",
+    "com.usebottles.bottles.desktop",
+    "gimp.desktop",
+    "org.kde.krita.desktop",
+    "org.kde.kdenlive.desktop",
+    "lindos-settings.desktop"
+  ],
+  "compositor": "picom",
+  "zram_percent": 50,
+  "colour_profile_hint": "Calibrate your display in Settings → System → Display (colord profile) for print-accurate colours.",
+  "compat_items": [
+    "wine",
+    "winetricks",
+    "bottles"
+  ],
+  "gamemode_auto": false,
+  "mangohud": false,
+  "notes": "Photoshop/Illustrator CC 2019–2021 work through the shipped Wine recipes; newer Creative Cloud releases are unreliable (partial). Premiere and AutoCAD do not work — Kdenlive, DaVinci Resolve and FreeCAD are the native alternatives."
+}

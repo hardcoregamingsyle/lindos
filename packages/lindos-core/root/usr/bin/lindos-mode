@@ -1,0 +1,180 @@
+#!/usr/bin/python3
+"""lindos-mode — list / get / set the Lindos mode (SPEC §3, §4.10).
+
+  lindos-mode list [--json]                 all modes (id, name, description, current marker)
+  lindos-mode get  [--json]                 the effective mode id
+  lindos-mode show <id> [--json]            full definition + the privileged plan
+  lindos-mode set  <id> [--system] [--dry-run] [--json] [--quiet]
+      user part (config, panel profile, pins, compositor, apply-user.sh) then the privileged
+      part through the polkit helper ('apply-mode').  --system also makes it the system default
+      (/etc/lindos/system.json).  --dry-run prints every step without changing anything.
+
+Exit codes: 0 ok · 1 error (unknown mode, a step failed) · 2 usage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import modes as lmodes
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-mode: the 'lindos' python package is missing ({exc}); install lindos-core\n")
+    sys.exit(1)
+
+PROG = "lindos-mode"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit(data: Any, as_json: bool, text: str = "") -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        print(text)
+
+
+def _mode_row(mode: lmodes.Mode, current: str) -> Dict[str, Any]:
+    return {
+        "id": mode.id, "name": mode.name, "description": mode.description, "icon": mode.icon,
+        "governor": mode.governor, "compositor": mode.compositor, "zram_percent": mode.zram_percent,
+        "packages": mode.packages, "flatpaks": mode.flatpaks, "pins": mode.pins,
+        "ram_hint": mode.ram_hint, "current": mode.id == current, "path": mode.path,
+    }
+
+
+def cmd_list(ns: argparse.Namespace) -> int:
+    modes = lmodes.load_modes()
+    if not modes:
+        sys.stderr.write(f"{PROG}: no mode definitions found under {lmodes.paths.modes_dir()}\n")
+        return EXIT_ERROR
+    current = lmodes.current_mode()
+    rows = [_mode_row(m, current) for m in modes.values()]
+    if ns.json:
+        _emit(rows, True)
+        return EXIT_OK
+    width = max(len(m.id) for m in modes.values())
+    for m in modes.values():
+        mark = "*" if m.id == current else " "
+        print(f"{mark} {m.id.ljust(width)}  {m.name:<9} {m.description}")
+    print(f"\n* = current ({current}).  Switch with: {PROG} set <id>")
+    return EXIT_OK
+
+
+def cmd_get(ns: argparse.Namespace) -> int:
+    current = lmodes.current_mode()
+    try:
+        mode: Optional[lmodes.Mode] = lmodes.get_mode(current)
+    except KeyError:
+        mode = None
+    if ns.json:
+        _emit({"mode": current, "name": mode.name if mode else current, "defined": mode is not None}, True)
+    else:
+        print(current)
+    return EXIT_OK
+
+
+def cmd_show(ns: argparse.Namespace) -> int:
+    try:
+        mode = lmodes.get_mode(ns.mode)
+    except KeyError as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_ERROR
+    plan = lmodes.build_system_plan(mode, set_system_default=False)
+    if ns.json:
+        data = mode.to_dict()
+        data["plan"] = plan
+        _emit(data, True)
+        return EXIT_OK
+    print(f"{mode.name} ({mode.id}) — {mode.description}")
+    if mode.ram_hint:
+        print(f"  RAM:        {mode.ram_hint}")
+    print(f"  governor:   {mode.governor}    compositor: {mode.compositor}    zram: {mode.zram_percent}%")
+    print(f"  packages:   {' '.join(mode.packages) or '-'}")
+    print(f"  flatpaks:   {' '.join(mode.flatpaks) or '-'}")
+    print(f"  services:   enable {' '.join(mode.services_enable) or '-'} / disable {' '.join(mode.services_disable) or '-'}")
+    print("  sysctl:     " + (", ".join(f"{k}={v}" for k, v in mode.sysctl.items()) or "-"))
+    print(f"  pins:       {' '.join(mode.pins) or '-'}")
+    print(f"  panel:      {mode.panel_profile() or mode.panel_xml() or '(none shipped — produced by lindos-desktop)'}")
+    print(f"  scripts:    user={mode.apply_user_script() or '-'} system={mode.apply_system_script() or '-'}")
+    print(f"  definition: {os.path.join(mode.path, 'mode.json') if mode.path else '-'}")
+    return EXIT_OK
+
+
+def cmd_set(ns: argparse.Namespace) -> int:
+    lines: List[str] = []
+
+    def log(msg: str) -> None:
+        lines.append(msg)
+        if not ns.quiet and not ns.json:
+            print(msg, flush=True)
+
+    result = lmodes.apply_mode(ns.mode, system=ns.system, dry_run=ns.dry_run, log=log)
+    if ns.json:
+        data = result.to_dict()
+        data["mode"] = ns.mode
+        data["dry_run"] = ns.dry_run
+        data["log"] = lines
+        _emit(data, True)
+    elif not ns.quiet:
+        print(result.summary())
+    elif not result.ok:
+        for name, ok, message in result.failed:
+            sys.stderr.write(f"{PROG}: step {name} failed: {message}\n")
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=PROG, description="List, inspect and switch the Lindos mode.",
+                                     epilog="Modes: " + ", ".join(lmodes.MODE_IDS))
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    sub = parser.add_subparsers(dest="command", metavar="command")
+    p = sub.add_parser("list", help="list all modes")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_list)
+    p = sub.add_parser("get", help="print the effective mode id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_get)
+    p = sub.add_parser("show", help="show one mode's definition and helper plan")
+    p.add_argument("mode")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_show)
+    p = sub.add_parser("set", help="switch to a mode")
+    p.add_argument("mode")
+    p.add_argument("--system", action="store_true", help="also make it the system default (/etc/lindos/system.json)")
+    p.add_argument("--dry-run", action="store_true", help="print the steps without changing anything")
+    p.add_argument("--json", action="store_true", help="machine-readable result")
+    p.add_argument("--quiet", "-q", action="store_true", help="only report failures")
+    p.set_defaults(func=cmd_set)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

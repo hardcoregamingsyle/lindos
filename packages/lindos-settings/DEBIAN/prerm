@@ -1,0 +1,15 @@
+#!/bin/sh
+# prerm for lindos-settings -- remove byte-compiled files (idempotent)
+set -e
+
+case "${1:-}" in
+    remove|upgrade|deconfigure)
+        if command -v py3clean >/dev/null 2>&1; then
+            py3clean /usr/lib/lindos-settings 2>/dev/null || true
+        fi
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

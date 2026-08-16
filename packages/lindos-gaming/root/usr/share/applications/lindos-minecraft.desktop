@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Minecraft
+GenericName=Minecraft Java Edition (Prism Launcher)
+Comment=Minecraft Java Edition via Prism Launcher (Lindos) — native Linux; installs Prism Launcher on first start
+Exec=lindos-game launch prism
+TryExec=lindos-game
+Icon=lindos-minecraft
+Terminal=false
+Categories=Game;
+Keywords=minecraft;prism;launcher;java;mods;
+StartupNotify=true
+StartupWMClass=PrismLauncher
+Actions=install;bedrock;
+X-Lindos-Launcher=prism
+X-Lindos-Flatpak=org.prismlauncher.PrismLauncher
+X-Lindos-Note=Prism Launcher runs the native Java edition (a Microsoft account that owns Minecraft is required). Bedrock edition is available separately through the unofficial mcpelauncher (needs the Android version you own).
+
+[Desktop Action install]
+Name=Install or repair Prism Launcher (Lindos)
+Exec=lindos-game launch prism --install
+
+[Desktop Action bedrock]
+Name=Minecraft Bedrock (mcpelauncher, unofficial)
+Exec=lindos-game launch mcpelauncher

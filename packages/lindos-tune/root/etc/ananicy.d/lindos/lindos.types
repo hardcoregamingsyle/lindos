@@ -1,0 +1,4 @@
+{"type": "Lindos-Game", "nice": -5, "ioclass": "best-effort", "ionice": 0, "sched": "other", "oom_score_adj": -300}
+{"type": "Lindos-Launcher", "nice": -2, "ioclass": "best-effort", "ionice": 2, "sched": "other", "oom_score_adj": -100}
+{"type": "Lindos-Browser", "nice": 0, "ioclass": "best-effort", "ionice": 4, "sched": "other", "oom_score_adj": 300}
+{"type": "Lindos-Compiler", "nice": 15, "ioclass": "best-effort", "ionice": 7, "sched": "idle", "oom_score_adj": 500}

@@ -1,0 +1,238 @@
+#!/usr/bin/python3
+"""lindos-config — read / write the Lindos configuration (SPEC §4.2, §4.10).
+
+  lindos-config show  [--json] [--system | --effective]   user config (default), system config,
+                                                          or the effective merge
+  lindos-config get   <key> [--json] [--system]           one value (exit 1 when unset)
+  lindos-config set   <key> <value> [--system]            write a value; values are parsed as
+                                                          JSON/true/false/numbers, else strings.
+                                                          --system writes /etc/lindos/system.json
+                                                          through the polkit helper (mode/browser/oem)
+  lindos-config unset <key>                               remove a user override (defaults apply)
+  lindos-config paths [--json]                            every SPEC path, resolved
+  lindos-config reset [--yes]                             back to defaults (keeps setup_done)
+
+Exit codes: 0 ok · 1 error / key unset · 2 usage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import config as lconfig
+    from lindos import helper as lhelper
+    from lindos import paths as lpaths
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-config: the 'lindos' python package is missing ({exc}); install lindos-core\n")
+    sys.exit(1)
+
+PROG = "lindos-config"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+SYSTEM_KEYS = ("mode", "browser", "oem")
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit(data: Any) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _fmt(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return str(value)
+
+
+def _effective() -> Dict[str, Any]:
+    data = dict(lconfig.load_system())
+    data.update(lconfig.Config.load().as_dict())
+    data["mode"] = lconfig.effective_mode()
+    data["browser"] = lconfig.effective_browser()
+    return data
+
+
+def _validate(key: str, value: Any) -> Optional[str]:
+    if key == "mode" and value not in lconfig.VALID_MODES:
+        return f"mode must be one of {', '.join(lconfig.VALID_MODES)}"
+    if key == "browser" and value not in lconfig.VALID_BROWSERS:
+        return f"browser must be one of {', '.join(lconfig.VALID_BROWSERS)}"
+    if key == "theme" and value not in lconfig.VALID_THEMES:
+        return "theme must be dark or light"
+    if key == "accent" and not (isinstance(value, str) and len(value) == 7 and value.startswith("#")):
+        return "accent must be #RRGGBB"
+    if key in ("setup_done", "gamemode_auto", "mangohud", "telemetry", "oem") and not isinstance(value, bool):
+        return f"{key} must be true or false"
+    return None
+
+
+def cmd_show(ns: argparse.Namespace) -> int:
+    if ns.system:
+        data = lconfig.load_system()
+        source = lpaths.system_conf()
+    elif ns.effective:
+        data = _effective()
+        source = "effective (user overrides system)"
+    else:
+        cfg = lconfig.Config.load()
+        data = cfg.as_dict()
+        source = cfg.path + ("" if cfg.exists else " (defaults; file not written yet)")
+    if ns.json:
+        _emit(data)
+        return EXIT_OK
+    print(f"# {source}")
+    width = max(len(k) for k in data) if data else 0
+    for key in sorted(data):
+        print(f"{key.ljust(width)}  {_fmt(data[key])}")
+    return EXIT_OK
+
+
+def cmd_get(ns: argparse.Namespace) -> int:
+    data = lconfig.load_system() if ns.system else _effective()
+    if ns.key not in data:
+        sys.stderr.write(f"{PROG}: '{ns.key}' is not set\n")
+        return EXIT_ERROR
+    if ns.json:
+        _emit({ns.key: data[ns.key]})
+    else:
+        print(_fmt(data[ns.key]))
+    return EXIT_OK
+
+
+def cmd_set(ns: argparse.Namespace) -> int:
+    value = lconfig.parse_value(ns.value)
+    problem = _validate(ns.key, value)
+    if problem:
+        sys.stderr.write(f"{PROG}: {problem}\n")
+        return EXIT_USAGE
+    if ns.system:
+        if ns.key not in SYSTEM_KEYS:
+            sys.stderr.write(f"{PROG}: system config only holds {', '.join(SYSTEM_KEYS)}\n")
+            return EXIT_USAGE
+        res = lhelper.run_privileged("write-system-config", {ns.key: value})
+        if not res.ok:
+            sys.stderr.write(f"{PROG}: {res.message}\n")
+            return EXIT_ERROR
+        print(f"{ns.key} = {_fmt(value)} → {lpaths.system_conf()}")
+        return EXIT_OK
+    cfg = lconfig.Config.load()
+    cfg[ns.key] = value
+    try:
+        cfg.save()
+    except OSError as exc:
+        sys.stderr.write(f"{PROG}: cannot write {cfg.path}: {exc}\n")
+        return EXIT_ERROR
+    print(f"{ns.key} = {_fmt(value)} → {cfg.path}")
+    return EXIT_OK
+
+
+def cmd_unset(ns: argparse.Namespace) -> int:
+    cfg = lconfig.Config.load()
+    if ns.key not in cfg:
+        sys.stderr.write(f"{PROG}: '{ns.key}' is not set\n")
+        return EXIT_ERROR
+    if ns.key in lconfig.DEFAULTS:
+        cfg[ns.key] = lconfig.DEFAULTS[ns.key]
+    else:
+        del cfg[ns.key]
+    try:
+        cfg.save()
+    except OSError as exc:
+        sys.stderr.write(f"{PROG}: cannot write {cfg.path}: {exc}\n")
+        return EXIT_ERROR
+    print(f"{ns.key} reset → {cfg.path}")
+    return EXIT_OK
+
+
+def cmd_paths(ns: argparse.Namespace) -> int:
+    data = lpaths.all_paths()
+    if ns.json:
+        _emit(data)
+        return EXIT_OK
+    width = max(len(k) for k in data)
+    for key in sorted(data):
+        print(f"{key.ljust(width)}  {data[key]}")
+    return EXIT_OK
+
+
+def cmd_reset(ns: argparse.Namespace) -> int:
+    cfg = lconfig.Config.load()
+    if not ns.yes:
+        sys.stderr.write(f"{PROG}: this resets {cfg.path} to defaults; re-run with --yes\n")
+        return EXIT_USAGE
+    keep = cfg.get("setup_done", False)
+    fresh = lconfig.Config(path=cfg.path)
+    fresh["setup_done"] = keep
+    try:
+        fresh.save()
+    except OSError as exc:
+        sys.stderr.write(f"{PROG}: cannot write {cfg.path}: {exc}\n")
+        return EXIT_ERROR
+    print(f"defaults written → {cfg.path}")
+    return EXIT_OK
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=PROG, description="Read and write the Lindos user/system configuration.")
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    sub = parser.add_subparsers(dest="command", metavar="command")
+    p = sub.add_parser("show", help="print the configuration")
+    p.add_argument("--json", action="store_true")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--system", action="store_true", help="/etc/lindos/system.json")
+    g.add_argument("--effective", action="store_true", help="user overrides merged over system")
+    p.set_defaults(func=cmd_show)
+    p = sub.add_parser("get", help="print one value")
+    p.add_argument("key")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--system", action="store_true")
+    p.set_defaults(func=cmd_get)
+    p = sub.add_parser("set", help="write one value")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.add_argument("--system", action="store_true", help="write the system default (needs admin rights)")
+    p.set_defaults(func=cmd_set)
+    p = sub.add_parser("unset", help="remove a user override")
+    p.add_argument("key")
+    p.set_defaults(func=cmd_unset)
+    p = sub.add_parser("paths", help="print every Lindos path (LINDOS_ROOT/LINDOS_HOME aware)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_paths)
+    p = sub.add_parser("reset", help="reset the user config to defaults")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_reset)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,23 @@
+{
+  "id": "premiere",
+  "name": "Adobe Premiere Pro (CC 2019-2024)",
+  "vendor": "Adobe",
+  "category": "creator",
+  "status": "broken",
+  "summary": "Does NOT work through Wine: the installer fails and the editor needs GPU/media features Wine cannot provide.",
+  "notes": "Premiere Pro does not run on Wine or Proton on any Linux, including Lindos. Recent installers require the Creative Cloud desktop app (which does not run), and even the standalone builds crash at start: the Mercury Playback Engine needs Direct3D 11/12 compute and CUDA/OpenCL paths, media import relies on Windows Media Foundation (H.264/HEVC decoding), and the licensing service needs a working Adobe sign-in. Old CS6 Premiere sometimes opens but cannot import H.264 footage or play back reliably, so we do not offer a recipe.\nUse a native editor instead - both below open the same media, export H.264/H.265/ProRes and run at full GPU speed:\n- Kdenlive (free, open source; timeline, effects, proxies) - Lindos Settings > Apps > Store or 'apt install kdenlive'.\n- DaVinci Resolve (free edition; professional colour/edit; the Studio version is paid) - download the Linux build from Blackmagic Design; needs a supported GPU (AMD/NVIDIA recommended).\nAlso: Shotcut, Olive, Blender's video sequencer.",
+  "installer_hint": "",
+  "homepage": "https://www.adobe.com/products/premiere.html",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Kdenlive", "how": "native, free video editor: Lindos Settings > Apps > Store, or: apt install kdenlive"},
+    {"name": "DaVinci Resolve", "how": "native (free edition) from https://www.blackmagicdesign.com/products/davinciresolve - AMD/NVIDIA GPU recommended"},
+    {"name": "Shotcut", "how": "native, free: Flatpak org.shotcut.Shotcut or apt install shotcut"}
+  ]
+}

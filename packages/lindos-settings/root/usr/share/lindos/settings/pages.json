@@ -1,0 +1,686 @@
+{
+  "schema": 1,
+  "pages": [
+    {
+      "id": "home",
+      "title": "Home",
+      "icon": [
+        "go-home"
+      ],
+      "kind": "native",
+      "description": "Overview: mode, memory, quick toggles",
+      "keywords": [
+        "start",
+        "overview",
+        "ram",
+        "memory",
+        "quick",
+        "dark",
+        "toggle",
+        "taskbar"
+      ]
+    },
+    {
+      "id": "system",
+      "title": "System",
+      "icon": [
+        "computer"
+      ],
+      "kind": "delegate",
+      "description": "Display, sound, notifications, power, storage",
+      "keywords": [
+        "monitor",
+        "screen",
+        "resolution",
+        "volume",
+        "audio",
+        "battery",
+        "disk"
+      ],
+      "subitems": [
+        {
+          "id": "display",
+          "label": "Display",
+          "description": "Monitors, resolution, scaling, multiple displays",
+          "icon": [
+            "video-display"
+          ],
+          "exec": [
+            "xfce4-display-settings"
+          ],
+          "package": "xfce4-settings",
+          "keywords": [
+            "monitor",
+            "screen",
+            "resolution",
+            "hidpi",
+            "scale"
+          ]
+        },
+        {
+          "id": "sound",
+          "label": "Sound",
+          "description": "Output and input devices, volume, per-app mixer",
+          "icon": [
+            "audio-volume-high"
+          ],
+          "exec": [
+            "pavucontrol"
+          ],
+          "package": "pavucontrol",
+          "keywords": [
+            "audio",
+            "volume",
+            "microphone",
+            "speaker",
+            "pulseaudio",
+            "pipewire"
+          ]
+        },
+        {
+          "id": "notifications",
+          "label": "Notifications",
+          "description": "Do not disturb, notification position and log",
+          "icon": [
+            "preferences-system-notifications"
+          ],
+          "exec": [
+            "xfce4-notifyd-config"
+          ],
+          "package": "xfce4-notifyd",
+          "keywords": [
+            "do not disturb",
+            "alerts",
+            "toast"
+          ]
+        },
+        {
+          "id": "power",
+          "label": "Power & battery",
+          "description": "Sleep, screen blanking, lid action, battery",
+          "icon": [
+            "battery"
+          ],
+          "exec": [
+            "xfce4-power-manager-settings"
+          ],
+          "package": "xfce4-power-manager",
+          "keywords": [
+            "sleep",
+            "suspend",
+            "lid",
+            "battery",
+            "brightness"
+          ]
+        },
+        {
+          "id": "storage",
+          "label": "Storage",
+          "description": "Disk usage analyser and drives",
+          "icon": [
+            "drive-harddisk"
+          ],
+          "exec": [
+            "baobab"
+          ],
+          "alternatives": [
+            [
+              "gnome-disks"
+            ]
+          ],
+          "package": "baobab",
+          "keywords": [
+            "disk",
+            "usage",
+            "partition",
+            "drive",
+            "space"
+          ]
+        },
+        {
+          "id": "default-apps",
+          "label": "Default apps",
+          "description": "Web browser, mail, file manager, file type associations",
+          "icon": [
+            "preferences-desktop-default-applications"
+          ],
+          "exec": [
+            "xfce4-mime-settings"
+          ],
+          "package": "xfce4-settings",
+          "keywords": [
+            "browser",
+            "mime",
+            "associations",
+            "open with"
+          ]
+        },
+        {
+          "id": "bluetooth",
+          "label": "Bluetooth & devices",
+          "description": "Pair headphones, controllers, mice and keyboards",
+          "icon": [
+            "bluetooth"
+          ],
+          "exec": [
+            "blueman-manager"
+          ],
+          "package": "blueman",
+          "keywords": [
+            "pair",
+            "headphones",
+            "wireless"
+          ]
+        },
+        {
+          "id": "printers",
+          "label": "Printers & scanners",
+          "description": "Add and manage printers",
+          "icon": [
+            "printer"
+          ],
+          "exec": [
+            "system-config-printer"
+          ],
+          "package": "system-config-printer",
+          "keywords": [
+            "print",
+            "cups",
+            "scanner"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "personalization",
+      "title": "Personalization",
+      "icon": [
+        "preferences-desktop-wallpaper"
+      ],
+      "kind": "native",
+      "description": "Theme, accent colour, wallpaper, taskbar, fonts, cursor",
+      "keywords": [
+        "theme",
+        "dark",
+        "light",
+        "accent",
+        "colour",
+        "color",
+        "wallpaper",
+        "background",
+        "taskbar",
+        "font",
+        "cursor",
+        "lock screen"
+      ]
+    },
+    {
+      "id": "apps",
+      "title": "Apps",
+      "icon": [
+        "applications-other"
+      ],
+      "kind": "delegate",
+      "description": "Store, installed apps, startup, default apps, web browsers",
+      "keywords": [
+        "software",
+        "install",
+        "uninstall",
+        "store",
+        "startup",
+        "autostart",
+        "browser",
+        "edge",
+        "chrome",
+        "firefox"
+      ],
+      "subitems": [
+        {
+          "id": "store",
+          "label": "Store",
+          "description": "Browse and install applications (Software Manager)",
+          "icon": [
+            "system-software-install"
+          ],
+          "exec": [
+            "mintinstall"
+          ],
+          "package": "mintinstall",
+          "keywords": [
+            "software manager",
+            "flatpak",
+            "install"
+          ]
+        },
+        {
+          "id": "installed",
+          "label": "Installed apps",
+          "description": "Review and remove installed applications",
+          "icon": [
+            "package-x-generic"
+          ],
+          "exec": [
+            "mintinstall"
+          ],
+          "alternatives": [
+            [
+              "synaptic-pkexec"
+            ],
+            [
+              "synaptic"
+            ]
+          ],
+          "package": "mintinstall",
+          "keywords": [
+            "uninstall",
+            "remove",
+            "packages",
+            "synaptic"
+          ]
+        },
+        {
+          "id": "startup",
+          "label": "Startup",
+          "description": "Applications that start when you sign in",
+          "icon": [
+            "system-run"
+          ],
+          "exec": [
+            "xfce4-session-settings"
+          ],
+          "package": "xfce4-session",
+          "keywords": [
+            "autostart",
+            "login",
+            "session"
+          ]
+        },
+        {
+          "id": "default-apps",
+          "label": "Default apps",
+          "description": "Web browser, mail, file type associations",
+          "icon": [
+            "preferences-desktop-default-applications"
+          ],
+          "exec": [
+            "xfce4-mime-settings"
+          ],
+          "package": "xfce4-settings",
+          "keywords": [
+            "browser",
+            "mime",
+            "associations"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "windows-apps",
+      "title": "Windows apps",
+      "icon": [
+        "wine",
+        "application-x-executable"
+      ],
+      "kind": "native",
+      "description": "Run .exe/.msi programs through Wine / Proton, prefixes, recipes",
+      "keywords": [
+        "exe",
+        "msi",
+        "wine",
+        "proton",
+        "prefix",
+        "recipe",
+        "adobe",
+        "office",
+        "doctor",
+        "install a windows program"
+      ]
+    },
+    {
+      "id": "gaming",
+      "title": "Gaming",
+      "icon": [
+        "applications-games"
+      ],
+      "kind": "native",
+      "description": "Game Mode, MangoHud, Proton-GE, launchers, controllers, refresh rate",
+      "keywords": [
+        "steam",
+        "proton",
+        "lutris",
+        "heroic",
+        "roblox",
+        "minecraft",
+        "controller",
+        "gamepad",
+        "fps",
+        "mangohud",
+        "gamemode",
+        "anti-cheat",
+        "refresh"
+      ]
+    },
+    {
+      "id": "hardware",
+      "title": "Hardware",
+      "icon": [
+        "preferences-desktop-peripherals",
+        "preferences-system"
+      ],
+      "kind": "native",
+      "description": "CPU governor, GPU drivers, fans, power profile, RGB, TRIM",
+      "keywords": [
+        "cpu",
+        "gpu",
+        "nvidia",
+        "amd",
+        "intel",
+        "driver",
+        "governor",
+        "fan",
+        "sensors",
+        "temperature",
+        "power profile",
+        "openrgb",
+        "trim",
+        "ssd"
+      ]
+    },
+    {
+      "id": "network",
+      "title": "Network",
+      "icon": [
+        "network-workgroup",
+        "network-wireless"
+      ],
+      "kind": "delegate",
+      "description": "Wi-Fi, Ethernet, VPN, firewall",
+      "keywords": [
+        "wifi",
+        "ethernet",
+        "vpn",
+        "firewall",
+        "proxy",
+        "internet"
+      ],
+      "subitems": [
+        {
+          "id": "connections",
+          "label": "Network connections",
+          "description": "Wi-Fi, Ethernet, mobile broadband (NetworkManager)",
+          "icon": [
+            "network-wireless"
+          ],
+          "exec": [
+            "nm-connection-editor"
+          ],
+          "package": "network-manager-gnome",
+          "keywords": [
+            "wifi",
+            "ethernet",
+            "dns",
+            "ip"
+          ]
+        },
+        {
+          "id": "vpn",
+          "label": "VPN",
+          "description": "Add a VPN connection (OpenVPN, WireGuard, …)",
+          "icon": [
+            "network-vpn"
+          ],
+          "exec": [
+            "nm-connection-editor",
+            "--create",
+            "--type=vpn"
+          ],
+          "package": "network-manager-gnome",
+          "keywords": [
+            "openvpn",
+            "wireguard",
+            "tunnel"
+          ]
+        },
+        {
+          "id": "firewall",
+          "label": "Firewall",
+          "description": "Uncomplicated Firewall (gufw)",
+          "icon": [
+            "security-high"
+          ],
+          "exec": [
+            "gufw"
+          ],
+          "package": "gufw",
+          "keywords": [
+            "ufw",
+            "ports",
+            "security"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "accounts",
+      "title": "Accounts",
+      "icon": [
+        "system-users",
+        "avatar-default"
+      ],
+      "kind": "delegate",
+      "description": "Users, groups, your avatar",
+      "keywords": [
+        "user",
+        "password",
+        "avatar",
+        "picture",
+        "group",
+        "login"
+      ],
+      "subitems": [
+        {
+          "id": "users",
+          "label": "Users and groups",
+          "description": "Add users, change passwords, administrator rights",
+          "icon": [
+            "system-users"
+          ],
+          "exec": [
+            "users-admin"
+          ],
+          "alternatives": [
+            [
+              "mintusers"
+            ],
+            [
+              "cinnamon-settings",
+              "users"
+            ]
+          ],
+          "package": "gnome-system-tools",
+          "keywords": [
+            "password",
+            "administrator",
+            "sudo",
+            "add user"
+          ]
+        },
+        {
+          "id": "avatar",
+          "label": "Your info",
+          "description": "Change your name and profile picture (mugshot)",
+          "icon": [
+            "avatar-default"
+          ],
+          "exec": [
+            "mugshot"
+          ],
+          "package": "mugshot",
+          "keywords": [
+            "picture",
+            "photo",
+            "name",
+            "profile"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mode",
+      "title": "Lindos Mode",
+      "icon": [
+        "lindos-start",
+        "preferences-desktop"
+      ],
+      "kind": "native",
+      "description": "Everyday, Gaming, Work, Creator or Lite — switch any time",
+      "keywords": [
+        "everyday",
+        "gaming",
+        "work",
+        "creator",
+        "lite",
+        "profile",
+        "preset",
+        "switch"
+      ]
+    },
+    {
+      "id": "update",
+      "title": "Update & Recovery",
+      "icon": [
+        "system-software-update"
+      ],
+      "kind": "delegate",
+      "description": "Updates, drivers, snapshots, kernels",
+      "keywords": [
+        "update",
+        "upgrade",
+        "driver",
+        "timeshift",
+        "snapshot",
+        "backup",
+        "kernel",
+        "recovery"
+      ],
+      "subitems": [
+        {
+          "id": "updates",
+          "label": "Update Manager",
+          "description": "Install system and application updates",
+          "icon": [
+            "system-software-update"
+          ],
+          "exec": [
+            "mintupdate"
+          ],
+          "package": "mintupdate",
+          "keywords": [
+            "upgrade",
+            "apt",
+            "patch"
+          ]
+        },
+        {
+          "id": "drivers",
+          "label": "Driver Manager",
+          "description": "Proprietary drivers (NVIDIA, Wi-Fi, firmware)",
+          "icon": [
+            "jockey",
+            "preferences-desktop-peripherals"
+          ],
+          "exec": [
+            "mintdrivers"
+          ],
+          "package": "mintdrivers",
+          "keywords": [
+            "nvidia",
+            "broadcom",
+            "firmware"
+          ]
+        },
+        {
+          "id": "timeshift",
+          "label": "System snapshots (Timeshift)",
+          "description": "Restore points — roll back if an update breaks something",
+          "icon": [
+            "document-revert",
+            "timeshift"
+          ],
+          "exec": [
+            "timeshift-launcher"
+          ],
+          "alternatives": [
+            [
+              "timeshift-gtk"
+            ]
+          ],
+          "package": "timeshift",
+          "keywords": [
+            "backup",
+            "restore",
+            "snapshot",
+            "rollback"
+          ]
+        },
+        {
+          "id": "recovery",
+          "label": "Recovery",
+          "description": "Boot repair guide (opens in your browser)",
+          "icon": [
+            "system-help"
+          ],
+          "exec": [
+            "xdg-open",
+            "https://help.ubuntu.com/community/Boot-Repair"
+          ],
+          "package": "xdg-utils",
+          "keywords": [
+            "boot",
+            "grub",
+            "repair",
+            "rescue"
+          ]
+        },
+        {
+          "id": "kernels",
+          "label": "Kernels",
+          "description": "Manage Linux kernels (Update Manager → View → Linux Kernels)",
+          "icon": [
+            "system-software-update"
+          ],
+          "exec": [
+            "mintupdate"
+          ],
+          "package": "mintupdate",
+          "keywords": [
+            "kernel",
+            "linux",
+            "hwe"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "about",
+      "title": "About",
+      "icon": [
+        "help-about",
+        "dialog-information"
+      ],
+      "kind": "native",
+      "description": "Lindos version, device specifications",
+      "keywords": [
+        "version",
+        "specs",
+        "specifications",
+        "kernel",
+        "cpu",
+        "gpu",
+        "ram",
+        "hostname",
+        "device name"
+      ]
+    }
+  ]
+}

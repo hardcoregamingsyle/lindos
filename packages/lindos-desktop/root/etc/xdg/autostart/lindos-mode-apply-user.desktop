@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Mode (user part)
+Comment=Seeds the taskbar layout of the current Lindos Mode into a new user's XFCE config before the panel starts (runs once per user)
+Exec=/usr/libexec/lindos/first-login-panel.sh
+TryExec=/usr/libexec/lindos/first-login-panel.sh
+Icon=lindos-logo
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Phase=Initialization
+StartupNotify=false
+X-Lindos-Component=desktop

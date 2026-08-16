@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""lindos-gamescope-session -- entry point for the optional "Lindos Gaming" session.
+
+Registered as a Wayland session (see
+``/usr/share/wayland-sessions/lindos-gaming.desktop``), this starts gamescope
+(https://github.com/ValveSoftware/gamescope) as a standalone Wayland
+micro-compositor filling the screen and hosts a couch/controller launcher inside
+it -- Steam Big Picture by default, or any command you choose.  It is an EXTRA
+session picked at the login screen and does NOT replace or change the default
+Lindos (XFCE) desktop session.
+
+If gamescope or the chosen launcher is not installed the script prints a clear,
+one-line explanation and exits non-zero, so the display manager returns to the
+login screen instead of a black screen.
+
+gamescope is purely a display/compositor layer: nothing here defeats, hides or
+spoofs any anti-cheat, DRM or attestation, and running a title through gamescope
+does NOT make VM-blocking or kernel anti-cheat titles work (SPEC-VM Sec. 20/23).
+
+Usage:
+  lindos-gamescope-session [--print] [--launcher "CMD ..."] [-- CMD [ARGS...]]
+  lindos-gamescope-session                       # gamescope + Steam Big Picture
+  lindos-gamescope-session --launcher lutris     # gamescope hosting Lutris
+  lindos-gamescope-session -- heroic             # everything after -- is the command
+  lindos-gamescope-session --print               # show the command, run nothing
+
+Exit codes: 0 ok | 1 error (missing gamescope/launcher) | 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shlex
+import shutil
+import sys
+from typing import List, Optional, Sequence, Tuple
+
+LOG = logging.getLogger("lindos-gamescope-session")
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+
+__version__ = "1.0.0"
+
+# The default couch UI hosted inside gamescope when no launcher/command is given.
+DEFAULT_LAUNCHER: List[str] = ["steam", "-bigpicture"]
+
+
+def gamescope_available() -> bool:
+    return shutil.which("gamescope") is not None
+
+
+def launcher_available(program: str) -> bool:
+    return shutil.which(program) is not None
+
+
+def _split_dashdash(argv: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """Split at the first standalone ``--`` into (options, command)."""
+    argv = list(argv)
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1:]
+    return argv, []
+
+
+def build_session_argv(inner: Sequence[str]) -> List[str]:
+    """Assemble the standalone-session gamescope command line (pure).
+
+    Fullscreen output (``-f``) with Steam integration (``-e``).  Only standard
+    gamescope display options are emitted -- there are no anti-cheat/DRM/spoof
+    flags here to emit.
+    """
+    return ["gamescope", "-f", "-e", "--", *inner]
+
+
+def resolve_inner(command: Sequence[str], launcher: Optional[str]) -> List[str]:
+    """Pick the command hosted inside gamescope.
+
+    An explicit command (tokens after ``--``) wins; then ``--launcher`` (a single
+    string, shell-split); then the default Steam Big Picture UI.  Raises
+    ``ValueError`` if ``--launcher`` is given but empty / unparseable.
+    """
+    if command:
+        return list(command)
+    if launcher is not None:
+        inner = shlex.split(launcher)
+        if not inner:
+            raise ValueError("--launcher needs a command")
+        return inner
+    return list(DEFAULT_LAUNCHER)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="lindos-gamescope-session",
+        description="Start the optional 'Lindos Gaming' gamescope session (does not change the default XFCE session).",
+        epilog="Put a custom command after --:  lindos-gamescope-session -- heroic",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--launcher", metavar="CMD",
+                   help="launcher to run inside gamescope (default: steam -bigpicture)")
+    p.add_argument("--print", "--dry-run", dest="dry_run", action="store_true",
+                   help="print the resolved gamescope command instead of running it")
+    p.add_argument("--json", action="store_true", help="with --print, emit JSON")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--version", action="version", version=f"lindos-gamescope-session {__version__}")
+    return p
+
+
+def _exec(argv: List[str]) -> int:
+    LOG.debug("exec: %s", " ".join(argv))
+    try:
+        if os.name == "posix":
+            os.execvp(argv[0], argv)
+        import subprocess
+        return subprocess.run(argv, check=False).returncode
+    except OSError as exc:
+        LOG.error("could not start %s: %s", argv[0], exc)
+        return EXIT_ERROR
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    opt_args, command = _split_dashdash(raw)
+    parser = build_parser()
+    ns = parser.parse_args(opt_args)  # unknown options before -- are a usage error (exit 2)
+    logging.basicConfig(level=logging.DEBUG if ns.verbose else logging.INFO, format="%(message)s", stream=sys.stderr)
+
+    try:
+        inner = resolve_inner(command, ns.launcher)
+    except ValueError as exc:
+        LOG.error("%s", exc)
+        return EXIT_USAGE
+
+    cmd = build_session_argv(inner)
+
+    if ns.dry_run:
+        if ns.json:
+            print(json.dumps({"gamescope": gamescope_available(), "launcher": inner[0],
+                              "command": cmd}, indent=2))
+        else:
+            print(" ".join(cmd))
+        return EXIT_OK
+
+    if not gamescope_available():
+        LOG.error("gamescope is not installed, so the 'Lindos Gaming' session cannot start.")
+        LOG.error("Install it (sudo apt install gamescope) or log in to the standard Lindos (XFCE) session.")
+        return EXIT_ERROR
+
+    if not launcher_available(inner[0]):
+        if inner[0] == "steam":
+            LOG.error("Steam is not installed, so there is nothing to host in the Lindos Gaming session.")
+            LOG.error("Install Steam (lindos-game install steam, or apt install steam), "
+                      "or start with --launcher \"your-launcher\".")
+        else:
+            LOG.error("launcher %r was not found in PATH.", inner[0])
+        return EXIT_ERROR
+
+    LOG.info("starting gamescope session: %s", " ".join(cmd))
+    return _exec(cmd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

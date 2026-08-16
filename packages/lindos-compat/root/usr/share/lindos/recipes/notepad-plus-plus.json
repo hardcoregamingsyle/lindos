@@ -1,0 +1,23 @@
+{
+  "id": "notepad-plus-plus",
+  "name": "Notepad++",
+  "vendor": "Don Ho (notepad-plus-plus.org)",
+  "category": "utility",
+  "status": "works",
+  "summary": "Installs and runs perfectly through Wine, including plugins, themes and 'Open with' from the file manager.",
+  "notes": "Notepad++ (the free source-code editor) works out of the box through Wine: syntax highlighting, macros, plugins (Plugin Admin downloads work), themes, session restore, find in files, and drag-and-drop from Thunar. Use the 64-bit installer (npp.x.y.z.Installer.x64.exe) - a plain NSIS installer that needs no extra runtimes; the portable ZIP also works (unzip and run notepad++.exe with lindos-run).\nAfter the installer finishes Lindos adds 'Notepad++' to the Start Menu (Wine) and to Lindos Settings > Windows apps. To open text files with it by default: right-click a file in the file manager > Open With > Notepad++. Its own auto-updater (WinGUp) works, or just run the newer installer with the same command.\nThe only known differences: the Windows shell 'Edit with Notepad++' context-menu entry is not added (Linux file managers use the Start Menu entry instead), and dark-mode follows Wine's window theme, not the Lindos theme.\nNative alternatives on Lindos: Mousepad (pre-installed), Geany, VS Code / VSCodium, Kate.",
+  "installer_hint": "lindos-run --prefix notepad-plus-plus ~/Downloads/npp.8.7.Installer.x64.exe",
+  "homepage": "https://notepad-plus-plus.org",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Mousepad", "how": "already installed on Lindos (Start Menu > Accessories)"},
+    {"name": "Geany", "how": "native, lightweight IDE-style editor: apt install geany"},
+    {"name": "VS Code / VSCodium", "how": "native: Lindos Settings > Apps > Store, or Flatpak com.vscodium.codium"}
+  ]
+}

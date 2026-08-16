@@ -1,0 +1,57 @@
+# 60-lindos-controllers.rules — game-controller device permissions (Lindos, lindos-gaming)
+#
+# Lets the logged-in user (systemd-logind "uaccess" ACL) and members of the
+# "input" group talk to gamepads over hidraw/USB (Steam Input, SDL, Proton,
+# antimicrox, piper) without root, and tags them as joysticks so desktop tools
+# and games find them.  Complements Valve's steam-devices (60-steam-input.rules)
+# and the kernel's default 50-udev rules; nothing here loads or replaces drivers
+# (xpadneo/xone are optional: `lindos-drivers xpadneo|xone install`).
+#
+# Vendor IDs: 045e Microsoft (Xbox) · 054c Sony (DualShock/DualSense) ·
+#             057e Nintendo (Switch Pro/Joy-Con) · 2dc8 8BitDo · 28de Valve (Steam
+#             Controller/Deck) · 046d Logitech (F310/F510/F710/G29 etc.)
+#
+# Reload:  udevadm control --reload-rules && udevadm trigger --subsystem-match=hidraw --subsystem-match=input
+
+ACTION=="remove", GOTO="lindos_controllers_end"
+
+# ---- uinput: needed by Steam Input, SDL virtual devices, xboxdrv, MoltenGamepad, antimicrox
+KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+# ---- hidraw: raw HID access for the supported vendors (USB and Bluetooth)
+SUBSYSTEM=="hidraw", KERNELS=="*045E:*", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="*054C:*", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="*057E:*", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="*2DC8:*", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="*28DE:*", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="*046D:*", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# ---- USB device nodes (libusb access, firmware/LED tools such as piper/openrgb, Steam)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="054c", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="057e", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2dc8", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="28de", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# ---- evdev / joystick nodes: mark as joystick so udev's ID_INPUT_JOYSTICK consumers
+#      (SDL, Steam, xfce4-settings, gamepad testers) see them, and grant uaccess.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="045e", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="054c", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="057e", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="2dc8", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="28de", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+# Logitech makes keyboards and mice too — only their gamepad/wheel product ids
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c21d|c21e|c21f|c216|c218|c219|c294|c298|c299|c29a|c29b|c24f|c260|c261|c262|c26d|c26e|c266|c267|c268|c269|c26a|c26b|c26c|c272|c283|c286|c287|c293|c295|c29c|ca03|ca04", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# ---- Bluetooth controllers show up without idVendor on the input node; match the
+#      bluetooth-side vendor id (uniq/name are unreliable) via the hid parent.
+SUBSYSTEM=="input", KERNEL=="event*|js*", KERNELS=="*:045E:*", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", KERNELS=="*:054C:*", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", KERNELS=="*:057E:*", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*|js*", KERNELS=="*:2DC8:*", ENV{ID_INPUT_JOYSTICK}="1", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# ---- Sony DualShock 4 / DualSense (USB + Bluetooth): allow the motion-sensor and
+#      touchpad sub-devices as well (hid-playstation exposes them separately).
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="054c", ATTRS{idProduct}=="05c4|09cc|0ba0|0ce6|0df2|0e5f", MODE="0660", GROUP="input", TAG+="uaccess"
+
+LABEL="lindos_controllers_end"

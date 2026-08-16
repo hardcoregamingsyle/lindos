@@ -1,0 +1,82 @@
+#!/bin/sh
+# postrm for lindos-desktop -- idempotent
+set -e
+
+log() { printf 'lindos-desktop: %s\n' "$*"; }
+
+PLYMOUTH_DIR=/usr/share/plymouth/themes/lindos
+
+case "${1:-}" in
+    remove|purge)
+        # generated (not shipped) files
+        rm -f "$PLYMOUTH_DIR/logo.png" "$PLYMOUTH_DIR/dot.png" "$PLYMOUTH_DIR/bar-bg.png" "$PLYMOUTH_DIR/bar-fg.png"
+        for m in everyday gaming work creator lite; do
+            rm -f "/usr/share/lindos/modes/$m/panel.tar.bz2"
+        done
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        if command -v fc-cache >/dev/null 2>&1; then
+            fc-cache -f -s >/dev/null 2>&1 || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        # undo the preinst diversions (restores the distribution's XFCE/LightDM defaults)
+        if command -v dpkg-divert >/dev/null 2>&1; then
+            for f in /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/thunar.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml \
+                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/keyboards.xml \
+                     /etc/xdg/xfce4/panel/whiskermenu-1.rc \
+                     /etc/xdg/xfce4/panel/docklike-2.rc \
+                     /etc/xdg/gtk-3.0/settings.ini \
+                     /etc/lightdm/slick-greeter.conf; do
+                if dpkg-divert --list "$f" 2>/dev/null | grep -q "by lindos-desktop\$"; then
+                    # our file is gone by now (or is a leftover conffile on 'remove'); move it
+                    # aside so --rename can put the original back
+                    if [ -e "$f" ] && [ -e "$f.lindos-orig" ]; then
+                        rm -f "$f"
+                    fi
+                    dpkg-divert --package lindos-desktop --remove --rename --quiet "$f" || true
+                fi
+            done
+        fi
+        # Plymouth / wallpaper alternatives: hand the defaults back to whatever else is installed
+        if command -v update-alternatives >/dev/null 2>&1; then
+            update-alternatives --remove default.plymouth "$PLYMOUTH_DIR/lindos.plymouth" 2>/dev/null || true
+            update-alternatives --remove desktop-background /usr/share/backgrounds/lindos/aurora-dark.svg 2>/dev/null || true
+        fi
+        # /etc/os-release and /etc/issue branding is left in place on plain remove (they are
+        # sed'ed system files, not ours); purge restores the saved originals.
+        if [ "$1" = "purge" ]; then
+            if [ -x /usr/libexec/lindos/apply-branding.sh ]; then
+                /usr/libexec/lindos/apply-branding.sh --revert --quiet 2>/dev/null || true
+            else
+                if [ -f /etc/os-release.lindos-orig ]; then
+                    cat /etc/os-release.lindos-orig >/etc/os-release 2>/dev/null || true
+                    rm -f /etc/os-release.lindos-orig
+                    log "restored original /etc/os-release"
+                fi
+                for f in /etc/issue /etc/issue.net; do
+                    if [ -f "$f.lindos-orig" ]; then
+                        mv -f "$f.lindos-orig" "$f" 2>/dev/null || true
+                    fi
+                done
+            fi
+            rm -f /etc/lindos-release
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

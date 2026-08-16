@@ -1,0 +1,24 @@
+{
+  "id": "office-365",
+  "name": "Microsoft 365 / Office 365 (Click-to-Run)",
+  "vendor": "Microsoft",
+  "category": "office",
+  "status": "broken",
+  "summary": "Does NOT install through Wine: the Click-to-Run online installer and Microsoft-account sign-in need Windows components Wine lacks.",
+  "notes": "Microsoft 365 (the subscription 'Office 365' apps) cannot be installed through Wine or Proton on Lindos or any other Linux. The Click-to-Run installer (OfficeSetup.exe / setup.exe from office.com) uses a virtualised app layer (AppV) and Windows Update-style streaming that Wine does not implement, and the apps require signing in with a Microsoft account through WebView2/Edge components that do not work either. Older builds that people managed to install stop working at the first update.\nWhat does work: an Office 2016/2019/2021 32-bit offline installer activated with a product key (see recipe 'office-2016'), and the alternatives below - all of them open and save .docx/.xlsx/.pptx.\nIf you only need your Microsoft 365 subscription: use Office for the web at https://www.office.com in Edge/Chrome/Firefox (Word, Excel, PowerPoint, Outlook, OneDrive, Teams) - it is included in the subscription and works fully on Lindos.",
+  "installer_hint": "",
+  "homepage": "https://www.office.com",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "LibreOffice", "how": "already installed on Lindos: Start Menu > Office (Writer, Calc, Impress) - opens/saves Office formats"},
+    {"name": "OnlyOffice Desktop Editors", "how": "native, closest to the Office look and best .docx fidelity: Flatpak org.onlyoffice.desktopeditors or Lindos Settings > Apps > Store"},
+    {"name": "Office for the web (office.com)", "how": "your Microsoft 365 subscription in the browser: Word, Excel, PowerPoint, Outlook, OneDrive, Teams"},
+    {"name": "Office 2016 offline installer", "how": "runs through Wine with a product key: lindos-compat recipes apply office-2016"}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "photoshop-cc-2021",
+  "name": "Adobe Photoshop CC 2021 (v22)",
+  "vendor": "Adobe",
+  "category": "creator",
+  "status": "partial",
+  "summary": "Runs for everyday editing through Wine; GPU features, Neural Filters and Creative Cloud sign-in do not work.",
+  "notes": "Photoshop 2021 (22.x) is the last release that runs acceptably through Wine; 2022+ (v23/v24) crash or fail to install - use the 2021 build. You need the standalone (offline) Photoshop 2021 installer and a licence you already own; the Creative Cloud desktop app itself does NOT run, so 'Sign in', Creative Cloud sync and Adobe Fonts are unavailable.\nAfter installing: Edit > Preferences > Performance > untick 'Use Graphics Processor' (GPU acceleration, Neural Filters, 3D and some blur/lens filters need DirectX/OpenCL features Wine cannot provide). Camera Raw works in CPU mode. Large files and Liquify are slower than on Windows.\nThis recipe creates a 64-bit C:\\ drive with the runtimes Photoshop expects (Visual C++ 2019, GDI+, ATM, MSXML, core fonts, RGB font smoothing) and sets Windows 10 as the reported version. It also works inside Bottles (Creator mode) with the same winetricks verbs.\nNative alternatives on Lindos: GIMP, Krita (painting), Photopea (web, PSD compatible).",
+  "installer_hint": "Set-up.exe from the standalone Photoshop 2021 package: lindos-run --prefix photoshop-cc-2021 ~/Downloads/Set-up.exe",
+  "homepage": "https://www.adobe.com/products/photoshop.html",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": ["vcrun2019", "fontsmooth=rgb", "gdiplus", "atmlib", "msxml6", "msxml3", "corefonts", "win10"],
+  "dll_overrides": {"gdiplus": "native,builtin", "atmlib": "native,builtin", "msxml6": "native,builtin", "msxml3": "native,builtin"},
+  "env": {"WINEESYNC": "1"},
+  "post_cmds": [],
+  "registry": [
+    {"key": "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D", "name": "renderer", "type": "REG_SZ", "value": "gl"}
+  ],
+  "alternatives": [
+    {"name": "GIMP", "how": "native, free: Lindos Settings > Apps > Store, or: apt install gimp"},
+    {"name": "Krita", "how": "native painting/illustration: apt install krita (or Flatpak org.kde.krita)"},
+    {"name": "Photopea", "how": "web app that opens/saves PSD files: https://www.photopea.com"}
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "office-2016",
+  "name": "Microsoft Office 2016 (Word, Excel, PowerPoint)",
+  "vendor": "Microsoft",
+  "category": "office",
+  "status": "works",
+  "summary": "Word, Excel and PowerPoint 2016 (32-bit) work through Wine; activate with a product key, not a Microsoft account.",
+  "notes": "Office 2016 installed from the 32-bit offline installer (Office Professional Plus / Home & Business ISO, or the 32-bit setup from your Microsoft account page) works through Wine for everyday documents: Word, Excel (incl. macros/VBA), PowerPoint, Publisher and Access open, edit, print and export PDF. Use a product key (KMS/MAK/retail) for activation - 'Sign in' with a Microsoft account, OneDrive sync, Outlook's Exchange/Modern-auth accounts, Skype for Business and the Store are NOT available. Outlook with IMAP/POP works partially. Office 2019/2021 32-bit behave similarly; Microsoft 365 (Click-to-Run online installer) does NOT install - see the office-365 recipe.\nInstall tips: run the setup.exe from the mounted ISO ('lindos-run --prefix office-2016 /path/to/setup.exe'); when the installer says 'Office 2016 has been installed', close it and start Word from the Start Menu > Wine. Font rendering is best with the Microsoft core fonts (winetricks corefonts is included in this recipe). If a document shows only boxes, run 'lindos-compat recipes apply office-2016' again to reinstall the fonts. The 64-bit Office setup also runs but the 32-bit build is the tested path.\nThis recipe creates a 32-bit C:\\ drive with MSXML 6, RichEdit 2.0 (riched20), core fonts, Windows 7 as reported version and disables the Wine crash dialog.\nNative alternatives on Lindos: LibreOffice (pre-installed, opens/saves .docx/.xlsx/.pptx), OnlyOffice Desktop Editors (closest look to Office), office.com in the browser (free with a Microsoft account).",
+  "installer_hint": "setup.exe from the 32-bit Office 2016 ISO: lindos-run --prefix office-2016 /media/$USER/OFFICE16/setup.exe",
+  "homepage": "https://www.microsoft.com/microsoft-365",
+  "runner": "wine",
+  "arch": "win32",
+  "winetricks": ["msxml6", "riched20", "corefonts", "win7"],
+  "dll_overrides": {"riched20": "native,builtin", "msxml6": "native,builtin"},
+  "env": {},
+  "post_cmds": [],
+  "registry": [
+    {"key": "HKEY_CURRENT_USER\\Software\\Wine\\WineDbg", "name": "ShowCrashDialog", "type": "REG_DWORD", "value": "0"}
+  ],
+  "alternatives": [
+    {"name": "LibreOffice", "how": "already installed on Lindos: Start Menu > Office (Writer, Calc, Impress)"},
+    {"name": "OnlyOffice Desktop Editors", "how": "native, closest to the Office look: Flatpak org.onlyoffice.desktopeditors or Lindos Settings > Apps > Store"},
+    {"name": "Office for the web (office.com)", "how": "free Word/Excel/PowerPoint in the browser with a Microsoft account"}
+  ]
+}

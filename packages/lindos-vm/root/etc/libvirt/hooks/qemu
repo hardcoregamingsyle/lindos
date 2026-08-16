@@ -1,0 +1,116 @@
+#!/bin/bash
+# /etc/libvirt/hooks/qemu — Lindos single-GPU passthrough hook (SPEC-VM §21.3).
+#
+# On a single-GPU machine, the host and the VM cannot both drive the one GPU at once.  When a
+# *managed* domain starts, this hook stops the display manager and releases the GPU/console
+# from the host so it can be handed to the guest; when the domain stops, it reverses that and
+# brings the host desktop back.
+#
+# It contains NO detection-evasion of any kind — it neither hides the hypervisor nor forges
+# any firmware/ACPI data.  It only moves the GPU between host and guest.  It is guarded and
+# idempotent, logs to /var/log/lindos/vm-hook.log, and NO-OPS for any domain it
+# does not manage (managed domains are listed one-per-line in
+# /etc/lindos/vm/single-gpu-domains).  libvirt calls it as:  qemu <guest> <op> <subop> <extra>
+set -Eeuo pipefail
+
+GUEST="${1:-}"
+OP="${2:-}"
+SUBOP="${3:-}"
+
+MANAGED_LIST="/etc/lindos/vm/single-gpu-domains"
+GPU_MODULES_FILE="/etc/lindos/vm/single-gpu-modules"   # optional: host GPU kernel modules
+LOG_DIR="/var/log/lindos"
+LOG="${LOG_DIR}/vm-hook.log"
+
+log() {
+    mkdir -p "${LOG_DIR}" 2>/dev/null || true
+    printf '%s qemu-hook[%s]: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "${GUEST:-?}" "$*" \
+        >>"${LOG}" 2>/dev/null || true
+}
+
+# Is this guest one we manage for single-GPU passthrough?
+is_managed() {
+    [ -n "${GUEST}" ] || return 1
+    [ -r "${MANAGED_LIST}" ] || return 1
+    grep -qxF -- "${GUEST}" "${MANAGED_LIST}" 2>/dev/null
+}
+
+# Host GPU modules to unload before passthrough / reload after (best-effort, configurable).
+host_gpu_modules() {
+    if [ -r "${GPU_MODULES_FILE}" ]; then
+        grep -vE '^\s*#|^\s*$' "${GPU_MODULES_FILE}" 2>/dev/null || true
+        return 0
+    fi
+    # sensible defaults, tried in order; absent modules are simply skipped
+    printf '%s\n' nvidia_drm nvidia_modeset nvidia_uvm nvidia amdgpu radeon i915
+}
+
+detach_gpu() {
+    log "detach: stopping display manager and releasing GPU/console from host"
+    systemctl stop display-manager.service >/dev/null 2>&1 || true
+
+    # release the framebuffer/consoles so the driver can be unbound
+    for vtcon in /sys/class/vtconsole/vtcon*/bind; do
+        [ -w "${vtcon}" ] && echo 0 >"${vtcon}" 2>/dev/null || true
+    done
+    if [ -e /sys/bus/platform/drivers/efi-framebuffer/unbind ]; then
+        echo efi-framebuffer.0 >/sys/bus/platform/drivers/efi-framebuffer/unbind 2>/dev/null || true
+    fi
+    if [ -e /sys/bus/platform/drivers/simple-framebuffer/unbind ]; then
+        for fb in /sys/bus/platform/drivers/simple-framebuffer/simple-framebuffer.*; do
+            [ -e "${fb}" ] && echo "$(basename "${fb}")" \
+                >/sys/bus/platform/drivers/simple-framebuffer/unbind 2>/dev/null || true
+        done
+    fi
+
+    while read -r mod; do
+        [ -n "${mod}" ] || continue
+        modprobe -r "${mod}" >/dev/null 2>&1 || true
+    done < <(host_gpu_modules)
+
+    modprobe vfio-pci >/dev/null 2>&1 || true
+    log "detach: done (managed=libvirt will bind the passthrough devices next)"
+}
+
+attach_gpu() {
+    log "reattach: returning GPU to host and restarting display manager"
+    modprobe -r vfio_pci vfio_iommu_type1 vfio >/dev/null 2>&1 || true
+
+    # reload host GPU modules in reverse-of-unload order (best-effort)
+    local mods=()
+    while read -r mod; do
+        [ -n "${mod}" ] && mods+=("${mod}")
+    done < <(host_gpu_modules)
+    for (( idx=${#mods[@]}-1 ; idx>=0 ; idx-- )); do
+        modprobe "${mods[idx]}" >/dev/null 2>&1 || true
+    done
+
+    for vtcon in /sys/class/vtconsole/vtcon*/bind; do
+        [ -w "${vtcon}" ] && echo 1 >"${vtcon}" 2>/dev/null || true
+    done
+    if [ -e /sys/bus/platform/drivers/efi-framebuffer/bind ]; then
+        echo efi-framebuffer.0 >/sys/bus/platform/drivers/efi-framebuffer/bind 2>/dev/null || true
+    fi
+
+    systemctl start display-manager.service >/dev/null 2>&1 || true
+    log "reattach: done"
+}
+
+if ! is_managed; then
+    # Not our domain (or no managed list): do nothing at all.
+    exit 0
+fi
+
+case "${OP}:${SUBOP}" in
+    prepare:begin)
+        detach_gpu
+        ;;
+    release:end|stopped:end)
+        attach_gpu
+        ;;
+    *)
+        : # other phases are no-ops for us
+        ;;
+esac
+
+exit 0

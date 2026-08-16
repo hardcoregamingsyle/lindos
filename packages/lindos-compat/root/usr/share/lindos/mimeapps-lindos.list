@@ -1,0 +1,18 @@
+# Lindos: open Windows programs with lindos-run (Wine/Proton) by default.
+# Merged into /etc/xdg/mimeapps.list by the lindos-compat postinst (SPEC §9);
+# users can still change the default in Settings > Default apps.
+[Default Applications]
+application/x-ms-dos-executable=lindos-run.desktop
+application/x-msdownload=lindos-run.desktop
+application/vnd.microsoft.portable-executable=lindos-run.desktop
+application/x-msi=lindos-run.desktop
+application/x-ms-shortcut=lindos-run.desktop
+application/x-bat=lindos-run.desktop
+
+[Added Associations]
+application/x-ms-dos-executable=lindos-run.desktop;
+application/x-msdownload=lindos-run.desktop;
+application/vnd.microsoft.portable-executable=lindos-run.desktop;
+application/x-msi=lindos-run.desktop;
+application/x-ms-shortcut=lindos-run.desktop;
+application/x-bat=lindos-run.desktop;

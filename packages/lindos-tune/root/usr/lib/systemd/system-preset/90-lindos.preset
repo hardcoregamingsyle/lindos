@@ -1,0 +1,25 @@
+# /usr/lib/systemd/system-preset/90-lindos.preset — Lindos idle-RAM debloat (SPEC §8, §11).
+# Applied by `systemctl preset` (lindos-tune apply, first run) and for freshly installed units.
+# Not listed → distribution default. avahi-daemon stays enabled (printer discovery),
+# cups is socket/path activated instead of always-on.
+enable earlyoom.service
+enable fstrim.timer
+enable zramswap.service
+enable cups.socket
+enable cups.path
+enable avahi-daemon.service
+enable lindos-sensors-detect.service
+disable bluetooth.service
+disable ModemManager.service
+disable cups.service
+disable cups-browsed.service
+disable NetworkManager-wait-online.service
+disable apport.service
+disable whoopsie.service
+disable kerneloops.service
+disable brltty.service
+disable speech-dispatcher.service
+disable ubuntu-report.service
+disable motd-news.timer
+disable apt-daily.timer
+disable apt-daily-upgrade.timer

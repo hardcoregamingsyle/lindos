@@ -1,0 +1,145 @@
+/*
+ * xfce4-notifyd theme "Lindos" — Windows-11-style toast (SPEC §5).
+ * Selected by /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml (theme=Lindos);
+ * shown bottom-right, dark card #2B2B2B on rounded 8 px corners with a subtle border and
+ * an accent-coloured left edge; light-on-dark text, pill buttons.
+ * Lives under /usr/share/themes/Lindos/ (not Lindos-Dark) on purpose: the Fluent installer
+ * recreates the Lindos-Dark/-Light directories at build time.
+ */
+
+@define-color lindos_accent #60CDFF;
+@define-color toast_bg rgba(43, 43, 43, 0.97);
+@define-color toast_fg #FFFFFF;
+@define-color toast_fg_dim rgba(255, 255, 255, 0.72);
+@define-color toast_stroke rgba(255, 255, 255, 0.10);
+
+.xfce4-notifyd {
+  font: normal 10pt "Selawik", "Inter", "Noto Sans", sans-serif;
+  color: @toast_fg;
+  background-color: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+  margin: 0;
+}
+
+.xfce4-notifyd .notification-content,
+.xfce4-notifyd .notification-window,
+.xfce4-notifyd #notification-window {
+  background-color: @toast_bg;
+  border: 1px solid @toast_stroke;
+  border-left: 3px solid @lindos_accent;
+  border-radius: 8px;
+  padding: 12px 14px 12px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.xfce4-notifyd:hover .notification-content,
+.xfce4-notifyd:hover #notification-window {
+  background-color: rgba(50, 50, 50, 0.98);
+}
+
+.xfce4-notifyd .summary,
+.xfce4-notifyd #summary {
+  font-weight: 600;
+  font-size: 10.5pt;
+  color: @toast_fg;
+}
+
+.xfce4-notifyd .body,
+.xfce4-notifyd #body {
+  font-size: 9.5pt;
+  color: @toast_fg_dim;
+}
+
+.xfce4-notifyd .app-name,
+.xfce4-notifyd #app-name {
+  font-size: 8.5pt;
+  color: @toast_fg_dim;
+}
+
+.xfce4-notifyd image,
+.xfce4-notifyd .icon,
+.xfce4-notifyd #icon {
+  margin-right: 10px;
+}
+
+.xfce4-notifyd button,
+.xfce4-notifyd .action-button {
+  background-image: none;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: @toast_fg;
+  border: 1px solid @toast_stroke;
+  border-radius: 6px;
+  min-height: 28px;
+  padding: 2px 12px;
+  margin: 6px 6px 0 0;
+  text-shadow: none;
+  box-shadow: none;
+}
+
+.xfce4-notifyd button:hover,
+.xfce4-notifyd .action-button:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+.xfce4-notifyd button:active,
+.xfce4-notifyd .action-button:active {
+  background-color: @lindos_accent;
+  color: #000000;
+  border-color: @lindos_accent;
+}
+
+.xfce4-notifyd button.close,
+.xfce4-notifyd .close-button,
+.xfce4-notifyd #close-button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0;
+  color: @toast_fg_dim;
+}
+
+.xfce4-notifyd button.close:hover,
+.xfce4-notifyd #close-button:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: @toast_fg;
+}
+
+.xfce4-notifyd progressbar,
+.xfce4-notifyd .gauge {
+  min-height: 4px;
+  margin: 8px 0 2px 0;
+}
+
+.xfce4-notifyd progressbar > trough,
+.xfce4-notifyd .gauge trough {
+  background-color: rgba(255, 255, 255, 0.10);
+  border: none;
+  border-radius: 4px;
+  min-height: 4px;
+}
+
+.xfce4-notifyd progressbar > trough > progress,
+.xfce4-notifyd .gauge progress {
+  background-image: none;
+  background-color: @lindos_accent;
+  border: none;
+  border-radius: 4px;
+  min-height: 4px;
+}
+
+.xfce4-notifyd.urgent .notification-content,
+.xfce4-notifyd.critical .notification-content,
+.xfce4-notifyd.urgent #notification-window,
+.xfce4-notifyd.critical #notification-window {
+  border-left-color: #FF99A4;
+}
+
+.xfce4-notifyd.low .notification-content,
+.xfce4-notifyd.low #notification-window {
+  border-left-color: rgba(255, 255, 255, 0.35);
+}

@@ -1,0 +1,35 @@
+#!/bin/sh
+# postinst for lindos-kernel — idempotent (SPEC-KERNEL §15, base SPEC §1.1).
+# Never fails the install: regenerating grub is best-effort.
+set -e
+
+PYLIB="/usr/lib/lindos-kernel/lindos_kernel"
+CLI="/usr/bin/lindos-kernel"
+GRUB_DROPIN_DIR="/etc/default/grub.d"
+
+case "$1" in
+    configure)
+        # the CLI must be executable (mkdeb fixes perms, but be safe on manual installs)
+        [ -f "$CLI" ] && chmod 0755 "$CLI" || true
+
+        # byte-compile the library (never fatal: python3 may be a different minor version)
+        if command -v py3compile >/dev/null 2>&1; then
+            py3compile -p lindos-kernel "$PYLIB" 2>/dev/null || true
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 -m compileall -q "$PYLIB" 2>/dev/null || true
+        fi
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -m py_compile "$CLI" 2>/dev/null || true
+        fi
+
+        # regenerate the boot menu so the conservative cmdline drop-in takes effect.
+        # Best-effort only: a chroot / container without grub must not fail the install.
+        if [ -d "$GRUB_DROPIN_DIR" ] && command -v update-grub >/dev/null 2>&1; then
+            update-grub 2>/dev/null || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

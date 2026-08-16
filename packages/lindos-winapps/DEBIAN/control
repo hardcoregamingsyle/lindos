@@ -1,0 +1,29 @@
+Package: lindos-winapps
+Version: 1.0.0
+Section: otherosfs
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), lindos-core (>= 1.0.0), freerdp3-x11 | freerdp2-x11
+Recommends: lindos-vm | libvirt-daemon-system, desktop-file-utils
+Suggests: podman
+Homepage: https://lindos.dev
+Description: Seamless Windows apps on Lindos over RDP (Adobe / Office)
+ Runs individual Windows programs - Photoshop, Illustrator, Premiere, Word,
+ Excel, PowerPoint, Outlook, File Explorer - each in its own window on the
+ Lindos desktop, using FreeRDP RemoteApp against a backend Windows instance.
+ This is the winapps-org/winapps pattern: the Windows program runs on real
+ Windows (the lindos-vm libvirt VM "RDPWindows" by default, or an optional
+ podman dockur/windows container) and only its window is forwarded over RDP.
+ Ships:
+  * lindos-winapps  — setup / check / list / install / run / remove.  'setup'
+                      writes ~/.config/lindos/winapps/winapps.conf and points
+                      you at FreeRDP credential handling; 'install <id>' puts a
+                      Windows program in the Lindos menu; 'run <id>' launches it
+                      through xfreerdp RemoteApp.
+  * apps.json       — catalog of well-known Windows programs and their paths.
+ Honesty: this needs a user-supplied, licensed Windows plus the licensed app
+ installed inside the backend.  Lindos never downloads Windows, never enters or
+ stores your Windows/app credentials, and never bypasses activation.  It is a
+ real, honestly-labelled Windows session over RDP - not an emulator, and it
+ does not defeat VM-blocking anti-cheat.

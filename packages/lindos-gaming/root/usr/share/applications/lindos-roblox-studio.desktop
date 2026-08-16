@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Roblox Studio
+GenericName=Roblox Studio (Vinegar)
+Comment=Roblox Studio via Vinegar (Lindos) — runs the Windows Studio through Wine
+Exec=flatpak run org.vinegarhq.Vinegar
+Icon=lindos-roblox
+Terminal=false
+Categories=Development;Game;
+Keywords=roblox;studio;vinegar;wine;
+StartupNotify=true
+StartupWMClass=org.vinegarhq.Vinegar
+Actions=install;
+X-Lindos-Launcher=vinegar
+X-Lindos-Flatpak=org.vinegarhq.Vinegar
+X-Lindos-Note=Vinegar wraps Roblox Studio (not the player) in a managed Wine prefix; installed from Flathub by "lindos-game install vinegar".
+
+[Desktop Action install]
+Name=Install or repair Vinegar (Lindos)
+Exec=lindos-game launch vinegar --install

@@ -1,0 +1,12 @@
+# /etc/modprobe.d/vfio.conf — Lindos VM GPU passthrough (SPEC-VM §21).
+#
+# Binds the passthrough GPU (and its companion HD-audio / USB functions) to vfio-pci at
+# boot so the host never claims them and they can be handed to the Windows VM.  Generated
+# by `lindos-vm setup`; install with the pkexec command it prints.  @@IDS@@ is a
+# comma-separated list of PCI vendor:device ids, e.g. 10de:2482,10de:228b .
+#
+# This is a standard, honest passthrough configuration.  It contains no detection-evasion of
+# any kind.
+
+options vfio-pci ids=@@IDS@@
+softdep drm pre: vfio-pci

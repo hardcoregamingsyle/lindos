@@ -1,0 +1,11 @@
+/etc/lindos/tune.d/everyday.conf
+/etc/lindos/tune.d/gaming.conf
+/etc/lindos/tune.d/work.conf
+/etc/lindos/tune.d/creator.conf
+/etc/lindos/tune.d/lite.conf
+/etc/systemd/journald.conf.d/lindos.conf
+/etc/tmpfiles.d/lindos.conf
+/etc/ananicy.d/lindos/lindos.types
+/etc/ananicy.d/lindos/lindos-games.rules
+/etc/ananicy.d/lindos/lindos-browsers.rules
+/etc/ananicy.d/lindos/lindos-compilers.rules

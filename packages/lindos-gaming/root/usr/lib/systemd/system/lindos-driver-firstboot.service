@@ -1,0 +1,23 @@
+[Unit]
+Description=Lindos: detect recommended GPU/Wi-Fi/audio drivers once at first boot
+Documentation=man:lindos-drivers(1)
+# Runs exactly once per installation: the marker is written by the script.  It only DETECTS and
+# records recommendations (and, when online + not OEM, writes an install offer for the OOBE /
+# Lindos Settings to surface) — it NEVER installs proprietary drivers without user consent
+# (SPEC-VM.md section 24).  Never runs inside containers/chroots.
+ConditionPathExists=!/var/lib/lindos/driver-firstboot.done
+ConditionVirtualization=!container
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lindos/driver-firstboot.sh
+# Best effort: autodetect must never block or fail the boot.
+TimeoutStartSec=120
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

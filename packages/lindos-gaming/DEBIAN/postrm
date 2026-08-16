@@ -1,0 +1,28 @@
+#!/bin/sh
+# postrm for lindos-gaming — idempotent.
+set -e
+
+case "${1:-}" in
+    remove|purge)
+        if command -v udevadm >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            udevadm control --reload-rules 2>/dev/null || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        if [ "$1" = "purge" ]; then
+            # /etc/modprobe.d/nvidia-lindos.conf (written by `lindos-drivers install`) is left in
+            # place on purpose: it only enables nvidia-drm modeset and removing it could change
+            # how the installed NVIDIA driver boots.
+            rm -f /var/log/lindos/install-gaming.log /var/log/lindos/install-xpadneo.log \
+                  /var/log/lindos/install-xone.log 2>/dev/null || true
+        fi
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

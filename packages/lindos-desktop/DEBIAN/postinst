@@ -1,0 +1,75 @@
+#!/bin/sh
+# postinst for lindos-desktop -- idempotent, offline (never downloads anything)
+set -e
+
+log() { printf 'lindos-desktop: %s\n' "$*"; }
+
+PLYMOUTH_DIR=/usr/share/plymouth/themes/lindos
+
+case "${1:-}" in
+    configure)
+        # 1. helper scripts must be executable even if the builder missed them
+        for f in /usr/bin/lindos-compositor \
+                 /usr/libexec/lindos/apply-branding.sh \
+                 /usr/libexec/lindos/build-panel-profiles.sh \
+                 /usr/libexec/lindos/first-login-panel.sh \
+                 /usr/libexec/lindos/panel-profile-pack.py \
+                 /usr/libexec/lindos/plymouth-gen-assets.py; do
+            if [ -f "$f" ] && [ ! -x "$f" ]; then
+                chmod 0755 "$f"
+            fi
+        done
+
+        # 2. icon caches (hicolor gets lindos-start / lindos-logo / lindos-settings ...)
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            for d in /usr/share/icons/hicolor /usr/share/icons/Lindos /usr/share/icons/Lindos-dark; do
+                if [ -d "$d" ] && [ -f "$d/index.theme" ]; then
+                    gtk-update-icon-cache -q -t -f "$d" 2>/dev/null || log "gtk-update-icon-cache $d failed (ignored)"
+                fi
+            done
+        fi
+        if command -v update-icon-caches >/dev/null 2>&1; then
+            update-icon-caches /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+
+        # 3. font configuration (60-lindos-ui.conf aliases Segoe UI -> Selawik)
+        if command -v fc-cache >/dev/null 2>&1; then
+            fc-cache -f -s >/dev/null 2>&1 || log "fc-cache failed (ignored)"
+        fi
+
+        # 4. Plymouth: the theme is script-based; its PNG assets (spinner dot, bar pixels)
+        #    are generated with pure python3 and the logo is rendered from logo.svg with
+        #    rsvg-convert when librsvg2-bin is present.  Without them the script falls back
+        #    to text primitives (documented in lindos.script) -- nothing is downloaded.
+        if [ -d "$PLYMOUTH_DIR" ] && command -v python3 >/dev/null 2>&1 && [ -f /usr/libexec/lindos/plymouth-gen-assets.py ]; then
+            python3 /usr/libexec/lindos/plymouth-gen-assets.py --quiet --theme-dir "$PLYMOUTH_DIR" \
+                || log "plymouth-gen-assets.py failed (ignored; text fallback)"
+        elif [ -f "$PLYMOUTH_DIR/logo.svg" ] && [ ! -f "$PLYMOUTH_DIR/logo.png" ] && command -v rsvg-convert >/dev/null 2>&1; then
+            rsvg-convert -w 192 -h 192 -o "$PLYMOUTH_DIR/logo.png" "$PLYMOUTH_DIR/logo.svg" 2>/dev/null \
+                || { rm -f "$PLYMOUTH_DIR/logo.png"; log "rsvg-convert failed; Plymouth uses text-only fallback"; }
+        fi
+
+        # 5. branding: /etc/os-release fragment, /etc/issue, Plymouth default theme,
+        #    default-wallpaper alternative (all idempotent, all guarded)
+        if [ -x /usr/libexec/lindos/apply-branding.sh ]; then
+            /usr/libexec/lindos/apply-branding.sh --quiet || log "apply-branding.sh reported a problem (ignored)"
+        fi
+
+        # 6. desktop database for the launcher shims
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+
+        # 7. mode panel profiles: generate panel.tar.bz2 for every mode from panel/
+        #    (pure python3, works offline; the ISO build hook 40-theme.sh calls it too)
+        if [ -x /usr/libexec/lindos/build-panel-profiles.sh ]; then
+            /usr/libexec/lindos/build-panel-profiles.sh --quiet || log "build-panel-profiles.sh failed (ignored; panel/ dir fallback stays usable)"
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

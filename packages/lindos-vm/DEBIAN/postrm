@@ -1,0 +1,20 @@
+#!/bin/sh
+# postrm for lindos-vm — idempotent (base SPEC §1.1).
+set -e
+
+PYLIB="/usr/lib/lindos-vm/lindos_vm"
+
+case "${1:-}" in
+    remove|upgrade|deconfigure|abort-install|abort-upgrade|disappear|failed-upgrade)
+        # drop stale byte-code (dpkg does not track __pycache__)
+        rm -rf "$PYLIB/__pycache__" 2>/dev/null || true
+        if command -v py3clean >/dev/null 2>&1; then
+            py3clean -p lindos-vm 2>/dev/null || true
+        fi
+        ;;
+    purge)
+        rm -rf "$PYLIB/__pycache__" 2>/dev/null || true
+        ;;
+esac
+
+exit 0

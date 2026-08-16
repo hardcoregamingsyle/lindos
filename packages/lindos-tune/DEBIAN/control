@@ -1,0 +1,41 @@
+Package: lindos-tune
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), lindos-core (>= 1.0.0), systemd, procps, util-linux, zram-tools | systemd-zram-generator, earlyoom, lm-sensors
+Recommends: power-profiles-daemon, ananicy-cpp, fancontrol, hdparm, pciutils, kmod
+Suggests: tlp, thermald, nbfc-linux, gamemode
+Homepage: https://lindos.dev
+Description: Lindos RAM / performance / hardware tuning (lindos-tune)
+ The tuning layer of Lindos (SPEC §11): keeps the desktop idling at the
+ 350–500 MB RAM target (Lite: 300–380 MB) and gives one CLI for the knobs
+ that matter on a Windows-style Linux desktop:
+  * lindos-tune status   — RAM used/available, zram, top-10 RSS, enabled
+                           units, governor, compositor and a verdict line
+                           against the idle target (--json for tools).
+  * lindos-tune apply    — base tune + per-mode overrides (Everyday / Gaming /
+                           Work / Creator / Lite): sysctl (swappiness for zram,
+                           BBR, cache pressure), zram (systemd-zram-generator or
+                           zram-tools, auto-detected), earlyoom, journald cap,
+                           /tmp on tmpfs, systemd presets that disable
+                           bluetooth/ModemManager/cups-browsed/apport/whoopsie/
+                           kerneloops/brltty/speech-dispatcher/NM-wait-online
+                           (never purged; cups stays socket-activated, avahi
+                           stays on), autostart hiding, CPU governor + EPP,
+                           ananicy-cpp in Gaming, fstrim.timer.  Idempotent,
+                           chroot/offline safe (used by the ISO build).
+  * lindos-tune services — list / enable / disable a whitelisted set of units.
+  * lindos-tune zram, governor, power, fan — zram size, cpufreq governor
+                           (power-profiles-daemon when present), power profile
+                           (powerprofilesctl → tlp → governor), fan profiles
+                           (nbfc-linux / thinkpad_acpi; honest "no controllable
+                           fans" otherwise) and lm-sensors readouts.
+  * lindos-tune report   — Markdown bug report (RAM, zram, top RSS, units,
+                           kernel, mode, GPU, managed config files).
+ .
+ Privileged operations run through the lindos-core helper (pkexec
+ /usr/libexec/lindos/lindos-helper); lindos-tune never calls sudo itself.
+ RAM savings listed in /usr/share/lindos/tune/ram-budget.json are estimates
+ until measured; the stock Mint 22 XFCE baseline is roughly 600–750 MB.

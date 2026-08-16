@@ -1,0 +1,29 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=File Explorer
+GenericName=File Manager
+Comment=Browse the file system (Thunar)
+Exec=thunar %U
+TryExec=thunar
+Icon=system-file-manager
+Terminal=false
+StartupNotify=true
+StartupWMClass=Thunar
+MimeType=inode/directory;
+Categories=System;Utility;Core;GTK;FileTools;FileManager;
+Keywords=explorer;files;folder;manager;browse;thunar;
+Actions=open-home;open-computer;open-trash;
+X-Lindos-Component=desktop
+
+[Desktop Action open-home]
+Name=Home
+Exec=thunar %h
+
+[Desktop Action open-computer]
+Name=This PC
+Exec=thunar computer:///
+
+[Desktop Action open-trash]
+Name=Recycle Bin
+Exec=thunar trash:///

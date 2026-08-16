@@ -1,0 +1,33 @@
+Package: lindos-gaming
+Version: 1.0.0
+Section: games
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: lindos-core (>= 1.0.0), gamemode, mangohud, steam-devices, python3 (>= 3.10), curl | wget, flatpak, udev, procps
+Recommends: steam-launcher | steam-installer, lutris, heroic, prismlauncher, antimicrox, goverlay, piper, corectrl, openrgb, mesa-vulkan-drivers, libvulkan1, vulkan-tools, xdg-desktop-portal-gtk, pciutils, mesa-utils, ubuntu-drivers-common, gnupg, zenity | yad, libnotify-bin
+Suggests: dkms, linux-headers-generic, mokutil, xdg-utils, umu-launcher, lindos-compat
+Homepage: https://lindos.dev
+Description: Lindos gaming stack — launchers, Proton-GE, GPU drivers, GameMode, MangoHud, controllers
+ Everything Lindos wires up for gaming on top of Linux Mint XFCE:
+  * lindos-game    — install/inspect/launch Steam, Lutris, Heroic, Prism Launcher
+                     (Minecraft Java), Sober (Roblox), Vinegar (Roblox Studio),
+                     mcpelauncher (Minecraft Bedrock, unofficial) and Bottles;
+                     privileged part runs through the Lindos helper
+                     (/usr/libexec/lindos/install-gaming.sh).
+  * lindos-proton  — download, verify (SHA-512) and install GE-Proton releases
+                     for Steam and umu-launcher; list/remove versions.
+  * lindos-drivers — GPU detection (lspci), driver status, NVIDIA/AMD/Intel driver
+                     installation via ubuntu-drivers, nvidia-drm modeset, optional
+                     xpadneo/xone controller drivers.
+  * GameMode config (/etc/gamemode.ini) that pauses the compositor while gaming,
+    MangoHud defaults (/etc/xdg/MangoHud/MangoHud.conf, Shift_R+F12),
+    controller udev rules, vm.max_map_count sysctl, launcher catalogue and the
+    game compatibility matrix used by Lindos Settings and docs/COMPATIBILITY.md.
+ .
+ Honesty notes: Windows games run through Wine/Proton (a translation layer, not
+ Windows). Valorant (Vanguard) and Fortnite (Epic disabled EAC-Linux) do not run
+ on any Linux, including Lindos. Roblox runs through Sober, not the Windows
+ client; Minecraft Java is native. Steam titles depend on the developer enabling
+ anti-cheat for Proton — see areweanticheatyet.com and protondb.com. Launchers
+ are downloaded from Valve/Flathub/GitHub on demand, never in postinst.

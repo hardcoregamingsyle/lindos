@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Lindos privileged helper (SPEC §4.6).  One action id, auth_admin_keep: the user is asked
+  for the administrator password once and the grant is kept for a few minutes so that a mode
+  switch or the OOBE apply page needs a single prompt.  Every helper action name and payload is
+  validated inside /usr/libexec/lindos/lindos-helper against a whitelist.
+-->
+<policyconfig>
+  <vendor>Lindos</vendor>
+  <vendor_url>https://lindos.dev</vendor_url>
+  <icon_name>lindos-start</icon_name>
+
+  <action id="org.lindos.helper">
+    <description>Change Lindos system settings</description>
+    <description xml:lang="de">Lindos-Systemeinstellungen ändern</description>
+    <description xml:lang="es">Cambiar la configuración del sistema Lindos</description>
+    <description xml:lang="fr">Modifier les réglages système de Lindos</description>
+    <message>Authentication is required to change Lindos system settings (mode, browser, packages, services, performance tuning)</message>
+    <message xml:lang="de">Zur Änderung der Lindos-Systemeinstellungen ist eine Authentifizierung erforderlich</message>
+    <message xml:lang="es">Se requiere autenticación para cambiar la configuración del sistema Lindos</message>
+    <message xml:lang="fr">Une authentification est requise pour modifier les réglages système de Lindos</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/lindos/lindos-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

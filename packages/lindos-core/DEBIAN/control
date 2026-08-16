@@ -1,0 +1,21 @@
+Package: lindos-core
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), policykit-1 | polkitd, pkexec, xdg-utils, ca-certificates, curl | wget, gpg
+Recommends: xfconf, flatpak, procps, systemd, lindos-tune
+Suggests: lindos-desktop, lindos-settings, lindos-setup
+Homepage: https://lindos.dev
+Description: Lindos core library, privileged helper and command-line tools
+ Lindos is a remaster of Linux Mint XFCE with a Windows-11-style desktop.
+ This package ships the pure-Python 'lindos' module (paths, config, modes,
+ browsers, hardware, helper client, theme, compat, ram), the polkit-guarded
+ helper /usr/libexec/lindos/lindos-helper, the vendor browser installer
+ (Edge/Chrome are downloaded from Microsoft's/Google's apt repositories at
+ setup time — their licences forbid shipping them on the ISO; Firefox is
+ Mint's .deb), the five mode definitions under /usr/share/lindos/modes and
+ the CLIs lindos-mode, lindos-browser, lindos-config and lindos-ram.
+ .
+ No GTK dependency: the graphical parts live in lindos-setup / lindos-settings.

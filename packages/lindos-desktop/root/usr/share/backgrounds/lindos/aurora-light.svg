@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos wallpaper "aurora-light" - original vector art (c) Lindos Team, GPL-3.0-or-later; 3840x2160 viewBox, scales to any size -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#EAF1FB"/><stop offset="0.6" stop-color="#F3F3F3"/><stop offset="1" stop-color="#F0EAF8"/></linearGradient>
+    <linearGradient id="rib1" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#0067C0" stop-opacity="0"/><stop offset="0.4" stop-color="#4FA3E8" stop-opacity="0.55"/><stop offset="0.7" stop-color="#60CDFF" stop-opacity="0.5"/><stop offset="1" stop-color="#0067C0" stop-opacity="0"/></linearGradient>
+    <linearGradient id="rib2" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#B4A0FF" stop-opacity="0"/><stop offset="0.5" stop-color="#B4A0FF" stop-opacity="0.55"/><stop offset="1" stop-color="#FF99A4" stop-opacity="0"/></linearGradient>
+    <radialGradient id="glow1" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#60CDFF" stop-opacity="0.45"/><stop offset="1" stop-color="#60CDFF" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow2" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFB900" stop-opacity="0.22"/><stop offset="1" stop-color="#FFB900" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow3" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#B4A0FF" stop-opacity="0.35"/><stop offset="1" stop-color="#B4A0FF" stop-opacity="0"/></radialGradient>
+    <filter id="b1" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="90"/></filter>
+    <filter id="b2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+    <filter id="b3" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="160"/></filter>
+  </defs>
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  <ellipse cx="800" cy="500" rx="1400" ry="900" fill="url(#glow1)" filter="url(#b3)"/>
+  <ellipse cx="3100" cy="1700" rx="1500" ry="900" fill="url(#glow3)" filter="url(#b3)"/>
+  <ellipse cx="2200" cy="300" rx="900" ry="600" fill="url(#glow2)" filter="url(#b3)"/>
+  <path d="M-200 1400 C 700 800, 1500 1600, 2300 1050 S 3500 600, 4100 900 L 4100 1080 C 3500 850, 2900 1150, 2300 1350 S 700 1200, -200 1650 Z" fill="url(#rib1)" filter="url(#b1)"/>
+  <path d="M-200 1850 C 900 1450, 1900 2050, 2900 1650 S 3700 1450, 4100 1550 L 4100 1680 C 3700 1600, 2900 1850, 2900 1850 S 900 1750, -200 2050 Z" fill="url(#rib2)" filter="url(#b1)"/>
+  <path d="M-100 800 C 900 400, 1600 1000, 2600 500 S 3600 200, 4000 350" fill="none" stroke="#0067C0" stroke-opacity="0.22" stroke-width="6" filter="url(#b2)"/>
+</svg>

@@ -1,0 +1,23 @@
+{
+  "id": "riot-client",
+  "name": "Riot Client (Valorant, League of Legends, TFT)",
+  "vendor": "Riot Games",
+  "category": "gaming",
+  "status": "broken",
+  "summary": "Not possible on any Linux: Riot Vanguard is a Windows-only kernel anti-cheat - Valorant and League of Legends cannot run on Lindos.",
+  "notes": "Valorant and (since 2024) League of Legends / Teamfight Tactics require Riot Vanguard, a kernel-level anti-cheat driver that only exists for Windows and must be running before the game starts. Wine and Proton cannot load Windows kernel drivers, and Riot deliberately blocks every Linux/Wine environment - there is no workaround, no 'special Wine', no VM trick that Riot allows (VMs are detected and banned). Anyone claiming otherwise is either out of date (pre-Vanguard League ran through Lutris until early 2024) or asking you to install something you should not.\nThe Riot Client installer itself (Install VALORANT.exe / live.na.exe) may open under Wine, but it will stop at 'Vanguard not installed' or fail during the download - do not bother.\nWhat you can do on Lindos: play the many other competitive titles that do run (Counter-Strike 2 and Dota 2 native; Apex is not; Overwatch 2, Marvel Rivals, Warframe, Helldivers 2 through Proton - see docs/COMPATIBILITY.md and areweanticheatyet.com), or keep a Windows install / cloud gaming (GeForce NOW streams League of Legends; Valorant is not offered there) for Riot titles.",
+  "installer_hint": "",
+  "homepage": "https://www.riotgames.com",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Not possible", "how": "Vanguard kernel anti-cheat is Windows-only; Valorant / League of Legends / TFT cannot run on Lindos or any Linux (see areweanticheatyet.com)"},
+    {"name": "Counter-Strike 2 / Dota 2 (native)", "how": "Steam: lindos-game install steam - both run natively with anti-cheat"},
+    {"name": "GeForce NOW (cloud)", "how": "streams League of Legends in the browser (Valorant is not on GeForce NOW); needs a fast connection"}
+  ]
+}

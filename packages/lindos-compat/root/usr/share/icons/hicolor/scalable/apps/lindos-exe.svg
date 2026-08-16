@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lindos-exe: generic icon for Windows programs run through the Lindos compatibility layer.
+     Original artwork, GPL-3.0-or-later (Lindos Team). Colours follow the Lindos palette
+     (#202020 background, #60CDFF accent). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3a3a"/>
+      <stop offset="1" stop-color="#202020"/>
+    </linearGradient>
+    <linearGradient id="win" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60CDFF"/>
+      <stop offset="1" stop-color="#0067C0"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="40" ry="40" fill="url(#bg)"/>
+  <rect x="16.5" y="16.5" width="223" height="223" rx="40" ry="40" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <!-- window frame -->
+  <rect x="52" y="60" width="152" height="120" rx="10" ry="10" fill="#f3f3f3"/>
+  <rect x="52" y="60" width="152" height="26" rx="10" ry="10" fill="url(#win)"/>
+  <rect x="52" y="76" width="152" height="10" fill="url(#win)"/>
+  <circle cx="66" cy="73" r="4" fill="#ffffff" fill-opacity="0.85"/>
+  <circle cx="80" cy="73" r="4" fill="#ffffff" fill-opacity="0.85"/>
+  <circle cx="94" cy="73" r="4" fill="#ffffff" fill-opacity="0.85"/>
+  <!-- four-pane "windows program" glyph -->
+  <rect x="80" y="100" width="34" height="30" rx="3" fill="#0067C0"/>
+  <rect x="122" y="100" width="34" height="30" rx="3" fill="#0067C0"/>
+  <rect x="80" y="138" width="34" height="30" rx="3" fill="#0067C0"/>
+  <rect x="122" y="138" width="34" height="30" rx="3" fill="#0067C0"/>
+  <!-- EXE label -->
+  <text x="128" y="216" font-family="Selawik, Segoe UI, Inter, DejaVu Sans, sans-serif" font-size="30" font-weight="700" fill="#60CDFF" text-anchor="middle">EXE</text>
+</svg>

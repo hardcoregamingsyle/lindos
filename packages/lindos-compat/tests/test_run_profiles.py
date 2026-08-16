@@ -1,0 +1,67 @@
+"""lindos-run applies per-title profiles and honestly refuses not_possible titles (§17.3)."""
+from __future__ import annotations
+
+import functools
+import json
+from pathlib import Path
+
+import pytest
+
+from lindos_compat import cli_run, runner
+
+# The per-title starter set is shipped by lindos-gaming (single owner). lindos-compat
+# supplies the loader (lindos_compat.profiles) and lindos-run, tested against that copy.
+SHIPPED = (Path(__file__).resolve().parents[2] / "lindos-gaming" / "root" / "usr" / "share"
+           / "lindos" / "gaming" / "profiles")
+
+
+@pytest.fixture()
+def shipped_profiles(monkeypatch, tmp_path):
+    monkeypatch.setenv("LINDOS_PROFILES_DIR", str(SHIPPED))
+    monkeypatch.setenv("LINDOS_USER_PROFILES_DIR", str(tmp_path / "no-user-profiles"))
+
+
+def test_cli_applies_profile_in_plan(fake_core, home, shipped_profiles, tmp_path, capsys, monkeypatch, fake_which):
+    w = fake_which("umu-run", "wine")
+    monkeypatch.setattr(cli_run, "choose_runner", functools.partial(runner.choose_runner, which=w, bottles_installed=False))
+    monkeypatch.setattr(cli_run, "build_plan", functools.partial(runner.build_plan, which=w, home=home, nvidia=False))
+    exe = tmp_path / "EldenRing.exe"
+    exe.write_bytes(b"MZ")
+    rc = cli_run.main(["--dry-run", str(exe)])
+    plan = json.loads(capsys.readouterr().out)
+    assert rc == 0 and plan["runner"] == "umu"          # profile forces the umu runner for an "app" exe
+    assert plan["env"]["PROTONPATH"] == "GE-Proton"     # profile proton "GE-Proton-latest"
+    assert plan["env"]["PROTON_USE_NTSYNC"] == "1"      # profile env
+    assert plan["env"]["DXVK_ASYNC"] == "1"             # profile dxvk_async
+
+
+def test_cli_refuses_not_possible_profile(fake_core, home, shipped_profiles, tmp_path, caplog):
+    import logging
+
+    exe = tmp_path / "VALORANT.exe"
+    exe.write_bytes(b"MZ")
+    with caplog.at_level(logging.ERROR):
+        rc = cli_run.main([str(exe)])
+    assert rc == cli_run.EXIT_ERROR
+    assert "cannot run on Lindos" in caplog.text and "Vanguard" in caplog.text
+
+
+def test_cli_info_shows_profile_and_perf_env(fake_core, home, shipped_profiles, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli_run, "choose_runner", lambda *a, **k: ("umu", "forced for test"))
+    exe = tmp_path / "Cyberpunk2077.exe"
+    exe.write_bytes(b"MZ")
+    rc = cli_run.main(["--info", str(exe)])
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert data["profile"]["id"] == "cyberpunk-2077"
+    assert data["gamescope"]["fsr"] is True
+    assert data["perf_env"]["DXVK_ASYNC"] == "1" and data["perf_env"]["PROTON_HIDE_NVIDIA_GPU"] == "0"
+
+
+def test_cli_not_possible_shown_in_info(fake_core, home, shipped_profiles, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli_run, "choose_runner", lambda *a, **k: ("umu", "forced for test"))
+    exe = tmp_path / "VALORANT.exe"
+    exe.write_bytes(b"MZ")
+    rc = cli_run.main(["--info", str(exe)])
+    data = json.loads(capsys.readouterr().out)
+    assert rc == 0 and data["profile"]["status"] == "not_possible"

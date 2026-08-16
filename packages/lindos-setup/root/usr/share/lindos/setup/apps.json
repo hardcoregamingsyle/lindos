@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "apps": [
+    {
+      "id": "wine",
+      "name": "Windows app support (Wine + Proton)",
+      "description": "Run .exe and .msi programs through Wine and Proton — a translation layer, not a copy of Windows. Recommended for everyone.",
+      "kind": "script",
+      "action": "install-compat",
+      "items": ["wine", "umu"],
+      "default_on_modes": ["everyday", "gaming", "work", "creator", "lite"]
+    },
+    {
+      "id": "steam",
+      "name": "Steam",
+      "description": "Valve's store and launcher with Proton for Windows games. Multiplayer titles with anti-cheat only work if the developer enabled it for Proton (see protondb.com).",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["steam"],
+      "default_on_modes": ["gaming"]
+    },
+    {
+      "id": "sober",
+      "name": "Roblox (Sober)",
+      "description": "Roblox through Sober, a community runtime for the Android client (Flatpak). The Windows Roblox client does not run on Linux.",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["sober"],
+      "default_on_modes": ["gaming"]
+    },
+    {
+      "id": "prism",
+      "name": "Minecraft (Prism Launcher)",
+      "description": "Minecraft Java runs natively. Prism Launcher manages instances and mods; you sign in with the Microsoft account that owns the game.",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["prism"],
+      "default_on_modes": ["gaming"]
+    },
+    {
+      "id": "heroic",
+      "name": "Heroic (Epic/GOG)",
+      "description": "Heroic Games Launcher for Epic Games Store, GOG and Amazon titles, using Proton where needed.",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["heroic"],
+      "default_on_modes": ["gaming"]
+    },
+    {
+      "id": "lutris",
+      "name": "Lutris",
+      "description": "Lutris runs games from Battle.net, EA, Ubisoft and other stores through Wine/Proton install scripts.",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["lutris"],
+      "default_on_modes": ["gaming"]
+    },
+    {
+      "id": "bottles",
+      "name": "Bottles",
+      "description": "Bottles manages Wine prefixes with per-app settings and is used by the Creator recipes (Flatpak).",
+      "kind": "script",
+      "action": "install-gaming",
+      "items": ["bottles"],
+      "default_on_modes": ["creator"]
+    },
+    {
+      "id": "onlyoffice",
+      "name": "Office (LibreOffice already installed) — add OnlyOffice",
+      "description": "LibreOffice is already installed. Also add OnlyOffice Desktop Editors for a Microsoft-Office-like layout (Flatpak).",
+      "kind": "flatpak",
+      "flatpaks": ["org.onlyoffice.desktopeditors"],
+      "default_on_modes": ["work"]
+    },
+    {
+      "id": "creative",
+      "name": "Creative (GIMP, Krita, Kdenlive)",
+      "description": "Native creative apps: GIMP for photos, Krita for painting and Kdenlive for video editing.",
+      "kind": "apt",
+      "packages": ["gimp", "krita", "kdenlive"],
+      "default_on_modes": ["creator"]
+    }
+  ]
+}

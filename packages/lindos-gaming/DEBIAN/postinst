@@ -1,0 +1,66 @@
+#!/bin/sh
+# postinst for lindos-gaming — idempotent, offline-safe, no downloads.
+set -e
+
+log() {
+    printf 'lindos-gaming: %s\n' "$*" >&2
+}
+
+in_chroot() {
+    # ischroot(1) exits 0 inside a chroot; also treat a missing /run/systemd/system as "no systemd running"
+    if command -v ischroot >/dev/null 2>&1 && ischroot; then
+        return 0
+    fi
+    [ ! -d /run/systemd/system ]
+}
+
+case "${1:-}" in
+    configure)
+        # 1. controller udev rules (60-lindos-controllers.rules)
+        if command -v udevadm >/dev/null 2>&1 && ! in_chroot; then
+            udevadm control --reload-rules 2>/dev/null || true
+            udevadm trigger --subsystem-match=hidraw --subsystem-match=input --subsystem-match=misc 2>/dev/null || true
+        else
+            log "not reloading udev rules (chroot / no udev running) — they apply at next boot"
+        fi
+
+        # 2. sysctl (vm.max_map_count) — reload every drop-in; harmless in a chroot (errors ignored)
+        if command -v sysctl >/dev/null 2>&1 && ! in_chroot; then
+            sysctl --system >/dev/null 2>&1 || sysctl -q -p /etc/sysctl.d/80-lindos-gaming.conf 2>/dev/null || true
+        fi
+
+        # 3. desktop database + icon cache for lindos-roblox / lindos-minecraft entries
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+
+        # 4. gamemode: make sure the "gamemode" group exists so [general] renice/ioprio can be
+        #    granted (gamemode's own postinst does this on Ubuntu; be defensive) and that the
+        #    custom start/end scripts are executable even if the tarball lost the bit.
+        if ! getent group gamemode >/dev/null 2>&1; then
+            addgroup --system --quiet gamemode 2>/dev/null || groupadd -r gamemode 2>/dev/null || true
+        fi
+        for f in /usr/libexec/lindos/gamemode-start.sh /usr/libexec/lindos/gamemode-end.sh \
+                 /usr/libexec/lindos/install-gaming.sh /usr/libexec/lindos/install-xpadneo.sh \
+                 /usr/libexec/lindos/install-xone.sh; do
+            [ -f "$f" ] && chmod 0755 "$f" 2>/dev/null || true
+        done
+
+        # 5. log dir used by the privileged installers
+        mkdir -p /var/log/lindos 2>/dev/null || true
+        chmod 0755 /var/log/lindos 2>/dev/null || true
+
+        # 6. MangoHud: nothing to do system-wide; the per-user copy is created on demand by
+        #    `lindos-mangohud sync` (Lindos Settings / mode switch).  No downloads here on purpose:
+        #    Steam, Lutris, Heroic, Prism, Sober … are fetched by `lindos-game install` (OOBE).
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

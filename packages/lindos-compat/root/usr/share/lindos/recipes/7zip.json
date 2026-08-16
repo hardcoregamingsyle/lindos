@@ -1,0 +1,23 @@
+{
+  "id": "7zip",
+  "name": "7-Zip",
+  "vendor": "Igor Pavlov (7-zip.org)",
+  "category": "utility",
+  "status": "works",
+  "summary": "The 7-Zip File Manager runs through Wine; note that Lindos already extracts 7z/zip/rar natively.",
+  "notes": "7-Zip installs and runs through Wine without extra runtimes: the 7-Zip File Manager (7zFM.exe) browses your files under Z:\\ (that is your Linux home) and creates/extracts 7z, zip, tar, gz, xz, rar (extract only) archives. Use the 64-bit installer (7zNNNN-x64.exe). What does not carry over: the Windows Explorer context menu ('7-Zip > Extract here') - Linux file managers have their own.\nYou probably do not need it: Lindos already opens 7z/zip/rar/tar archives natively - right-click an archive in the file manager > 'Extract Here' (Engrampa/File Roller with the p7zip back end), and the '7z' command is available in the terminal (apt install 7zip). The Wine build is only useful if you rely on a Windows-only 7-Zip feature or a plug-in.\nThis recipe creates a 64-bit C:\\ drive with no special tweaks.",
+  "installer_hint": "lindos-run --prefix 7zip ~/Downloads/7z2409-x64.exe",
+  "homepage": "https://www.7-zip.org",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Archive Manager (native)", "how": "already installed on Lindos: right-click an archive > Extract Here"},
+    {"name": "7-Zip for Linux (7zz)", "how": "official native command-line build: apt install 7zip"},
+    {"name": "PeaZip", "how": "native GUI archiver: Flatpak io.github.peazip.PeaZip"}
+  ]
+}

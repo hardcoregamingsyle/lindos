@@ -1,0 +1,27 @@
+# /usr/share/lindos/tune/autostart-hide.list
+# System-wide XDG autostart entries (/etc/xdg/autostart/<name>.desktop) that `lindos-tune apply`
+# hides from XFCE sessions by adding `NotShowIn=XFCE;` (idempotent, marked with
+# X-Lindos-Hidden=true so it can be reverted exactly).  Users can still start these apps from
+# the menu; per-user overrides in ~/.config/autostart win over the system file.
+#
+# Syntax:  <desktop-basename> [if-disabled=<unit>]
+#   if-disabled=<unit>  → hidden only while <unit> is disabled, un-hidden again when it is
+#                         re-enabled (lindos-tune services enable <unit>).
+#
+# Deliberately NOT here: light-locker (screen lock), xfce4-power-manager, nm-applet, xfsettingsd,
+# polkit agent, print-applet (small, useful), mintupdate (kept — the tray is what tells users
+# about updates; it delays its own start), lindos-* entries.
+
+# Mint's welcome screen is replaced by the Lindos OOBE (lindos-setup)
+mintwelcome
+# System-report tray (mintreport-tray) — run "System Reports" from the menu when needed
+mintreport
+# Ubuntu-style crash/telemetry helpers (no telemetry in Lindos)
+apport
+whoopsie
+# Bluetooth tray only while the bluetooth service is disabled (everyday/lite presets)
+blueman-applet if-disabled=bluetooth.service
+# Accessibility screen reader autostart (start it from Settings → Accessibility if needed)
+orca-autostart
+# Ubuntu report/onboard helpers not needed on XFCE
+onboard-autostart

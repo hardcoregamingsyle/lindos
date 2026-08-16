@@ -1,0 +1,60 @@
+{
+  "id": "gaming",
+  "name": "Gaming",
+  "description": "Max FPS: performance governor, Game Mode, MangoHud toggle, launchers pinned.",
+  "tagline": "Steam/Proton, Lutris, Heroic, Prism, Sober — ready to play.",
+  "icon": "applications-games",
+  "ram_hint": "Idle target 350–500 MB, more while gaming",
+  "packages": [
+    "gamemode",
+    "mangohud",
+    "steam-devices",
+    "mesa-vulkan-drivers",
+    "libvulkan1",
+    "vulkan-tools",
+    "ananicy-cpp",
+    "lutris"
+  ],
+  "flatpaks": [
+    "org.prismlauncher.PrismLauncher",
+    "org.vinegarhq.Sober",
+    "com.heroicgameslauncher.hgl"
+  ],
+  "services_disable": [
+    "ModemManager",
+    "cups-browsed"
+  ],
+  "services_enable": [
+    "ananicy-cpp",
+    "earlyoom"
+  ],
+  "sysctl": {
+    "vm.max_map_count": "2147483642",
+    "vm.compaction_proactiveness": "0",
+    "kernel.split_lock_mitigate": "0"
+  },
+  "governor": "performance",
+  "pins": [
+    "lindos-files.desktop",
+    "firefox.desktop",
+    "steam.desktop",
+    "net.lutris.Lutris.desktop",
+    "heroic.desktop",
+    "lindos-minecraft.desktop",
+    "lindos-roblox.desktop",
+    "lindos-settings.desktop"
+  ],
+  "compositor": "picom",
+  "zram_percent": 75,
+  "gamemode_auto": true,
+  "mangohud": false,
+  "ananicy": true,
+  "gaming_items": [
+    "steam",
+    "lutris",
+    "heroic",
+    "prism",
+    "sober"
+  ],
+  "notes": "Valorant (Vanguard) and Fortnite (EAC-Linux disabled by Epic) do not run on any Linux, Lindos included. Roblox runs through Sober, not the Windows client. Check protondb.com and areweanticheatyet.com for Steam titles."
+}

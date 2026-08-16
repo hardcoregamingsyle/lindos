@@ -1,0 +1,41 @@
+{
+  "id": "lite",
+  "name": "Lite",
+  "description": "For 4 GB RAM or old PCs: no compositor, no animations, minimal tray, aggressive earlyoom.",
+  "tagline": "Lightest Lindos — every megabyte counts.",
+  "icon": "battery-good",
+  "ram_hint": "Idle ≈ 300–380 MB (no compositor)",
+  "packages": [],
+  "flatpaks": [],
+  "services_disable": [
+    "cups-browsed",
+    "ModemManager",
+    "avahi-daemon",
+    "NetworkManager-wait-online",
+    "colord",
+    "switcheroo-control",
+    "geoclue",
+    "packagekit"
+  ],
+  "services_enable": [
+    "earlyoom"
+  ],
+  "sysctl": {
+    "vm.dirty_ratio": "10",
+    "vm.dirty_background_ratio": "5",
+    "kernel.nmi_watchdog": "0"
+  },
+  "governor": "schedutil",
+  "pins": [
+    "lindos-files.desktop",
+    "firefox.desktop",
+    "lindos-settings.desktop"
+  ],
+  "compositor": "none",
+  "zram_percent": 100,
+  "earlyoom_min_percent": 8,
+  "animations": false,
+  "minimal_tray": true,
+  "gamemode_auto": false,
+  "mangohud": false
+}

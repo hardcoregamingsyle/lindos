@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- Lindos keyboard defaults (xfsettingsd "keyboards" channel): Windows-like key
+     repeat (500 ms delay, 30/s), NumLock restored/on at login. -->
+<channel name="keyboards" version="1.0">
+  <property name="Default" type="empty">
+    <property name="KeyRepeat" type="bool" value="true">
+      <property name="Delay" type="int" value="500"/>
+      <property name="Rate" type="int" value="30"/>
+    </property>
+    <property name="Numlock" type="bool" value="true"/>
+    <property name="RestoreNumlock" type="bool" value="true"/>
+  </property>
+</channel>

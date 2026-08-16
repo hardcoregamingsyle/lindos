@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Lindos: friendlier names and extra globs for Windows program files, so the file
+  manager says "Windows program" instead of "DOS/Windows executable" (SPEC §9).
+  Installed to /usr/share/mime/packages/, compiled by update-mime-database in postinst.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-ms-dos-executable">
+    <comment>Windows program</comment>
+    <comment xml:lang="de">Windows-Programm</comment>
+    <comment xml:lang="es">Programa de Windows</comment>
+    <comment xml:lang="fr">Programme Windows</comment>
+    <sub-class-of type="application/x-executable"/>
+    <generic-icon name="application-x-executable"/>
+    <glob pattern="*.exe"/>
+    <glob pattern="*.com" weight="40"/>
+    <glob pattern="*.scr" weight="40"/>
+  </mime-type>
+  <mime-type type="application/x-msi">
+    <comment>Windows program installer (MSI)</comment>
+    <comment xml:lang="de">Windows-Installationspaket (MSI)</comment>
+    <comment xml:lang="es">Instalador de programa de Windows (MSI)</comment>
+    <comment xml:lang="fr">Installateur de programme Windows (MSI)</comment>
+    <sub-class-of type="application/x-ole-storage"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.msi"/>
+    <glob pattern="*.msp" weight="40"/>
+  </mime-type>
+  <mime-type type="application/x-bat">
+    <comment>Windows batch script</comment>
+    <comment xml:lang="de">Windows-Stapelverarbeitungsskript</comment>
+    <comment xml:lang="es">Script por lotes de Windows</comment>
+    <comment xml:lang="fr">Script batch Windows</comment>
+    <sub-class-of type="text/plain"/>
+    <generic-icon name="text-x-script"/>
+    <glob pattern="*.bat"/>
+    <glob pattern="*.cmd"/>
+  </mime-type>
+  <mime-type type="application/x-ms-shortcut">
+    <comment>Windows shortcut</comment>
+    <comment xml:lang="de">Windows-Verknüpfung</comment>
+    <comment xml:lang="es">Acceso directo de Windows</comment>
+    <comment xml:lang="fr">Raccourci Windows</comment>
+    <generic-icon name="emblem-symbolic-link"/>
+    <glob pattern="*.lnk"/>
+    <magic priority="50">
+      <match type="string" offset="0" value="L\000\000\000\001\024\002\000"/>
+    </magic>
+  </mime-type>
+</mime-info>

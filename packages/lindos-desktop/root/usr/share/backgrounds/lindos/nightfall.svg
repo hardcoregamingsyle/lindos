@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos wallpaper "nightfall" - original vector art (c) Lindos Team, GPL-3.0-or-later; 3840x2160 viewBox, scales to any size -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#05070F"/><stop offset="0.55" stop-color="#0E1A3A"/><stop offset="0.8" stop-color="#3A2A55"/><stop offset="1" stop-color="#7A3E3E"/></linearGradient>
+    <linearGradient id="horizon" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFB900" stop-opacity="0"/><stop offset="0.6" stop-color="#FF8A5B" stop-opacity="0.55"/><stop offset="1" stop-color="#FF99A4" stop-opacity="0.75"/></linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFD48A" stop-opacity="0.9"/><stop offset="0.5" stop-color="#FF8A5B" stop-opacity="0.45"/><stop offset="1" stop-color="#FF8A5B" stop-opacity="0"/></radialGradient>
+    <radialGradient id="star" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#101018" stop-opacity="0.2"/><stop offset="1" stop-color="#0A0A10" stop-opacity="1"/></linearGradient>
+    <filter id="b1" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="120"/></filter>
+    <filter id="b2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="50"/></filter>
+    <filter id="b3" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope="0.045"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  <circle cx="300" cy="200" r="9" fill="url(#star)"/>
+  <circle cx="700" cy="420" r="6" fill="url(#star)"/>
+  <circle cx="1100" cy="150" r="7" fill="url(#star)"/>
+  <circle cx="1500" cy="500" r="5" fill="url(#star)"/>
+  <circle cx="1900" cy="260" r="8" fill="url(#star)"/>
+  <circle cx="2300" cy="120" r="6" fill="url(#star)"/>
+  <circle cx="2700" cy="380" r="7" fill="url(#star)"/>
+  <circle cx="3100" cy="180" r="9" fill="url(#star)"/>
+  <circle cx="3500" cy="460" r="6" fill="url(#star)"/>
+  <circle cx="3750" cy="90" r="5" fill="url(#star)"/>
+  <circle cx="500" cy="700" r="5" fill="url(#star)"/>
+  <circle cx="1300" cy="760" r="6" fill="url(#star)"/>
+  <circle cx="2100" cy="640" r="5" fill="url(#star)"/>
+  <circle cx="2900" cy="720" r="6" fill="url(#star)"/>
+  <circle cx="3400" cy="800" r="5" fill="url(#star)"/>
+  <circle cx="150" cy="900" r="4" fill="url(#star)"/>
+  <circle cx="2500" cy="900" r="4" fill="url(#star)"/>
+  <circle cx="3650" cy="650" r="4" fill="url(#star)"/>
+  <ellipse cx="2600" cy="1650" rx="1500" ry="500" fill="url(#sun)" filter="url(#b1)"/>
+  <rect x="0" y="1300" width="3840" height="700" fill="url(#horizon)" filter="url(#b1)" opacity="0.8"/>
+  <path d="M0 1750 C 500 1650, 900 1780, 1400 1700 S 2400 1600, 2900 1720 S 3600 1680, 3840 1740 L 3840 2160 L 0 2160 Z" fill="#0B0B12"/>
+  <path d="M0 1800 C 600 1720, 1100 1850, 1700 1790 S 2600 1720, 3200 1810 S 3700 1790, 3840 1820 L 3840 2160 L 0 2160 Z" fill="url(#ground)"/>
+  <path d="M0 1720 C 500 1620, 900 1750, 1400 1670 S 2400 1570, 2900 1690 S 3600 1650, 3840 1710" fill="none" stroke="#FFB07A" stroke-opacity="0.35" stroke-width="10" filter="url(#b3)"/>
+  <rect width="3840" height="2160" filter="url(#grain)" opacity="0.7"/>
+</svg>

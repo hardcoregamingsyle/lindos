@@ -1,0 +1,25 @@
+{
+  "id": "illustrator-cc-2021",
+  "name": "Adobe Illustrator CC 2021 (v25)",
+  "vendor": "Adobe",
+  "category": "creator",
+  "status": "partial",
+  "summary": "Vector editing works through Wine with GPU preview off; sign-in, cloud documents and some panels do not.",
+  "notes": "Illustrator 2021 (25.x) installs and runs through Wine for drawing, pen/shape tools, type, pathfinder, layers, artboards, export (AI/PDF/SVG/PNG). Newer releases (2022+) fail to install or crash - use the 2021 standalone (offline) installer with a licence you already own; the Creative Cloud desktop app does NOT run, so Sign in, Libraries, Cloud documents, Adobe Fonts and Stock are unavailable and some panels that embed a web view stay blank.\nAfter installing: Edit > Preferences > Performance > untick 'GPU Performance' (GPU preview needs DirectX features Wine cannot provide; the CPU preview is fine). Very large documents and 'Recolor Artwork' are slower than on Windows. If text renders as boxes, run 'winetricks corefonts' again inside this C:\\ drive.\nThis recipe creates a 64-bit C:\\ drive with Visual C++ 2019, GDI+, ATM, MSXML, core fonts, RGB font smoothing and reports Windows 10.\nNative alternatives on Lindos: Inkscape (SVG/PDF, opens .ai files exported as PDF-compatible), Krita for illustration.",
+  "installer_hint": "Set-up.exe from the standalone Illustrator 2021 package: lindos-run --prefix illustrator-cc-2021 ~/Downloads/Set-up.exe",
+  "homepage": "https://www.adobe.com/products/illustrator.html",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": ["vcrun2019", "fontsmooth=rgb", "gdiplus", "atmlib", "msxml6", "msxml3", "corefonts", "win10"],
+  "dll_overrides": {"gdiplus": "native,builtin", "atmlib": "native,builtin", "msxml6": "native,builtin", "msxml3": "native,builtin"},
+  "env": {"WINEESYNC": "1"},
+  "post_cmds": [],
+  "registry": [
+    {"key": "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D", "name": "renderer", "type": "REG_SZ", "value": "gl"}
+  ],
+  "alternatives": [
+    {"name": "Inkscape", "how": "native vector editor (SVG, PDF, EPS): apt install inkscape"},
+    {"name": "Krita", "how": "native illustration/painting: apt install krita"},
+    {"name": "Figma / Photopea (web)", "how": "browser-based design tools that import SVG/PDF"}
+  ]
+}

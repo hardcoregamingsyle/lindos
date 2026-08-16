@@ -1,0 +1,32 @@
+Package: lindos-compat
+Version: 1.0.0
+Section: otherosfs
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), lindos-core (>= 1.0.0), cabextract, winbind, xdg-utils, desktop-file-utils, shared-mime-info
+Recommends: winehq-staging | wine-staging | wine, winetricks, umu-launcher, icoutils, zenity, gamemode, mangohud, libvulkan1, mesa-vulkan-drivers, fonts-liberation, libnotify-bin, curl | wget
+Suggests: bottles, lindos-gaming, vulkan-tools, ttf-mscorefonts-installer, gamescope
+Homepage: https://lindos.dev
+Description: Lindos Windows-app compatibility layer (Wine / Proton via umu, recipes)
+ Runs Windows programs (.exe, .msi, .bat, .lnk) on Lindos through Wine and
+ Proton (umu-launcher) - a translation layer, not a virtual machine and not
+ Windows.  Ships:
+  * lindos-run     — double-click runner: analyses the file, picks Wine or
+                     Proton, gives every program its own C:\ drive (Wine
+                     prefix), runs it, then turns what the installer created
+                     into Start Menu entries and Lindos Settings > Windows apps
+                     records (icons via icoutils, dialogs via zenity/yad).
+  * lindos-compat  — doctor (readiness check with fix commands), C:\ drive
+                     management (list/remove/open/winecfg), honest recipes for
+                     well-known programs (Photoshop CC 2021/CS6, Office 2016,
+                     Notepad++, 7-Zip, ...), umu-launcher / Bottles installers,
+                     Proton-GE via lindos-proton.
+  * install-compat.sh — privileged installer (WineHQ staging for noble,
+                     winetricks, 32-bit Vulkan/GL libs, umu-launcher) used by
+                     the Lindos helper and the ISO build.
+  * MIME defaults, Thunar actions ("Run with Lindos", "Run with Proton",
+                     "Open C:\ drive") and a "Windows program" MIME description.
+ Anti-cheat titles (Valorant, League of Legends, Fortnite, Roblox's Windows
+ client) do not run through Wine on any Linux; the recipes say so and point to
+ native alternatives (Sober for Roblox, Heroic for Epic games).

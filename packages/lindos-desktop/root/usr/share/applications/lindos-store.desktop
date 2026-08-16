@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Store
+GenericName=Software Manager
+Comment=Install and remove apps (Software Manager)
+Exec=mintinstall
+TryExec=mintinstall
+Icon=mintinstall
+Terminal=false
+StartupNotify=true
+StartupWMClass=mintinstall
+Categories=System;PackageManager;GTK;
+Keywords=store;software;apps;install;flatpak;package;
+X-Lindos-Component=desktop

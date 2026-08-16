@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Windows Apps (Lindos)
+GenericName=Seamless Windows apps over RDP
+Comment=Run Windows programs (Adobe, Office) from your own licensed Windows over RDP
+Exec=lindos-winapps list
+TryExec=lindos-winapps
+Icon=lindos-winapp
+Terminal=true
+NoDisplay=false
+StartupNotify=false
+Categories=System;Utility;X-Lindos;X-WinApps;
+Keywords=Windows;RDP;RemoteApp;WinApps;Adobe;Office;Photoshop;
+X-Lindos-Component=winapps

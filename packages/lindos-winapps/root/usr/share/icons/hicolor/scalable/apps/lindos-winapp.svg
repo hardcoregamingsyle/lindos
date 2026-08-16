@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Lindos Windows app">
+  <rect x="6" y="10" width="52" height="38" rx="4" fill="#2B2B2B" stroke="#3A3A3A" stroke-width="1.5"/>
+  <rect x="10" y="14" width="44" height="26" rx="2" fill="#202020"/>
+  <g fill="#60CDFF">
+    <rect x="15" y="19" width="7" height="7" rx="1"/>
+    <rect x="24" y="19" width="7" height="7" rx="1" fill="#4FB0DB"/>
+    <rect x="15" y="28" width="7" height="7" rx="1" fill="#4FB0DB"/>
+    <rect x="24" y="28" width="7" height="7" rx="1"/>
+  </g>
+  <rect x="22" y="48" width="20" height="4" rx="2" fill="#3A3A3A"/>
+  <rect x="16" y="52" width="32" height="4" rx="2" fill="#3A3A3A"/>
+</svg>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Thunar custom actions shipped by lindos-compat (SPEC §9).
+  Merged into /etc/xdg/Thunar/uca.xml by the package postinst; actions are
+  identified by <unique-id> so re-installing never duplicates them.
+-->
+<actions>
+<action>
+	<icon>lindos-exe</icon>
+	<name>Run with Lindos (Windows app)</name>
+	<submenu></submenu>
+	<unique-id>1755000000000001-1</unique-id>
+	<command>lindos-run %f</command>
+	<description>Run this Windows program through Wine (its own C:\ drive is created automatically)</description>
+	<range></range>
+	<patterns>*.exe;*.EXE;*.msi;*.MSI;*.bat;*.BAT;*.cmd;*.lnk;*.LNK</patterns>
+	<startup-notify/>
+	<other-files/>
+</action>
+<action>
+	<icon>applications-games</icon>
+	<name>Run with Proton (game)</name>
+	<submenu></submenu>
+	<unique-id>1755000000000002-2</unique-id>
+	<command>lindos-run --runner umu %f</command>
+	<description>Run this Windows game through Proton-GE (umu-launcher) with DXVK/VKD3D</description>
+	<range></range>
+	<patterns>*.exe;*.EXE;*.lnk;*.LNK</patterns>
+	<startup-notify/>
+	<other-files/>
+</action>
+<action>
+	<icon>drive-harddisk</icon>
+	<name>Open C:\ drive</name>
+	<submenu></submenu>
+	<unique-id>1755000000000003-3</unique-id>
+	<command>lindos-compat prefixes open %f</command>
+	<description>Open the C:\ drive (Wine prefix) this Windows program uses</description>
+	<range></range>
+	<patterns>*.exe;*.EXE;*.msi;*.MSI;*.lnk;*.LNK</patterns>
+	<other-files/>
+</action>
+</actions>

@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "recommended": {
+    "series": "6.14",
+    "min": "6.14",
+    "flavour": "lindos",
+    "localversion": "-lindos"
+  },
+  "features": [
+    {
+      "id": "ntsync",
+      "kconfig": "CONFIG_NTSYNC",
+      "dev": "/dev/ntsync",
+      "since": "6.14",
+      "why": "in-kernel NT sync primitives — replaces esync/fsync, big Wine/Proton frametime win"
+    },
+    {
+      "id": "sched_ext",
+      "kconfig": "CONFIG_SCHED_CLASS_EXT",
+      "since": "6.12",
+      "why": "pluggable BPF schedulers (scx_lavd etc.) for low-latency gaming"
+    },
+    {
+      "id": "preempt_full",
+      "kconfig": "CONFIG_PREEMPT",
+      "why": "lower desktop/game latency"
+    },
+    {
+      "id": "hz1000",
+      "kconfig": "CONFIG_HZ_1000",
+      "why": "finer timer granularity"
+    },
+    {
+      "id": "mglru",
+      "kconfig": "CONFIG_LRU_GEN",
+      "why": "better reclaim under RAM pressure"
+    },
+    {
+      "id": "bbr",
+      "kconfig": "CONFIG_TCP_CONG_BBR",
+      "why": "lower-latency TCP"
+    }
+  ],
+  "patches": [
+    {
+      "id": "bore",
+      "optional": true,
+      "why": "Burst-Oriented Response Enhancer scheduler (out-of-tree)"
+    }
+  ]
+}

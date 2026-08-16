@@ -1,0 +1,730 @@
+#!/usr/bin/python3
+"""lindos-helper — the privileged half of Lindos (SPEC §4.6, §13).
+
+Invoked as ``pkexec /usr/libexec/lindos/lindos-helper <action> <json>`` by
+``lindos.helper.run_privileged``.  Every action name is checked against the whitelist and every
+payload against the schema in ``lindos.helper.validate_payload`` before anything runs; nothing
+is ever executed through a shell.  Output goes to stdout/stderr (streamed back to the caller)
+and to ``/var/log/lindos/helper.log``.
+
+Usage:  lindos-helper <action> [<json-payload> | -]      ('-' reads the payload from stdin)
+        lindos-helper --list | --version
+Exit codes: 0 ok · 1 error (an action step failed / not root) · 2 usage or invalid payload.
+
+``LINDOS_HELPER_DRYRUN=1`` runs without root and prints what *would* be executed (tests).
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import logging
+import os
+import shutil
+import socket
+import subprocess
+import sys
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# Make the in-tree ``lindos`` package importable when run from the repository
+# (root/usr/libexec/lindos → root/usr/lib/python3/dist-packages); harmless when installed.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import config as lconfig
+    from lindos import hardware as lhardware
+    from lindos import helper as lhelper
+    from lindos import paths as lpaths
+    from lindos.helper import ACTIONS, EXIT_ERROR, EXIT_OK, EXIT_USAGE, PayloadError, validate_payload
+except ImportError as exc:  # pragma: no cover - only when lindos-core is broken
+    sys.stderr.write(f"lindos-helper: cannot import the lindos python package: {exc}\n")
+    sys.exit(1)
+
+PROG = "lindos-helper"
+DRYRUN_ENV = "LINDOS_HELPER_DRYRUN"
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+FLATHUB_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+ONLINE_PROBES = (("deb.debian.org", 443), ("archive.ubuntu.com", 80), ("dl.flathub.org", 443), ("1.1.1.1", 53))
+ZRAM_GENERATOR_CONF = "/etc/systemd/zram-generator.conf"
+ZRAMSWAP_DEFAULT = "/etc/default/zramswap"
+SCX_DEFAULT = "/etc/default/scx"
+SCX_UNIT = "scx.service"
+SCX_LOADER_BUS = "org.scx.Loader"
+SCX_LOADER_OBJ = "/org/scx/Loader"
+
+log = logging.getLogger(PROG)
+
+
+# --- context ------------------------------------------------------------------------------------
+class Ctx:
+    """Execution context: dry-run flag, environment, logging, process runner."""
+
+    def __init__(self, dry_run: bool) -> None:
+        self.dry_run = dry_run
+        self.env: Dict[str, str] = dict(os.environ)
+        base_path = self.env.get("PATH", "")
+        self.env["PATH"] = SAFE_PATH + ((":" + base_path) if base_path else "")
+        self.env["DEBIAN_FRONTEND"] = "noninteractive"
+        self.env.setdefault("LC_ALL", "C.UTF-8")
+        self.env["LINDOS_HELPER"] = "1"
+        self._online: Optional[bool] = None
+
+    # -- output --------------------------------------------------------------------------
+    def say(self, message: str) -> None:
+        """Progress line for the caller (stdout) and the log file."""
+        print(message, flush=True)
+        log.info(message)
+
+    def warn(self, message: str) -> None:
+        print(f"warning: {message}", file=sys.stderr, flush=True)
+        log.warning(message)
+
+    def error(self, message: str) -> None:
+        print(f"error: {message}", file=sys.stderr, flush=True)
+        log.error(message)
+
+    # -- tools ---------------------------------------------------------------------------
+    def which(self, name: str) -> Optional[str]:
+        return shutil.which(name, path=self.env["PATH"])
+
+    def libexec(self, script: str) -> str:
+        """Path of a sibling script (``install-browser.sh`` …): next to this helper, else SPEC path."""
+        local = os.path.join(_HERE, script)
+        if os.path.isfile(local):
+            return local
+        return os.path.join(lpaths.libexec_dir(), script)
+
+    def online(self) -> bool:
+        if self._online is None:
+            if self.env.get("LINDOS_FORCE_OFFLINE", "").lower() in ("1", "true", "yes"):
+                self._online = False
+            elif self.dry_run:
+                self._online = self.env.get("LINDOS_HELPER_ONLINE", "0").lower() in ("1", "true", "yes")
+            else:
+                self._online = False
+                for host, port in ONLINE_PROBES:
+                    try:
+                        with socket.create_connection((host, port), timeout=3):
+                            self._online = True
+                            break
+                    except OSError:
+                        continue
+        return self._online
+
+    # -- processes -------------------------------------------------------------------------
+    def run(self, cmd: Sequence[str], *, timeout: float = 1800, extra_env: Optional[Dict[str, str]] = None,
+            quiet: bool = False, allow_missing: bool = False) -> Tuple[bool, str]:
+        """Run *cmd* (argv list, never a shell).  Streams output; returns ``(ok, tail)``.
+
+        In dry-run mode nothing is executed: the command is printed with a ``[dry-run]`` prefix.
+        """
+        argv = [str(a) for a in cmd]
+        pretty = " ".join(_quote(a) for a in argv)
+        if self.dry_run:
+            self.say(f"[dry-run] would run: {pretty}")
+            return True, ""
+        exe = self.which(argv[0]) if not os.path.isabs(argv[0]) else argv[0]
+        if not exe or not os.path.exists(exe):
+            msg = f"{argv[0]}: not found"
+            (self.warn if allow_missing else self.error)(msg)
+            return False, msg
+        env = dict(self.env)
+        if extra_env:
+            env.update(extra_env)
+        log.info("run: %s", pretty)
+        lines: List[str] = []
+        try:
+            proc = subprocess.Popen([exe] + argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                                    env=env)
+        except OSError as exc:
+            self.error(f"cannot start {argv[0]}: {exc}")
+            return False, str(exc)
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                lines.append(line)
+                log.info("  | %s", line)
+                if not quiet:
+                    print(f"  | {line}", flush=True)
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            self.error(f"{argv[0]} timed out after {timeout}s")
+            return False, "timeout"
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        tail = " | ".join(ln for ln in lines[-3:] if ln.strip())
+        if code != 0:
+            log.warning("exit %s: %s", code, pretty)
+        return code == 0, tail
+
+    def write_file(self, path: str, content: str, mode: int = 0o644) -> bool:
+        """Atomically write *content* to *path* (dry-run: print)."""
+        if self.dry_run:
+            self.say(f"[dry-run] would write {path} ({len(content)} bytes)")
+            return True
+        tmp = path + ".lindos-tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, mode)
+            os.replace(tmp, path)
+            log.info("wrote %s", path)
+            return True
+        except OSError as exc:
+            self.error(f"cannot write {path}: {exc}")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+
+
+def _quote(arg: str) -> str:
+    if arg and all(ch.isalnum() or ch in "-_./=:,+@%" for ch in arg):
+        return arg
+    return "'" + arg.replace("'", "'\\''") + "'"
+
+
+def is_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid and geteuid() == 0)
+
+
+def setup_logging(dry_run: bool) -> None:
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    log_path = lpaths.helper_log()
+    try:
+        os.makedirs(os.path.dirname(log_path), mode=0o755, exist_ok=True)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(fmt)
+        log.addHandler(handler)
+    except OSError:
+        if not dry_run:
+            sys.stderr.write(f"{PROG}: cannot open {log_path}; logging to stderr only\n")
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setLevel(logging.WARNING)
+        stream.setFormatter(fmt)
+        log.addHandler(stream)
+
+
+def dpkg_installed(ctx: Ctx, package: str) -> bool:
+    dpkg = ctx.which("dpkg-query")
+    if not dpkg:
+        return False
+    try:
+        proc = subprocess.run([dpkg, "-W", "-f=${Status}", package], stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=30, check=False, env=ctx.env)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and "install ok installed" in (proc.stdout or "")
+
+
+# --- primitive operations (shared by several actions) ------------------------------------------
+def apt_install(ctx: Ctx, packages: List[str], *, offline: bool = False) -> bool:
+    """``apt-get install -y`` the packages that are not installed yet.  Offline → warn & skip."""
+    if not packages:
+        return True
+    missing = packages if ctx.dry_run else [p for p in packages if not dpkg_installed(ctx, p)]
+    if not missing:
+        ctx.say(f"packages already installed: {' '.join(packages)}")
+        return True
+    if offline or not ctx.online():
+        ctx.warn(f"offline: skipping apt install of {' '.join(missing)} (run 'lindos-settings apps' or "
+                 f"'lindos-mode set' again when online)")
+        return True
+    if not ctx.which("apt-get") and not ctx.dry_run:
+        ctx.error("apt-get not found")
+        return False
+    ctx.say(f"installing packages: {' '.join(missing)}")
+    ok_update, _ = ctx.run(["apt-get", "update", "-qq"], timeout=900)
+    if not ok_update:
+        ctx.warn("apt-get update failed; trying to install with the current lists")
+    ok, tail = ctx.run(["apt-get", "install", "-y", "-q",
+                        "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"] + missing)
+    if not ok:
+        ctx.error(f"apt-get install failed: {tail}")
+    return ok
+
+
+def flatpak_install(ctx: Ctx, ids: List[str], *, offline: bool = False) -> bool:
+    """``flatpak install -y flathub <id>`` for each id (adds the Flathub remote if needed)."""
+    if not ids:
+        return True
+    if not ctx.which("flatpak") and not ctx.dry_run:
+        ctx.warn("flatpak not installed; skipping " + " ".join(ids))
+        return True
+    if offline or not ctx.online():
+        ctx.warn(f"offline: skipping flatpak install of {' '.join(ids)}")
+        return True
+    ctx.run(["flatpak", "remote-add", "--if-not-exists", "--system", "flathub", FLATHUB_URL], timeout=300)
+    ok_all = True
+    for fid in ids:
+        ctx.say(f"installing flatpak {fid}")
+        ok, tail = ctx.run(["flatpak", "install", "-y", "--noninteractive", "--system", "flathub", fid], timeout=3600)
+        if not ok:
+            ctx.error(f"flatpak install {fid} failed: {tail}")
+            ok_all = False
+    return ok_all
+
+
+def unit_exists(ctx: Ctx, unit: str) -> bool:
+    if ctx.dry_run:
+        return True
+    systemctl = ctx.which("systemctl")
+    if not systemctl:
+        return False
+    try:
+        proc = subprocess.run([systemctl, "cat", "--", unit], stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=30, check=False, env=ctx.env)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def systemctl_units(ctx: Ctx, verb: str, units: List[str], *, now: bool = True) -> bool:
+    """``systemctl <verb> [--now] <unit>…`` for whitelisted units (missing units are skipped)."""
+    if not units:
+        return True
+    if not ctx.which("systemctl") and not ctx.dry_run:
+        ctx.warn(f"systemctl not found; cannot {verb} {' '.join(units)}")
+        return True
+    ok_all = True
+    for unit in units:
+        if not lhelper.unit_allowed(unit):
+            ctx.error(f"unit '{unit}' is not whitelisted")
+            ok_all = False
+            continue
+        full = unit if unit.endswith(lhelper.UNIT_SUFFIXES) else unit + ".service"
+        if verb != "mask" and not unit_exists(ctx, full):
+            ctx.say(f"unit {full} not present; skipping {verb}")
+            continue
+        args = ["systemctl", verb]
+        if now and verb in ("enable", "disable", "mask"):
+            args.append("--now")
+        args += ["--", full]
+        ok, tail = ctx.run(args, timeout=120)
+        if not ok:
+            ctx.warn(f"systemctl {verb} {full} failed: {tail}")
+            ok_all = False
+    return ok_all
+
+
+def render_sysctl(mode_id: str, values: Dict[str, str]) -> str:
+    lines = [f"# {lpaths.SYSCTL_MODE_CONF} — managed by Lindos (mode: {mode_id}); "
+             "written by lindos-helper apply-sysctl / apply-mode.  Do not edit — it is regenerated.",
+             f"# {_dt.datetime.now().isoformat(timespec='seconds')}"]
+    for key in sorted(values):
+        lines.append(f"{key} = {values[key]}")
+    return "\n".join(lines) + "\n"
+
+
+def apply_sysctl_values(ctx: Ctx, values: Dict[str, str], mode_id: str = "custom") -> bool:
+    """Write ``/etc/sysctl.d/90-lindos-mode.conf`` and reload with ``sysctl --system``."""
+    path = lpaths.sysctl_mode_conf()
+    if not ctx.write_file(path, render_sysctl(mode_id, values)):
+        return False
+    ctx.say(f"sysctl: {len(values)} value(s) → {path}")
+    ok, tail = ctx.run(["sysctl", "--system", "-q"], timeout=120, quiet=True, allow_missing=True)
+    if not ok and not ctx.dry_run:
+        ctx.warn(f"sysctl --system reported a problem: {tail}")
+    return True
+
+
+def set_governor_now(ctx: Ctx, governor: str) -> bool:
+    """Write the cpufreq governor on every CPU (and persist via lindos-tune when present)."""
+    if ctx.dry_run:
+        ctx.say(f"[dry-run] would write '{governor}' to /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
+        if ctx.which("lindos-tune"):
+            ctx.run(["lindos-tune", "governor", governor], timeout=60)
+        return True
+    result = lhardware.write_governor(governor)
+    if result["ok"]:
+        ctx.say(f"governor: {result['governor']} on {result['written']} cpu(s)"
+                + (f", EPP {result['epp']}" if result.get("epp") else ""))
+    else:
+        ctx.warn(f"governor: {result.get('error', 'not applied')}")
+    if ctx.which("lindos-tune"):
+        ok, tail = ctx.run(["lindos-tune", "governor", governor], timeout=60, quiet=True, allow_missing=True)
+        if not ok:
+            ctx.warn(f"lindos-tune governor {governor}: {tail}")
+    return result["ok"] or not lhardware.governor_paths()   # no cpufreq at all (VM) is not an error
+
+
+def set_zram_percent(ctx: Ctx, percent: int) -> bool:
+    """``lindos-tune zram N``; fallback: write zram-generator / zramswap config directly."""
+    if ctx.which("lindos-tune") or (ctx.dry_run and ctx.env.get("LINDOS_HELPER_NO_TUNE") != "1"):
+        ok, tail = ctx.run(["lindos-tune", "zram", str(percent)], timeout=300)
+        if ok:
+            return True
+        ctx.warn(f"lindos-tune zram failed ({tail}); writing the zram config directly")
+    has_generator = any(os.path.isfile(p) for p in ("/usr/lib/systemd/system-generators/zram-generator",
+                                                    "/lib/systemd/system-generators/zram-generator"))
+    has_zramtools = bool(ctx.which("zramswap")) or os.path.isfile(lpaths.resolve(ZRAMSWAP_DEFAULT))
+    if has_generator or (os.path.isfile(lpaths.resolve(ZRAM_GENERATOR_CONF)) and not has_zramtools):
+        content = ("# managed by Lindos (lindos-helper set-zram)\n[zram0]\n"
+                   f"zram-size = ram * {percent / 100:.2f}\ncompression-algorithm = zstd\nswap-priority = 100\n"
+                   "fs-type = swap\n")
+        if not ctx.write_file(lpaths.resolve(ZRAM_GENERATOR_CONF), content):
+            return False
+        ctx.run(["systemctl", "daemon-reload"], timeout=60, allow_missing=True)
+        ctx.run(["systemctl", "restart", "systemd-zram-setup@zram0.service"], timeout=120, allow_missing=True)
+        return True
+    content = ("# managed by Lindos (lindos-helper set-zram)\nALGO=zstd\n"
+               f"PERCENT={percent}\nPRIORITY=100\n")
+    if not ctx.write_file(lpaths.resolve(ZRAMSWAP_DEFAULT), content):
+        return False
+    ctx.run(["systemctl", "restart", "zramswap.service"], timeout=120, allow_missing=True)
+    return True
+
+
+def set_sched_now(ctx: Ctx, profile: str) -> bool:
+    """``lindos-tune sched set <profile>``; fallback: scx_loader D-Bus, else scx.service directly.
+
+    ``profile`` is one of ``scx_lavd|scx_bpfland|scx_flash|scx_rustland|none`` (already validated).
+    ``none`` stops any running scx scheduler.  Absent scx tooling degrades to a warning, not a
+    hard failure — the scheduler is a performance option, never a correctness requirement.
+    """
+    if ctx.which("lindos-tune") or (ctx.dry_run and ctx.env.get("LINDOS_HELPER_NO_TUNE") != "1"):
+        ok, tail = ctx.run(["lindos-tune", "sched", "set", profile], timeout=120)
+        if ok:
+            return True
+        ctx.warn(f"lindos-tune sched set failed ({tail}); managing scx directly")
+    if ctx.which("scx_loader") and ctx.which("busctl"):
+        if profile == "none":
+            call = ["busctl", "--system", "call", SCX_LOADER_BUS, SCX_LOADER_OBJ, SCX_LOADER_BUS, "StopScheduler"]
+        else:
+            call = ["busctl", "--system", "call", SCX_LOADER_BUS, SCX_LOADER_OBJ, SCX_LOADER_BUS,
+                    "StartScheduler", "su", profile, "0"]
+        ok, tail = ctx.run(call, timeout=60, allow_missing=True)
+        if ok:
+            return True
+        ctx.warn(f"scx_loader call failed ({tail}); falling back to scx.service")
+    sched = "" if profile == "none" else profile
+    content = ("# managed by Lindos (lindos-helper set-sched)\n"
+               "# Read by scx.service (scx-scheds package). Empty SCX_SCHEDULER = no scx scheduler.\n"
+               f"SCX_SCHEDULER={sched}\n# SCX_FLAGS='-m all'\n")
+    if not ctx.write_file(lpaths.resolve(SCX_DEFAULT), content):
+        return False
+    if not ctx.dry_run and not unit_exists(ctx, SCX_UNIT):
+        ctx.warn("scx-scheds is not installed (no scx.service) — install it or the lindos-kernel's scx tools")
+        return True
+    verb = "disable" if profile == "none" else "enable"
+    ctx.run(["systemctl", verb, "--now", SCX_UNIT], timeout=120, allow_missing=True)
+    return True
+
+
+def write_system_json(ctx: Ctx, fields: Dict[str, Any]) -> bool:
+    path = lpaths.system_conf()
+    if ctx.dry_run:
+        ctx.say(f"[dry-run] would update {path} with {json.dumps(fields, sort_keys=True)}")
+        return True
+    try:
+        lconfig.save_system(fields, path)
+    except OSError as exc:
+        ctx.error(f"cannot write {path}: {exc}")
+        return False
+    ctx.say(f"system config: {json.dumps(fields, sort_keys=True)} → {path}")
+    return True
+
+
+# --- actions ------------------------------------------------------------------------------------
+def act_apply_mode(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """Privileged part of a mode switch (payload = ``lindos.modes.build_system_plan``)."""
+    mode_id = p["mode"]
+    offline = bool(p.get("offline")) or not ctx.online()
+    ctx.say(f"apply-mode {mode_id}" + (" (offline: package installs skipped)" if offline else ""))
+    failures: List[str] = []
+
+    if not apt_install(ctx, p.get("packages", []), offline=offline):
+        failures.append("packages")
+    if not flatpak_install(ctx, p.get("flatpaks", []), offline=offline):
+        failures.append("flatpaks")
+
+    # dry-run pretends lindos-tune is present unless LINDOS_HELPER_NO_TUNE=1 (tests exercise the fallback)
+    have_tune = bool(ctx.which("lindos-tune")) or (ctx.dry_run and ctx.env.get("LINDOS_HELPER_NO_TUNE") != "1")
+    if have_tune:
+        # lindos-tune owns sysctl drop-in, zram, services, governor, earlyoom, ananicy (SPEC §11/§13)
+        cmd = ["lindos-tune", "apply", "--mode", mode_id, "--system"]
+        if offline:
+            cmd.append("--offline")
+        ok, tail = ctx.run(cmd, timeout=1800)
+        if not ok:
+            ctx.error(f"lindos-tune apply failed: {tail}")
+            failures.append("lindos-tune")
+    else:
+        ctx.warn("lindos-tune not installed; applying services/sysctl/governor/zram directly")
+        if not systemctl_units(ctx, "disable", p.get("services_disable", [])):
+            failures.append("services-disable")
+        if not systemctl_units(ctx, "enable", p.get("services_enable", [])):
+            failures.append("services-enable")
+        if not apply_sysctl_values(ctx, p.get("sysctl", {}), mode_id):
+            failures.append("sysctl")
+        if not set_governor_now(ctx, p.get("governor", "schedutil")):
+            failures.append("governor")
+        if not set_zram_percent(ctx, int(p.get("zram_percent", 50))):
+            failures.append("zram")
+
+    script = p.get("apply_system")
+    if script:
+        if os.path.isfile(script) or ctx.dry_run:
+            ok, tail = ctx.run(["bash", script], timeout=1800, extra_env={"LINDOS_MODE": mode_id})
+            if not ok:
+                ctx.error(f"apply-system.sh failed: {tail}")
+                failures.append("apply-system.sh")
+        else:
+            ctx.warn(f"apply_system script {script} not found; skipped")
+
+    if p.get("set_system_default") and not write_system_json(ctx, {"mode": mode_id}):
+        failures.append("system.json")
+
+    if failures:
+        ctx.error(f"apply-mode {mode_id} finished with errors: {', '.join(failures)}")
+        return EXIT_ERROR
+    ctx.say(f"apply-mode {mode_id}: done")
+    return EXIT_OK
+
+
+def act_install_browser(ctx: Ctx, p: Dict[str, Any]) -> int:
+    script = ctx.libexec("install-browser.sh")
+    if not os.path.isfile(script) and not ctx.dry_run:
+        ctx.error(f"{script} not found")
+        return EXIT_ERROR
+    ok, tail = ctx.run(["bash", script, p["browser"]], timeout=1800)
+    if not ok:
+        ctx.error(f"install-browser {p['browser']} failed: {tail}")
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def act_install_packages(ctx: Ctx, p: Dict[str, Any]) -> int:
+    if not ctx.online() and not ctx.dry_run:
+        ctx.error("offline: cannot download packages " + " ".join(p["packages"]))
+        return EXIT_ERROR
+    return EXIT_OK if apt_install(ctx, p["packages"]) else EXIT_ERROR
+
+
+def act_install_flatpaks(ctx: Ctx, p: Dict[str, Any]) -> int:
+    if not ctx.online() and not ctx.dry_run:
+        ctx.error("offline: cannot download flatpaks " + " ".join(p["flatpaks"]))
+        return EXIT_ERROR
+    return EXIT_OK if flatpak_install(ctx, p["flatpaks"]) else EXIT_ERROR
+
+
+def act_set_governor(ctx: Ctx, p: Dict[str, Any]) -> int:
+    return EXIT_OK if set_governor_now(ctx, p["governor"]) else EXIT_ERROR
+
+
+def act_set_services(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """enable/disable/mask whitelisted units.
+
+    When lindos-tune is installed, enable/disable are delegated to
+    ``lindos-tune services enable|disable <unit>…`` (we are root) so its conditional
+    autostart entries (e.g. blueman-applet ⇄ bluetooth.service) follow the unit; units
+    lindos-tune refuses (its whitelist ⊆ ours) or any failure fall back to plain systemctl.
+    """
+    ok = True
+    have_tune = bool(ctx.which("lindos-tune")) or (ctx.dry_run and ctx.env.get("LINDOS_HELPER_NO_TUNE") != "1")
+    for verb in ("enable", "disable"):
+        wanted = list(p.get(verb, []))
+        units = [u for u in wanted if lhelper.unit_allowed(u)]
+        for bad in wanted:
+            if bad not in units:
+                ctx.error(f"unit '{bad}' is not whitelisted")
+                ok = False
+        if not units:
+            continue
+        if have_tune:
+            t_ok, tail = ctx.run(["lindos-tune", "services", verb] + units, timeout=300, allow_missing=True)
+            if t_ok:
+                continue
+            ctx.warn(f"lindos-tune services {verb} {' '.join(units)} failed ({tail}); using systemctl directly")
+        ok = systemctl_units(ctx, verb, units) and ok
+    ok = systemctl_units(ctx, "mask", p.get("mask", [])) and ok
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_apply_sysctl(ctx: Ctx, p: Dict[str, Any]) -> int:
+    return EXIT_OK if apply_sysctl_values(ctx, p["sysctl"]) else EXIT_ERROR
+
+
+def act_apply_tune(ctx: Ctx, p: Dict[str, Any]) -> int:
+    cmd = ["lindos-tune", "apply", "--mode", p["mode"], "--system"]
+    if p.get("offline"):
+        cmd.append("--offline")
+    ok, tail = ctx.run(cmd, timeout=1800)
+    if not ok:
+        ctx.error(f"lindos-tune apply failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_set_zram(ctx: Ctx, p: Dict[str, Any]) -> int:
+    return EXIT_OK if set_zram_percent(ctx, int(p["percent"])) else EXIT_ERROR
+
+
+def act_install_compat(ctx: Ctx, p: Dict[str, Any]) -> int:
+    script = ctx.libexec("install-compat.sh")
+    if not os.path.isfile(script) and not ctx.dry_run:
+        ctx.error(f"{script} not found (package lindos-compat missing?)")
+        return EXIT_ERROR
+    ok, tail = ctx.run(["bash", script] + list(p.get("items", [])), timeout=3600)
+    if not ok:
+        ctx.error(f"install-compat failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_install_gaming(ctx: Ctx, p: Dict[str, Any]) -> int:
+    script = ctx.libexec("install-gaming.sh")
+    if not os.path.isfile(script) and not ctx.dry_run:
+        ctx.error(f"{script} not found (package lindos-gaming missing?)")
+        return EXIT_ERROR
+    ok, tail = ctx.run(["bash", script] + list(p["items"]), timeout=3600)
+    if not ok:
+        ctx.error(f"install-gaming failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_install_drivers(ctx: Ctx, p: Dict[str, Any]) -> int:
+    ok, tail = ctx.run(["lindos-drivers", "install"] + list(p.get("args", [])), timeout=3600)
+    if not ok:
+        ctx.error(f"lindos-drivers install failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_set_fan_profile(ctx: Ctx, p: Dict[str, Any]) -> int:
+    ok, tail = ctx.run(["lindos-tune", "fan", "set", p["profile"]], timeout=120)
+    if not ok:
+        ctx.error(f"lindos-tune fan set {p['profile']} failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_set_sched(ctx: Ctx, p: Dict[str, Any]) -> int:
+    return EXIT_OK if set_sched_now(ctx, p["profile"]) else EXIT_ERROR
+
+
+def act_write_system_config(ctx: Ctx, p: Dict[str, Any]) -> int:
+    return EXIT_OK if write_system_json(ctx, p) else EXIT_ERROR
+
+
+def act_enable_earlyoom(ctx: Ctx, p: Dict[str, Any]) -> int:
+    verb = "enable" if p.get("enable", True) else "disable"
+    if not ctx.dry_run and not unit_exists(ctx, "earlyoom.service"):
+        ctx.error("earlyoom is not installed (apt install earlyoom)")
+        return EXIT_ERROR
+    ok, tail = ctx.run(["systemctl", verb, "--now", "earlyoom.service"], timeout=60)
+    if not ok:
+        ctx.error(f"systemctl {verb} earlyoom failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+HANDLERS = {
+    "apply-mode": act_apply_mode,
+    "install-browser": act_install_browser,
+    "install-packages": act_install_packages,
+    "install-flatpaks": act_install_flatpaks,
+    "set-governor": act_set_governor,
+    "set-services": act_set_services,
+    "apply-sysctl": act_apply_sysctl,
+    "apply-tune": act_apply_tune,
+    "set-zram": act_set_zram,
+    "install-compat": act_install_compat,
+    "install-gaming": act_install_gaming,
+    "install-drivers": act_install_drivers,
+    "set-fan-profile": act_set_fan_profile,
+    "set-sched": act_set_sched,
+    "write-system-config": act_write_system_config,
+    "enable-earlyoom": act_enable_earlyoom,
+}
+assert set(HANDLERS) == set(ACTIONS), "helper actions out of sync with lindos.helper.ACTIONS"
+
+
+# --- entry point --------------------------------------------------------------------------------
+def _read_payload(text: Optional[str]) -> Any:
+    if text is None or text == "":
+        return {}
+    if text == "-":
+        text = sys.stdin.read()
+    return json.loads(text)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog=PROG, description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog="Actions: " + ", ".join(ACTIONS))
+    parser.add_argument("action", nargs="?", help="one of the whitelisted actions")
+    parser.add_argument("payload", nargs="?", help="JSON object (or '-' to read it from stdin)")
+    parser.add_argument("--list", action="store_true", help="print the action whitelist and exit")
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    try:
+        ns = parser.parse_args(argv)
+    except SystemExit as exc:  # argparse uses 2 for usage errors already
+        return int(exc.code or 0)
+
+    if ns.list:
+        print("\n".join(ACTIONS))
+        return EXIT_OK
+    if not ns.action:
+        parser.print_usage(sys.stderr)
+        return EXIT_USAGE
+
+    dry_run = os.environ.get(DRYRUN_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    setup_logging(dry_run)
+
+    if ns.action not in ACTIONS:
+        sys.stderr.write(f"{PROG}: unknown action '{ns.action}' (see --list)\n")
+        log.error("rejected unknown action %r", ns.action)
+        return EXIT_USAGE
+    try:
+        raw = _read_payload(ns.payload)
+    except ValueError as exc:
+        sys.stderr.write(f"{PROG}: payload is not valid JSON: {exc}\n")
+        return EXIT_USAGE
+    try:
+        payload = validate_payload(ns.action, raw)
+    except PayloadError as exc:
+        sys.stderr.write(f"{PROG}: invalid payload for {ns.action}: {exc}\n")
+        log.error("rejected payload for %s: %s", ns.action, exc)
+        return EXIT_USAGE
+
+    if not dry_run and not is_root():
+        sys.stderr.write(f"{PROG}: must run as root — call it through pkexec "
+                         f"(lindos.helper.run_privileged) or set {DRYRUN_ENV}=1 to preview.\n")
+        return EXIT_ERROR
+
+    caller = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID") or str(getattr(os, "getuid", lambda: -1)())
+    log.info("=== %s %s (uid %s%s)", ns.action, json.dumps(payload, sort_keys=True), caller,
+             ", dry-run" if dry_run else "")
+    ctx = Ctx(dry_run)
+    if dry_run:
+        ctx.say(f"[dry-run] {ns.action} {json.dumps(payload, sort_keys=True)}")
+    try:
+        code = HANDLERS[ns.action](ctx, payload)
+    except KeyboardInterrupt:
+        ctx.error("interrupted")
+        code = EXIT_ERROR
+    except Exception as exc:  # last resort: never leak a traceback to pkexec callers without logging it
+        log.exception("unhandled error in %s", ns.action)
+        ctx.error(f"{ns.action}: {exc}")
+        code = EXIT_ERROR
+    log.info("=== %s exit %s", ns.action, code)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,3 @@
+# Keeps build/kernel/config/ present in git. The real config fragment lives in the
+# lindos-kernel package (packages/lindos-kernel/root/usr/share/lindos/kernel/lindos.config);
+# see README.md in this directory.

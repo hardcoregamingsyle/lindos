@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Terminal
+GenericName=Terminal Emulator
+Comment=Command line (Xfce Terminal)
+Exec=xfce4-terminal
+TryExec=xfce4-terminal
+Icon=utilities-terminal
+Terminal=false
+StartupNotify=true
+StartupWMClass=xfce4-terminal
+Categories=System;TerminalEmulator;GTK;
+Keywords=terminal;console;shell;command line;bash;
+Actions=new-tab;
+X-Lindos-Component=desktop
+
+[Desktop Action new-tab]
+Name=New tab
+Exec=xfce4-terminal --tab

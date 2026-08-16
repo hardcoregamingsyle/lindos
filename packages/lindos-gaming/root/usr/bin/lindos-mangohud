@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""lindos-mangohud — user-side switch for the MangoHud overlay (Lindos).
+
+MangoHud only reads the per-user file ~/.config/MangoHud/MangoHud.conf (or
+$MANGOHUD_CONFIGFILE); the system template shipped by lindos-gaming lives at
+/etc/xdg/MangoHud/MangoHud.conf.  This tool seeds the per-user file from the
+template and flips the `no_display` line so the overlay is shown or hidden from
+the first frame.  Right-Shift+F12 always toggles it in-game as well.
+
+Usage:
+  lindos-mangohud status [--json]     show template/user file/visibility/config key
+  lindos-mangohud on | off | toggle   set visibility (writes the user file and, when
+                                      lindos-core is available, the Lindos config key
+                                      "mangohud" used by Lindos Settings → Gaming)
+  lindos-mangohud sync [--json]       apply the Lindos config key "mangohud" to the
+                                      user file (called by Lindos Settings / mode switch)
+  lindos-mangohud reset               re-seed the user file from the system template
+  lindos-mangohud edit                open GOverlay if installed, else the user file
+
+Exit codes: 0 ok · 1 error · 2 usage.
+Environment: LINDOS_HOME (replaces ~), LINDOS_ROOT (prefix for /etc), XDG_CONFIG_HOME.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+LOG = logging.getLogger("lindos-mangohud")
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+
+TEMPLATE_REL = "etc/xdg/MangoHud/MangoHud.conf"
+CONFIG_KEY = "mangohud"
+
+FALLBACK_TEMPLATE = """### MangoHud — Lindos default (fallback template; system copy missing)
+legacy_layout=1
+position=top-left
+font_size=20
+background_alpha=0.4
+round_corners=8
+toggle_hud=Shift_R+F12
+no_display
+fps
+frametime
+frame_timing
+cpu_stats
+cpu_temp
+gpu_stats
+gpu_temp
+ram
+vram
+"""
+
+RE_NO_DISPLAY = re.compile(r"^\s*no_display\s*(=\s*(?P<val>\S+))?\s*$")
+
+
+# --------------------------------------------------------------------------- #
+# paths
+# --------------------------------------------------------------------------- #
+def home_dir() -> Path:
+    h = os.environ.get("LINDOS_HOME")
+    return Path(h).expanduser() if h else Path.home()
+
+
+def system_root() -> Path:
+    return Path(os.environ.get("LINDOS_ROOT") or "/")
+
+
+def template_path() -> Path:
+    p = system_root() / TEMPLATE_REL
+    if p.exists():
+        return p
+    here = Path(__file__).resolve()
+    for base in (here.parent.parent.parent,):        # …/root/usr/bin → …/root
+        cand = base / TEMPLATE_REL
+        if cand.exists():
+            return cand
+    return p
+
+
+def user_conf_path() -> Path:
+    if os.environ.get("LINDOS_HOME"):
+        base = home_dir() / ".config"
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = Path(xdg) if xdg else home_dir() / ".config"
+    return base / "MangoHud" / "MangoHud.conf"
+
+
+# --------------------------------------------------------------------------- #
+# pure helpers (unit-testable)
+# --------------------------------------------------------------------------- #
+def is_hidden(text: str) -> bool:
+    """True when the config text contains an active `no_display` line."""
+    for line in text.splitlines():
+        m = RE_NO_DISPLAY.match(line)
+        if m:
+            val = m.group("val")
+            if val is None:
+                return True
+            return val.strip().lower() not in ("0", "false", "no", "off")
+    return False
+
+
+def set_visibility(text: str, visible: bool) -> str:
+    """Return the config text with the HUD shown (no_display removed/commented) or hidden."""
+    lines = text.splitlines()
+    out: list[str] = []
+    found = False
+    for line in lines:
+        m = RE_NO_DISPLAY.match(line)
+        if m:
+            if found:
+                continue                      # drop duplicates
+            found = True
+            if visible:
+                out.append("# no_display   (HUD shown from the first frame — set by lindos-mangohud on)")
+            else:
+                out.append("no_display")
+            continue
+        if not visible and re.match(r"^\s*#\s*no_display\b", line):
+            # our own commented marker → re-activate instead of appending a duplicate
+            if not found:
+                found = True
+                out.append("no_display")
+                continue
+        out.append(line)
+    if not visible and not found:
+        out.append("no_display")
+    result = "\n".join(out)
+    if not result.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def read_template() -> str:
+    p = template_path()
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        LOG.warning("system template %s not found; using built-in fallback", p)
+        return FALLBACK_TEMPLATE
+
+
+def read_user(create: bool) -> tuple[str, bool]:
+    """Return (text, existed).  When missing and create=True the template is used."""
+    p = user_conf_path()
+    try:
+        return p.read_text(encoding="utf-8"), True
+    except OSError:
+        return (read_template() if create else ""), False
+
+
+def write_user(text: str) -> Path:
+    p = user_conf_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, p)
+    return p
+
+
+# --------------------------------------------------------------------------- #
+# lindos config bridge (guarded — lindos-core may be missing on a dev box)
+# --------------------------------------------------------------------------- #
+def config_get(default: Optional[bool] = None) -> Optional[bool]:
+    try:
+        from lindos.config import Config  # type: ignore[import-not-found]
+        cfg = Config.load()
+        val = cfg.get(CONFIG_KEY, default)
+        return None if val is None else bool(val)
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("lindos.config unavailable: %s", exc)
+        return default
+
+
+def config_set(value: bool) -> bool:
+    try:
+        from lindos.config import Config  # type: ignore[import-not-found]
+        cfg = Config.load()
+        cfg.set(CONFIG_KEY, bool(value))
+        cfg.save()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("could not write lindos config: %s", exc)
+        return False
+
+
+def effective_mode() -> Optional[str]:
+    try:
+        from lindos.config import effective_mode as em  # type: ignore[import-not-found]
+        return str(em())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# commands
+# --------------------------------------------------------------------------- #
+def status_dict() -> dict:
+    text, existed = read_user(create=False)
+    return {
+        "template": str(template_path()),
+        "template_present": template_path().exists(),
+        "user_conf": str(user_conf_path()),
+        "user_conf_present": existed,
+        "visible": (not is_hidden(text)) if existed else (not is_hidden(read_template())),
+        "config_mangohud": config_get(None),
+        "mode": effective_mode(),
+        "mangohud_installed": shutil.which("mangohud") is not None,
+        "goverlay_installed": shutil.which("goverlay") is not None,
+        "toggle_key": "Shift_R+F12",
+    }
+
+
+def cmd_status(as_json: bool) -> int:
+    st = status_dict()
+    if as_json:
+        print(json.dumps(st, indent=2))
+        return EXIT_OK
+    print(f"MangoHud binary:   {'installed' if st['mangohud_installed'] else 'NOT installed (apt install mangohud)'}")
+    print(f"System template:   {st['template']} ({'present' if st['template_present'] else 'missing — built-in fallback'})")
+    print(f"User config:       {st['user_conf']} ({'present' if st['user_conf_present'] else 'not created yet'})")
+    print(f"HUD at start:      {'VISIBLE' if st['visible'] else 'hidden (toggle in-game with Shift_R+F12)'}")
+    cfg = st["config_mangohud"]
+    print(f"Lindos config key: mangohud={cfg if cfg is not None else 'unset / lindos-core missing'}"
+          + (f"  · mode={st['mode']}" if st["mode"] else ""))
+    return EXIT_OK
+
+
+def apply_visibility(visible: bool, write_config: bool) -> int:
+    text, _ = read_user(create=True)
+    new = set_visibility(text, visible)
+    try:
+        p = write_user(new)
+    except OSError as exc:
+        LOG.error("cannot write %s: %s", user_conf_path(), exc)
+        return EXIT_ERROR
+    cfg_written = config_set(visible) if write_config else False
+    LOG.info("MangoHud overlay %s (%s%s)", "shown" if visible else "hidden", p,
+             "; lindos config mangohud=%s" % str(visible).lower() if cfg_written else "")
+    return EXIT_OK
+
+
+def cmd_toggle() -> int:
+    text, existed = read_user(create=True)
+    currently_hidden = is_hidden(text) if existed else is_hidden(read_template())
+    return apply_visibility(currently_hidden, write_config=True)
+
+
+def cmd_sync(as_json: bool) -> int:
+    want = config_get(False)
+    visible = bool(want)
+    rc = apply_visibility(visible, write_config=False)
+    if as_json:
+        print(json.dumps({"status": "ok" if rc == 0 else "error", "visible": visible,
+                          "config_mangohud": want, "user_conf": str(user_conf_path())}))
+    return rc
+
+
+def cmd_reset() -> int:
+    try:
+        p = write_user(read_template())
+    except OSError as exc:
+        LOG.error("cannot write %s: %s", user_conf_path(), exc)
+        return EXIT_ERROR
+    LOG.info("re-seeded %s from %s", p, template_path())
+    return EXIT_OK
+
+
+def cmd_edit() -> int:
+    if shutil.which("goverlay"):
+        try:
+            subprocess.Popen(["goverlay"], start_new_session=True)
+            return EXIT_OK
+        except OSError as exc:
+            LOG.error("goverlay: %s", exc)
+    text, existed = read_user(create=True)
+    if not existed:
+        try:
+            write_user(text)
+        except OSError as exc:
+            LOG.error("cannot create %s: %s", user_conf_path(), exc)
+            return EXIT_ERROR
+    for opener in ("xdg-open", "exo-open"):
+        if shutil.which(opener):
+            try:
+                subprocess.Popen([opener, str(user_conf_path())], start_new_session=True)
+                return EXIT_OK
+            except OSError:
+                continue
+    print(str(user_conf_path()))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lindos-mangohud", description="Show/hide the MangoHud overlay for this user.")
+    p.add_argument("-v", "--verbose", action="store_true")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+    ps = sub.add_parser("status", help="show template / user file / visibility")
+    ps.add_argument("--json", action="store_true")
+    sub.add_parser("on", help="show the HUD from the first frame")
+    sub.add_parser("off", help="hide the HUD (Shift_R+F12 still toggles it)")
+    sub.add_parser("toggle", help="flip visibility")
+    py = sub.add_parser("sync", help="apply the Lindos config key 'mangohud' to the user file")
+    py.add_argument("--json", action="store_true")
+    sub.add_parser("reset", help="re-seed the user file from the system template")
+    sub.add_parser("edit", help="open GOverlay or the user file")
+    return p
+
+
+def _tolerant_streams() -> None:
+    """Never crash on a non-UTF-8 console."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _tolerant_streams()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s", stream=sys.stderr)
+    if args.cmd == "status":
+        return cmd_status(args.json)
+    if args.cmd == "on":
+        return apply_visibility(True, write_config=True)
+    if args.cmd == "off":
+        return apply_visibility(False, write_config=True)
+    if args.cmd == "toggle":
+        return cmd_toggle()
+    if args.cmd == "sync":
+        return cmd_sync(args.json)
+    if args.cmd == "reset":
+        return cmd_reset()
+    if args.cmd == "edit":
+        return cmd_edit()
+    parser.print_help()
+    return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos icon (c) Lindos Team, GPL-3.0-or-later. Original geometric mark: an "L" and a four-point spark. Not derived from any Microsoft artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3A3A3A"/><stop offset="1" stop-color="#202020"/></linearGradient>
+    <linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#60CDFF"/><stop offset="1" stop-color="#0067C0"/></linearGradient>
+  </defs>
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="url(#bg)"/>
+  <polygon points="39.50,23.69 39.43,25.49 35.18,28.37 34.59,29.64 35.18,34.74 33.85,35.96 28.81,34.99 27.50,35.48 24.31,39.50 22.51,39.43 19.63,35.18 18.36,34.59 13.26,35.18 12.04,33.85 13.01,28.81 12.52,27.50 8.50,24.31 8.57,22.51 12.82,19.63 13.41,18.36 12.82,13.26 14.15,12.04 19.19,13.01 20.50,12.52 23.69,8.50 25.49,8.57 28.37,12.82 29.64,13.41 34.74,12.82 35.96,14.15 34.99,19.19 35.48,20.50" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="24" cy="24" r="8.5" fill="url(#bg)"/>
+  <circle cx="24" cy="24" r="6" fill="none" stroke="url(#ac)" stroke-width="3"/>
+</svg>

@@ -1,0 +1,32 @@
+{"name": "firefox", "type": "Lindos-Browser"}
+{"name": "firefox-bin", "type": "Lindos-Browser"}
+{"name": "firefox-esr", "type": "Lindos-Browser"}
+{"name": "Isolated Web Co", "type": "Lindos-Browser"}
+{"name": "Web Content", "type": "Lindos-Browser"}
+{"name": "WebExtensions", "type": "Lindos-Browser"}
+{"name": "Privileged Cont", "type": "Lindos-Browser"}
+{"name": "RDD Process", "type": "Lindos-Browser"}
+{"name": "Socket Process", "type": "Lindos-Browser"}
+{"name": "Utility Process", "type": "Lindos-Browser"}
+{"name": "librewolf", "type": "Lindos-Browser"}
+{"name": "chrome", "type": "Lindos-Browser"}
+{"name": "google-chrome", "type": "Lindos-Browser"}
+{"name": "chrome_crashpad_handler", "type": "Lindos-Browser"}
+{"name": "chromium", "type": "Lindos-Browser"}
+{"name": "chromium-browser", "type": "Lindos-Browser"}
+{"name": "msedge", "type": "Lindos-Browser"}
+{"name": "microsoft-edge", "type": "Lindos-Browser"}
+{"name": "brave", "type": "Lindos-Browser"}
+{"name": "vivaldi-bin", "type": "Lindos-Browser"}
+{"name": "opera", "type": "Lindos-Browser"}
+{"name": "epiphany", "type": "Lindos-Browser"}
+{"name": "WebKitWebProces", "type": "Lindos-Browser"}
+{"name": "WebKitNetworkPr", "type": "Lindos-Browser"}
+{"name": "thunderbird", "type": "Lindos-Browser"}
+{"name": "thunderbird-bin", "type": "Lindos-Browser"}
+{"name": "electron", "type": "Lindos-Browser"}
+{"name": "discord", "type": "Lindos-Browser"}
+{"name": "Discord", "type": "Lindos-Browser"}
+{"name": "slack", "type": "Lindos-Browser"}
+{"name": "teams", "type": "Lindos-Browser"}
+{"name": "spotify", "type": "Lindos-Browser"}

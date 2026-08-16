@@ -1,0 +1,280 @@
+#!/bin/sh
+# lindos-compositor — start | stop | status | toggle | restart the Lindos compositor (picom).
+#
+#   start [--force]   run picom with /etc/xdg/picom-lindos.conf (or ~/.config/lindos/picom.conf)
+#                     and switch xfwm4's own compositor off while picom runs.  Honours the
+#                     Lindos mode: in Lite (compositor "none") it does nothing unless --force;
+#                     without GLX it leaves xfwm4 compositing on and exits 0.
+#   stop [--keep-xfwm | --no-xfwm]
+#                     kill picom and hand compositing back to xfwm4 (on), except when the
+#                     effective mode says "none" (Lite) → xfwm4 compositing stays off.
+#                     --keep-xfwm: don't touch the xfwm4 setting; --no-xfwm: force it off.
+#   status            "picom running (pid N)" exit 0 · "stopped (xfwm4 compositing on|off)" exit 3
+#   toggle            stop if running, else start --force
+#   restart           stop --keep-xfwm; start --force
+#
+# POSIX sh (SPEC §5).  Exit codes: 0 ok/skipped, 1 error, 2 usage, 3 status: not running.
+# Env: LINDOS_PICOM_CONF (config override), LINDOS_MODES_DIR, XDG_CONFIG_HOME.
+set -eu
+
+PROG="lindos-compositor"
+MODES_DIR="${LINDOS_MODES_DIR:-/usr/share/lindos/modes}"
+CONF_HOME="${XDG_CONFIG_HOME:-${HOME:-/}/.config}"
+USER_CONF="${CONF_HOME}/lindos/config.json"
+SYSTEM_CONF="/etc/lindos/system.json"
+SYSTEM_PICOM_CONF="/etc/xdg/picom-lindos.conf"
+USER_PICOM_CONF="${CONF_HOME}/lindos/picom.conf"
+STATE_DIR="${XDG_RUNTIME_DIR:-${HOME:-/tmp}/.cache}/lindos"
+STATE_FILE="${STATE_DIR}/compositor.state"
+
+log() { printf '%s: %s\n' "${PROG}" "$*" >&2; }
+die() { printf '%s: ERROR: %s\n' "${PROG}" "$1" >&2; exit "${2:-1}"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# json_get FILE KEY → string value or "" (python3 preferred, sed fallback)
+json_get() {
+    _jf="$1"; _jk="$2"
+    [ -r "${_jf}" ] || return 0
+    if have python3; then
+        python3 - "${_jf}" "${_jk}" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+    v = data.get(sys.argv[2]) if isinstance(data, dict) else None
+    if isinstance(v, str):
+        print(v)
+except Exception:
+    pass
+PY
+    else
+        sed -n 's/.*"'"${_jk}"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${_jf}" | head -n 1
+    fi
+}
+
+effective_mode() {
+    _m="$(json_get "${USER_CONF}" mode)"
+    [ -n "${_m}" ] || _m="$(json_get "${SYSTEM_CONF}" mode)"
+    [ -n "${_m}" ] || _m="everyday"
+    printf '%s\n' "${_m}"
+}
+
+# mode_compositor MODE → picom | xfwm | none  (mode.json "compositor", built-in defaults otherwise)
+mode_compositor() {
+    _mc="$(json_get "${MODES_DIR}/$1/mode.json" compositor)"
+    case "${_mc}" in
+        picom|xfwm|none) printf '%s\n' "${_mc}"; return 0 ;;
+    esac
+    case "$1" in
+        lite) printf 'none\n' ;;
+        *) printf 'picom\n' ;;
+    esac
+}
+
+picom_pids() {
+    if have pgrep; then
+        pgrep -x picom -u "$(id -u)" 2>/dev/null || true
+    else
+        ps -u "$(id -u)" -o pid= -o comm= 2>/dev/null | awk '$2 == "picom" {print $1}'
+    fi
+}
+
+picom_running() {
+    [ -n "$(picom_pids)" ]
+}
+
+have_display() {
+    [ -n "${DISPLAY:-}" ]
+}
+
+# have_glx → 0 when GLX/direct rendering is available (picom's glx backend needs it)
+have_glx() {
+    have_display || return 1
+    if have glxinfo; then
+        glxinfo -B 2>/dev/null | grep -q 'direct rendering: Yes' && return 0
+        return 1
+    fi
+    if have xdpyinfo; then
+        xdpyinfo 2>/dev/null | grep -q 'GLX' && return 0
+        return 1
+    fi
+    # no probing tool: assume a GPU is present when DRI nodes exist
+    [ -d /dev/dri ]
+}
+
+xfwm_compositing() {   # xfwm_compositing true|false
+    if have xfconf-query && have_display; then
+        xfconf-query -c xfwm4 -p /general/use_compositing -n -t bool -s "$1" 2>/dev/null \
+            || log "could not set xfwm4 use_compositing=$1"
+    fi
+}
+
+xfwm_compositing_state() {   # prints on|off|unknown
+    if have xfconf-query && have_display; then
+        _v="$(xfconf-query -c xfwm4 -p /general/use_compositing 2>/dev/null || true)"
+        case "${_v}" in
+            true) printf 'on\n' ;;
+            false) printf 'off\n' ;;
+            *) printf 'unknown\n' ;;
+        esac
+    else
+        printf 'unknown\n'
+    fi
+}
+
+picom_config() {
+    if [ -n "${LINDOS_PICOM_CONF:-}" ] && [ -r "${LINDOS_PICOM_CONF}" ]; then
+        printf '%s\n' "${LINDOS_PICOM_CONF}"
+    elif [ -r "${USER_PICOM_CONF}" ]; then
+        printf '%s\n' "${USER_PICOM_CONF}"
+    else
+        printf '%s\n' "${SYSTEM_PICOM_CONF}"
+    fi
+}
+
+save_state() {
+    mkdir -p "${STATE_DIR}" 2>/dev/null || return 0
+    printf '%s\n' "$1" >"${STATE_FILE}" 2>/dev/null || true
+}
+
+cmd_start() {
+    _force=0
+    for _a in "$@"; do
+        case "${_a}" in
+            --force|-f) _force=1 ;;
+            *) die "start: unknown option ${_a}" 2 ;;
+        esac
+    done
+    have_display || die "no X display (DISPLAY unset); nothing to composite"
+    _mode="$(effective_mode)"
+    _want="$(mode_compositor "${_mode}")"
+    if [ "${_force}" -eq 0 ] && [ "${_want}" != "picom" ]; then
+        log "skipped: mode '${_mode}' uses compositor '${_want}' (use --force to override)"
+        case "${_want}" in
+            none) xfwm_compositing false ;;
+            xfwm) xfwm_compositing true ;;
+        esac
+        save_state "${_want}"
+        return 0
+    fi
+    if picom_running; then
+        log "picom already running (pid $(picom_pids | head -n 1))"
+        return 0
+    fi
+    if ! have picom; then
+        xfwm_compositing true
+        die "picom is not installed (apt install picom); xfwm4 compositing left on"
+    fi
+    if ! have_glx; then
+        log "no GLX / direct rendering detected; keeping the xfwm4 compositor"
+        xfwm_compositing true
+        save_state xfwm
+        return 0
+    fi
+    _conf="$(picom_config)"
+    [ -r "${_conf}" ] || die "config not found: ${_conf}"
+    # picom and xfwm4 must not composite at the same time
+    xfwm_compositing false
+    if ! picom --config "${_conf}" -b >/dev/null 2>&1; then
+        xfwm_compositing true
+        die "picom failed to start (config ${_conf}); xfwm4 compositing restored"
+    fi
+    # give it a moment; if it died right away (e.g. no GLX after all) fall back
+    _tries=0
+    while [ "${_tries}" -lt 10 ]; do
+        if picom_running; then
+            break
+        fi
+        sleep 0.2 2>/dev/null || sleep 1
+        _tries=$((_tries + 1))
+    done
+    if ! picom_running; then
+        xfwm_compositing true
+        die "picom exited immediately; xfwm4 compositing restored (try: picom --config ${_conf})"
+    fi
+    save_state picom
+    log "picom started (pid $(picom_pids | head -n 1), config ${_conf})"
+}
+
+cmd_stop() {
+    _xfwm=auto
+    for _a in "$@"; do
+        case "${_a}" in
+            --keep-xfwm) _xfwm=keep ;;
+            --no-xfwm) _xfwm=off ;;
+            *) die "stop: unknown option ${_a}" 2 ;;
+        esac
+    done
+    if picom_running; then
+        if have pkill; then
+            pkill -x picom -u "$(id -u)" 2>/dev/null || true
+        else
+            for _p in $(picom_pids); do kill "${_p}" 2>/dev/null || true; done
+        fi
+        _tries=0
+        while [ "${_tries}" -lt 15 ] && picom_running; do
+            sleep 0.2 2>/dev/null || sleep 1
+            _tries=$((_tries + 1))
+        done
+        if picom_running; then
+            for _p in $(picom_pids); do kill -9 "${_p}" 2>/dev/null || true; done
+        fi
+        log "picom stopped"
+    else
+        log "picom was not running"
+    fi
+    case "${_xfwm}" in
+        keep) ;;
+        off) xfwm_compositing false; save_state none ;;
+        auto)
+            _want="$(mode_compositor "$(effective_mode)")"
+            if [ "${_want}" = "none" ]; then
+                xfwm_compositing false
+                save_state none
+            else
+                xfwm_compositing true
+                save_state xfwm
+            fi
+            ;;
+    esac
+    return 0
+}
+
+cmd_status() {
+    if picom_running; then
+        printf 'picom running (pid %s, config %s)\n' "$(picom_pids | head -n 1)" "$(picom_config)"
+        return 0
+    fi
+    printf 'stopped (xfwm4 compositing %s, mode %s)\n' "$(xfwm_compositing_state)" "$(effective_mode)"
+    return 3
+}
+
+cmd_toggle() {
+    if picom_running; then
+        cmd_stop
+    else
+        cmd_start --force
+    fi
+}
+
+cmd_restart() {
+    cmd_stop --keep-xfwm
+    cmd_start --force
+}
+
+[ $# -ge 1 ] || { usage; exit 2; }
+_cmd="$1"
+shift
+case "${_cmd}" in
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    status) cmd_status ;;
+    toggle) cmd_toggle ;;
+    restart) cmd_restart ;;
+    -h|--help|help) usage ;;
+    *) usage; die "unknown command: ${_cmd}" 2 ;;
+esac

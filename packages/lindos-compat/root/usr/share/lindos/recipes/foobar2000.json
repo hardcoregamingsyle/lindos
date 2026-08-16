@@ -1,0 +1,23 @@
+{
+  "id": "foobar2000",
+  "name": "foobar2000",
+  "vendor": "Peter Pawlowski (foobar2000.org)",
+  "category": "media",
+  "status": "works",
+  "summary": "The audiophile music player runs through Wine with playback, library, tagging, converter and most components.",
+  "notes": "foobar2000 (v1.6 32-bit and the 64-bit v2.x builds) installs and runs through Wine: playback of MP3/FLAC/OGG/Opus/AAC/WAV/APE/DSD, the media library, playlists, ReplayGain scanning, tagging, the Converter (using its own bundled encoders or ones you copy into the C:\\ drive), the equaliser and most third-party components (foo_* DLLs). Audio goes through Wine's PulseAudio/PipeWire driver; if you hear crackling, raise the buffer in Preferences > Playback > Output (500-1000 ms) or pick 'DS: Primary Sound Driver'.\nNot working / not needed: WASAPI-exclusive output components, Windows Media Foundation decoders (use the built-in ones), the 'Send to' shell integration. Files on your Linux disk are under Z:\\ (Z:\\home\\<you>\\Music).\nThe portable install mode is handy: pick 'Portable' in the installer and everything (config, components) stays inside one folder in the C:\\ drive.\nNative alternatives on Lindos: Strawberry, Quod Libet, DeaDBeeF (the closest in spirit), Rhythmbox.",
+  "installer_hint": "lindos-run --prefix foobar2000 ~/Downloads/foobar2000-x64_v2.1.6.exe",
+  "homepage": "https://www.foobar2000.org",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "DeaDBeeF", "how": "native, foobar2000-like player: Flatpak music.deadbeef.player or the deb from deadbeef.sourceforge.io"},
+    {"name": "Strawberry", "how": "native library-oriented player: apt install strawberry"},
+    {"name": "Quod Libet", "how": "native, tag-centric player: apt install quodlibet"}
+  ]
+}

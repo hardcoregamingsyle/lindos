@@ -1,0 +1,105 @@
+<!--
+  Lindos honest Windows VM — libvirt domain template (SPEC-VM §21).
+
+  This is a STANDARD q35 + OVMF/UEFI + virtio Windows virtual machine.  It contains NO
+  detection-evasion of any kind: it does not hide the hypervisor, does not masquerade any
+  vendor identity, and does not forge firmware, board-identity, serial, ACPI or CPU data.
+  The <uuid> below is a per-VM identifier libvirt requires (freshly generated, not copied
+  from any real machine).  The Hyper-V enlightenments are the documented Windows guest
+  *performance* features and honestly ADVERTISE that this is a VM; they are not evasion.
+
+  Tokens of the form @@NAME@@ are substituted by lindos_vm.domain.render().  Optional blocks
+  (@@VIRTIO_CDROM@@, @@GRAPHICS@@) expand to either real device XML or an empty string.
+-->
+<domain type="kvm">
+  <name>@@NAME@@</name>
+  <uuid>@@UUID@@</uuid>
+  <title>Lindos Windows VM (@@NAME@@)</title>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://microsoft.com/win/11"/>
+    </libosinfo:libosinfo>
+  </metadata>
+  <memory unit="KiB">@@RAM_KIB@@</memory>
+  <currentMemory unit="KiB">@@RAM_KIB@@</currentMemory>
+  <vcpu placement="static">@@VCPUS@@</vcpu>
+  <os firmware="efi">
+    <type arch="x86_64" machine="q35">hvm</type>
+    <loader readonly="yes" secure="yes" type="pflash">@@OVMF_CODE@@</loader>
+    <nvram template="@@OVMF_VARS@@">@@NVRAM@@</nvram>
+    <boot dev="cdrom"/>
+    <boot dev="hd"/>
+    <bootmenu enable="yes"/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <hyperv mode="custom">
+      <relaxed state="on"/>
+      <vapic state="on"/>
+      <spinlocks state="on" retries="8191"/>
+      <vpindex state="on"/>
+      <runtime state="on"/>
+      <synic state="on"/>
+      <stimer state="on"/>
+      <frequencies state="on"/>
+    </hyperv>
+    <vmport state="off"/>
+    <smm state="on"/>
+  </features>
+  <cpu mode="host-passthrough" check="none" migratable="on">
+    <topology sockets="1" dies="1" cores="@@CORES@@" threads="@@THREADS@@"/>
+  </cpu>
+  <clock offset="localtime">
+    <timer name="rtc" tickpolicy="catchup"/>
+    <timer name="pit" tickpolicy="delay"/>
+    <timer name="hpet" present="no"/>
+    <timer name="hypervclock" present="yes"/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <pm>
+    <suspend-to-mem enabled="no"/>
+    <suspend-to-disk enabled="no"/>
+  </pm>
+  <devices>
+    <emulator>@@EMULATOR@@</emulator>
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2" discard="unmap"/>
+      <source file="@@DISK_PATH@@"/>
+      <target dev="vda" bus="virtio"/>
+    </disk>
+    <disk type="file" device="cdrom">
+      <driver name="qemu" type="raw"/>
+      <source file="@@WINDOWS_ISO@@"/>
+      <target dev="sda" bus="sata"/>
+      <readonly/>
+    </disk>
+@@VIRTIO_CDROM@@
+    <controller type="usb" model="qemu-xhci" ports="15"/>
+    <controller type="pci" model="pcie-root"/>
+    <controller type="sata"/>
+    <controller type="virtio-serial"/>
+    <interface type="network">
+      <source network="default"/>
+      <model type="virtio"/>
+    </interface>
+    <input type="tablet" bus="usb"/>
+    <input type="keyboard" bus="ps2"/>
+    <input type="mouse" bus="ps2"/>
+    <console type="pty"/>
+    <channel type="unix">
+      <target type="virtio" name="org.qemu.guest_agent.0"/>
+    </channel>
+    <tpm model="tpm-crb">
+      <backend type="emulator" version="2.0"/>
+    </tpm>
+    <sound model="ich9"/>
+    <memballoon model="virtio"/>
+    <rng model="virtio">
+      <backend model="random">/dev/urandom</backend>
+    </rng>
+@@GRAPHICS@@
+  </devices>
+</domain>

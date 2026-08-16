@@ -1,0 +1,48 @@
+#!/bin/sh
+# postinst for lindos-core — idempotent (SPEC §1.1)
+set -e
+
+LOG_DIR="/var/log/lindos"
+HELPER="/usr/libexec/lindos/lindos-helper"
+INSTALL_BROWSER="/usr/libexec/lindos/install-browser.sh"
+PYLIB="/usr/lib/python3/dist-packages/lindos"
+SYSTEM_CONF="/etc/lindos/system.json"
+
+case "$1" in
+    configure)
+        # log directory for the helper (root only writes, everyone may read the log)
+        mkdir -p "$LOG_DIR"
+        chmod 0755 "$LOG_DIR"
+        touch "$LOG_DIR/helper.log"
+        chmod 0644 "$LOG_DIR/helper.log"
+
+        # helper + scripts must be executable (mkdeb fixes perms, but be safe on manual installs)
+        chmod 0755 "$HELPER" "$INSTALL_BROWSER" 2>/dev/null || true
+        for cli in lindos-mode lindos-browser lindos-config lindos-ram; do
+            [ -f "/usr/bin/$cli" ] && chmod 0755 "/usr/bin/$cli"
+        done
+
+        # default system config (conffile — only created when missing)
+        if [ ! -f "$SYSTEM_CONF" ]; then
+            mkdir -p /etc/lindos
+            printf '{\n  "browser": "firefox",\n  "mode": "everyday",\n  "oem": false\n}\n' > "$SYSTEM_CONF"
+        fi
+        chmod 0644 "$SYSTEM_CONF"
+
+        # byte-compile the python module (never fatal: python3 may be a different minor version)
+        if command -v py3compile >/dev/null 2>&1; then
+            py3compile -p lindos-core "$PYLIB" 2>/dev/null || true
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 -m compileall -q "$PYLIB" 2>/dev/null || true
+        fi
+        # the CLIs are python scripts without .py, compile them too
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -m py_compile "$HELPER" /usr/bin/lindos-mode /usr/bin/lindos-browser \
+                /usr/bin/lindos-config /usr/bin/lindos-ram 2>/dev/null || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

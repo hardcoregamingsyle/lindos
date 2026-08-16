@@ -1,0 +1,51 @@
+#!/usr/bin/python3
+"""lindos-tune — RAM / performance / hardware tuning CLI (Lindos SPEC §11).
+
+    lindos-tune status [--json]
+    lindos-tune apply --mode <id> [--system] [--offline] [--dry-run]
+    lindos-tune services list|disable|enable <unit>
+    lindos-tune zram <percent>
+    lindos-tune governor <g>
+    lindos-tune fan list|set <profile>
+    lindos-tune power <performance|balanced|power-saver>
+    lindos-tune report
+
+Thin launcher: puts /usr/lib/lindos-tune (or the in-repo tree) on sys.path and runs
+``lindos_tune.cli.main``.  Privileged operations go through the lindos-core helper.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+LIB_DIR = "/usr/lib/lindos-tune"
+
+
+def _bootstrap() -> None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.normpath(os.path.join(here, "..", "lib", "lindos-tune")),   # in-repo: root/usr/bin → root/usr/lib
+        LIB_DIR,
+    ]
+    for candidate in candidates:
+        if os.path.isdir(os.path.join(candidate, "lindos_tune")) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+            break
+    # in-repo lindos-core (packages/lindos-core/root/usr/lib/python3/dist-packages) — optional
+    core = os.path.normpath(os.path.join(here, "..", "..", "..", "..", "lindos-core", "root", "usr", "lib",
+                                         "python3", "dist-packages"))
+    if os.path.isdir(os.path.join(core, "lindos")) and core not in sys.path:
+        sys.path.append(core)
+
+
+_bootstrap()
+
+try:
+    from lindos_tune.cli import main
+except ImportError as exc:  # pragma: no cover - broken installation
+    sys.stderr.write(f"lindos-tune: cannot import lindos_tune from {LIB_DIR}: {exc}\n")
+    sys.exit(1)
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""lindos-game — install, inspect and launch the Lindos gaming launchers.
+
+Usage:
+  lindos-game list    [--json]                       launchers known to Lindos
+  lindos-game status  [--json]                       which launchers are installed (dpkg/flatpak/PATH)
+  lindos-game install <id ...|all> [--dry-run] [--json]
+                                                     install launchers.  Not root -> the request is sent
+                                                     to the lindos helper action 'install-gaming'
+                                                     ({"items": [...]}) which runs
+                                                     /usr/libexec/lindos/install-gaming.sh as root.
+  lindos-game launch  <id>                           start a launcher (offers to install it when missing)
+
+Ids: steam lutris heroic prism sober vinegar mcpelauncher bottles all
+The launcher catalogue lives in /usr/share/lindos/gaming/launchers.json and is
+shared with Lindos Settings → Gaming.
+
+Honesty notes shipped in the catalogue: Roblox runs through Sober (a community
+Linux client, not Roblox's Windows client); Minecraft Bedrock through the
+unofficial mcpelauncher; Steam games depend on the developer enabling anti-cheat
+for Proton (see areweanticheatyet.com / protondb.com).
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 offline (from the installer).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+LOG = logging.getLogger("lindos-game")
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_OFFLINE = 0, 1, 2, 3
+
+CATALOGUE_REL = "usr/share/lindos/gaming/launchers.json"
+INSTALLER_REL = "usr/libexec/lindos/install-gaming.sh"
+GAMESCOPE_REL = "usr/bin/lindos-gamescope"
+
+
+def system_root() -> Path:
+    return Path(os.environ.get("LINDOS_ROOT") or "/")
+
+
+def catalogue_path() -> Path:
+    """/usr/share/lindos/gaming/launchers.json (LINDOS_ROOT-aware, repo-relative fallback for dev)."""
+    p = system_root() / CATALOGUE_REL
+    if p.exists():
+        return p
+    here = Path(__file__).resolve()
+    for base in (here.parent.parent, here.parent.parent.parent):   # …/usr/bin → …/usr ; …/root
+        cand = base / "share" / "lindos" / "gaming" / "launchers.json"
+        if cand.exists():
+            return cand
+        cand = base / CATALOGUE_REL
+        if cand.exists():
+            return cand
+    return p
+
+
+def installer_path() -> Path:
+    p = system_root() / INSTALLER_REL
+    if p.exists():
+        return p
+    here = Path(__file__).resolve()
+    cand = here.parent.parent / "libexec" / "lindos" / "install-gaming.sh"
+    return cand if cand.exists() else p
+
+
+def gamescope_path() -> Path:
+    """/usr/bin/lindos-gamescope (LINDOS_ROOT-aware; sibling in the repo/dev tree)."""
+    p = system_root() / GAMESCOPE_REL
+    if p.exists():
+        return p
+    sibling = Path(__file__).resolve().parent / "lindos-gamescope"
+    return sibling if sibling.exists() else p
+
+
+def wrap_gamescope(cmd: list[str], spec: Optional[str]) -> list[str]:
+    """Wrap a launcher command in ``lindos-gamescope`` (SPEC-KERNEL §17.2).
+
+    ``spec`` is the value of ``--gamescope``: ``None`` means "do not wrap",
+    ``""`` means "wrap with mode defaults", ``"1920x1080"`` sets the resolution.
+    gamescope is a display/compositor layer only — wrapping never touches
+    anti-cheat or DRM.
+    """
+    if spec is None:
+        return cmd
+    wrapper = [str(gamescope_path())]
+    if spec:
+        wrapper += ["--res", spec]
+    return [*wrapper, "--", *cmd]
+
+
+def load_catalogue(path: Optional[Path] = None) -> list[dict]:
+    path = path or catalogue_path()
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    launchers = data.get("launchers", []) if isinstance(data, dict) else data
+    if not isinstance(launchers, list):
+        raise ValueError(f"{path}: 'launchers' must be a list")
+    return launchers
+
+
+def by_id(launchers: list[dict]) -> dict[str, dict]:
+    return {str(item["id"]): item for item in launchers}
+
+
+# --------------------------------------------------------------------------- #
+# probes (all guarded — must work on any OS)
+# --------------------------------------------------------------------------- #
+def have(binary: str) -> bool:
+    return shutil.which(binary) is not None
+
+
+def run(cmd: list[str], timeout: float = 30.0) -> tuple[int, str]:
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired):
+        return 127, ""
+    return cp.returncode, cp.stdout
+
+
+_DPKG_CACHE: Optional[dict[str, bool]] = None
+_FLATPAK_CACHE: Optional[set[str]] = None
+
+
+def dpkg_installed(pkg: str) -> bool:
+    global _DPKG_CACHE
+    if _DPKG_CACHE is None:
+        _DPKG_CACHE = {}
+    if pkg in _DPKG_CACHE:
+        return _DPKG_CACHE[pkg]
+    ok = False
+    if have("dpkg-query"):
+        rc, out = run(["dpkg-query", "-W", "-f", "${db:Status-Status}", pkg])
+        ok = rc == 0 and out.strip() == "installed"
+    _DPKG_CACHE[pkg] = ok
+    return ok
+
+
+def flatpak_apps() -> set[str]:
+    global _FLATPAK_CACHE
+    if _FLATPAK_CACHE is None:
+        apps: set[str] = set()
+        if have("flatpak"):
+            rc, out = run(["flatpak", "list", "--app", "--columns=application"], timeout=60)
+            if rc == 0:
+                apps = {line.strip() for line in out.splitlines() if line.strip() and "." in line}
+        _FLATPAK_CACHE = apps
+    return _FLATPAK_CACHE
+
+
+def probe(item: dict) -> dict:
+    """Return {'installed': bool, 'via': 'apt:pkg'|'flatpak:id'|'path:/usr/bin/x'|None}."""
+    check = item.get("check") or {}
+    for pkg in check.get("dpkg", []):
+        if dpkg_installed(pkg):
+            return {"installed": True, "via": f"apt:{pkg}"}
+    fp = flatpak_apps()
+    for fid in check.get("flatpak", []):
+        if fid in fp:
+            return {"installed": True, "via": f"flatpak:{fid}"}
+    for binary in check.get("which", []):
+        p = shutil.which(binary)
+        if p:
+            return {"installed": True, "via": f"path:{p}"}
+    return {"installed": False, "via": None}
+
+
+def status_rows(launchers: list[dict]) -> list[dict]:
+    rows = []
+    for item in launchers:
+        pr = probe(item)
+        rows.append({
+            "id": item["id"],
+            "name": item.get("name", item["id"]),
+            "installed": pr["installed"],
+            "via": pr["via"],
+            "install": item.get("install"),
+            "desktop": item.get("desktop"),
+            "icon": item.get("icon"),
+            "description": item.get("description", ""),
+        })
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# commands
+# --------------------------------------------------------------------------- #
+def cmd_list(launchers: list[dict], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps({"launchers": launchers}, indent=2))
+        return EXIT_OK
+    print(f"{'ID':<13} {'NAME':<22} {'INSTALL':<8} DESCRIPTION")
+    for it in launchers:
+        print(f"{it['id']:<13} {it.get('name', ''):<22} {str(it.get('install', '')):<8} {it.get('description', '')}")
+    print("\nlindos-game install <id ...|all>   ·   lindos-game status")
+    return EXIT_OK
+
+
+def cmd_status(launchers: list[dict], as_json: bool) -> int:
+    rows = status_rows(launchers)
+    if as_json:
+        print(json.dumps({"launchers": rows}, indent=2))
+        return EXIT_OK
+    print(f"{'ID':<13} {'NAME':<22} {'INSTALLED':<10} VIA")
+    for r in rows:
+        print(f"{r['id']:<13} {r['name']:<22} {'yes' if r['installed'] else 'no':<10} {r['via'] or '-'}")
+    return EXIT_OK
+
+
+def expand_items(requested: list[str], launchers: list[dict]) -> list[str]:
+    ids = [str(it["id"]) for it in launchers]
+    out: list[str] = []
+    for r in requested:
+        r = r.strip().lower()
+        if r == "all":
+            out.extend(i for i in ids if i not in out)
+        elif r in ids:
+            if r not in out:
+                out.append(r)
+        else:
+            raise ValueError(f"unknown launcher id: {r!r} (known: {', '.join(ids)}, all)")
+    return out
+
+
+def is_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid and geteuid() == 0)
+
+
+def run_installer_as_root(items: list[str], extra: list[str]) -> int:
+    script = installer_path()
+    if not script.exists():
+        LOG.error("installer not found: %s", script)
+        return EXIT_ERROR
+    try:
+        return subprocess.run([str(script), *extra, *items], check=False).returncode
+    except OSError as exc:
+        LOG.error("could not run %s: %s", script, exc)
+        return EXIT_ERROR
+
+
+def install_via_helper(items: list[str], as_json: bool) -> int:
+    """Non-root path: lindos.helper.run_privileged('install-gaming', {'items': [...]})."""
+    try:
+        from lindos.helper import run_privileged  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - lindos-core not importable (dev box): fall back to pkexec/sudo
+        run_privileged = None
+    if run_privileged is not None:
+        # run_privileged streams every helper output line to `log` as it is produced;
+        # in text mode we forward it live and do not print `out` a second time.
+        stream = None if as_json else (lambda line: print(line, flush=True))
+        res = run_privileged("install-gaming", {"items": items}, log=stream)
+        out = getattr(res, "out", "") or ""
+        err = getattr(res, "err", "") or ""
+        code = int(getattr(res, "code", 0 if getattr(res, "ok", False) else 1))
+        if as_json:
+            print(json.dumps({"status": "ok" if res.ok else ("offline" if code == EXIT_OFFLINE else "error"),
+                              "items": items, "code": code, "out": out, "err": err}, indent=2))
+        elif not res.ok and not (out or err):
+            LOG.error("helper failed with exit code %s", code)
+        return code
+    script = installer_path()
+    for pre in (["pkexec"], ["sudo", "-n"]):
+        if have(pre[0]):
+            try:
+                return subprocess.run([*pre, str(script), *items], check=False).returncode
+            except OSError as exc:
+                LOG.error("%s failed: %s", pre[0], exc)
+    LOG.error("root privileges required and neither the lindos helper, pkexec nor sudo is available")
+    return EXIT_ERROR
+
+
+def cmd_install(args: argparse.Namespace, launchers: list[dict]) -> int:
+    try:
+        items = expand_items(args.items, launchers)
+    except ValueError as exc:
+        LOG.error("%s", exc)
+        return EXIT_USAGE
+    if not items:
+        LOG.error("nothing to install")
+        return EXIT_USAGE
+    already = [i for i in items if probe(by_id(launchers)[i])["installed"]]
+    todo = [i for i in items if i not in already] if not args.force else items
+    if args.dry_run:
+        plan = {"items": todo, "already_installed": already, "action": "install-gaming",
+                "payload": {"items": todo}, "script": str(installer_path())}
+        if args.json:
+            print(json.dumps(plan, indent=2))
+        else:
+            for i in already:
+                print(f"{i}: already installed")
+            print("would install: " + (", ".join(todo) or "nothing"))
+        return EXIT_OK
+    for i in already:
+        LOG.info("%s: already installed", i)
+    if not todo:
+        if args.json:
+            print(json.dumps({"status": "ok", "items": [], "already_installed": already}))
+        return EXIT_OK
+    if is_root():
+        return run_installer_as_root(todo, [])
+    return install_via_helper(todo, args.json)
+
+
+def launch_command(item: dict) -> Optional[list[str]]:
+    """Best command line to start an installed launcher, or None if not installed."""
+    check = item.get("check") or {}
+    fp = flatpak_apps()
+    for fid in check.get("flatpak", []):
+        if fid in fp:
+            return ["flatpak", "run", fid]
+    for binary in check.get("which", []):
+        if shutil.which(binary):
+            return [binary]
+    for pkg in check.get("dpkg", []):
+        if dpkg_installed(pkg):
+            run_cmd = item.get("run")
+            if isinstance(run_cmd, list) and run_cmd and shutil.which(str(run_cmd[0])):
+                return [str(c) for c in run_cmd]
+            desktop = item.get("desktop")
+            # never gtk-launch our own lindos-*.desktop shims: they call `lindos-game launch` (recursion)
+            if desktop and not desktop.startswith("lindos-") and have("gtk-launch"):
+                return ["gtk-launch", desktop]
+            if isinstance(run_cmd, list) and run_cmd:
+                return [str(c) for c in run_cmd]
+            for binary in check.get("which", []):
+                return [binary]
+    return None
+
+
+def cmd_launch(args: argparse.Namespace, launchers: list[dict]) -> int:
+    table = by_id(launchers)
+    item = table.get(args.id)
+    if item is None:
+        LOG.error("unknown launcher id: %s", args.id)
+        return EXIT_USAGE
+    cmd = launch_command(item)
+    if cmd is None:
+        name = item.get("name", args.id)
+        LOG.info("%s is not installed", name)
+        wants = args.install
+        if not wants and have("zenity") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            rc, _ = run(["zenity", "--question", "--title=Lindos", "--icon=input-gaming",
+                         f"--text={name} is not installed yet.\n\n{item.get('description', '')}\n\nInstall it now?",
+                         "--ok-label=Install", "--cancel-label=Cancel"], timeout=600)
+            wants = rc == 0
+        if not wants:
+            print(f"{name} is not installed. Install with:  lindos-game install {args.id}")
+            return EXIT_ERROR
+        rc = install_via_helper([args.id], False) if not is_root() else run_installer_as_root([args.id], [])
+        if rc != 0:
+            return rc
+        global _DPKG_CACHE, _FLATPAK_CACHE
+        _DPKG_CACHE, _FLATPAK_CACHE = None, None
+        cmd = launch_command(item)
+        if cmd is None:
+            LOG.error("%s still not found after installation", name)
+            return EXIT_ERROR
+    cmd = wrap_gamescope(cmd, getattr(args, "gamescope", None))
+    LOG.debug("exec: %s", " ".join(cmd))
+    try:
+        if os.name == "posix":
+            os.execvp(cmd[0], cmd)
+        return subprocess.run(cmd, check=False).returncode
+    except OSError as exc:
+        LOG.error("could not start %s: %s", cmd[0], exc)
+        return EXIT_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lindos-game", description="Install, inspect and launch the Lindos gaming launchers.")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--catalogue", help=argparse.SUPPRESS)  # alternate launchers.json (tests)
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    pl = sub.add_parser("list", help="show the launcher catalogue")
+    pl.add_argument("--json", action="store_true")
+
+    ps = sub.add_parser("status", help="show which launchers are installed")
+    ps.add_argument("--json", action="store_true")
+
+    pi = sub.add_parser("install", help="install launchers (root or via the lindos helper)")
+    pi.add_argument("items", nargs="+", metavar="ID", help="steam lutris heroic prism sober vinegar mcpelauncher bottles | all")
+    pi.add_argument("--dry-run", action="store_true")
+    pi.add_argument("--force", action="store_true", help="re-run the installer even if already installed")
+    pi.add_argument("--json", action="store_true")
+
+    pr = sub.add_parser("launch", help="start a launcher (offers to install it if missing)")
+    pr.add_argument("id")
+    pr.add_argument("--install", action="store_true", help="install without asking when missing")
+    pr.add_argument("--gamescope", nargs="?", const="", metavar="WxH",
+                    help="run the launcher inside gamescope (optionally at WxH, e.g. --gamescope 1920x1080)")
+    return p
+
+
+def _tolerant_streams() -> None:
+    """Never crash on a non-UTF-8 console (catalogue text contains '→', '·')."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _tolerant_streams()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s", stream=sys.stderr)
+    try:
+        launchers = load_catalogue(Path(args.catalogue) if args.catalogue else None)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        LOG.error("cannot read launcher catalogue: %s", exc)
+        return EXIT_ERROR
+    if args.cmd == "list":
+        return cmd_list(launchers, args.json)
+    if args.cmd == "status":
+        return cmd_status(launchers, args.json)
+    if args.cmd == "install":
+        return cmd_install(args, launchers)
+    if args.cmd == "launch":
+        return cmd_launch(args, launchers)
+    parser.print_help()
+    return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

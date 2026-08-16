@@ -1,0 +1,24 @@
+#!/bin/sh
+# postrm for lindos-kernel — idempotent (SPEC-KERNEL §15, base SPEC §1.1).
+set -e
+
+PYLIB="/usr/lib/lindos-kernel/lindos_kernel"
+
+case "$1" in
+    remove|upgrade|deconfigure|abort-install|abort-upgrade|disappear|failed-upgrade)
+        # drop stale byte-code (dpkg does not track __pycache__)
+        rm -rf "$PYLIB/__pycache__" 2>/dev/null || true
+        if command -v py3clean >/dev/null 2>&1; then
+            py3clean -p lindos-kernel 2>/dev/null || true
+        fi
+        # on full removal, regenerate grub so the vanished drop-in stops applying
+        if command -v update-grub >/dev/null 2>&1; then
+            update-grub 2>/dev/null || true
+        fi
+        ;;
+    purge)
+        rm -rf "$PYLIB/__pycache__" 2>/dev/null || true
+        ;;
+esac
+
+exit 0

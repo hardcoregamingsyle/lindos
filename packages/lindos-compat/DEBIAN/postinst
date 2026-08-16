@@ -1,0 +1,212 @@
+#!/bin/sh
+# postinst for lindos-compat (SPEC §9) — idempotent, offline-safe, no downloads.
+#
+#  * merges [Default Applications] (and [Added Associations]) from
+#    /usr/share/lindos/mimeapps-lindos.list into /etc/xdg/mimeapps.list without duplicates
+#  * merges the Thunar custom actions from /usr/share/lindos/thunar-uca-lindos.xml into
+#    /etc/xdg/Thunar/uca.xml (created if missing; actions with the same <unique-id> are skipped)
+#  * update-mime-database / update-desktop-database / icon cache
+# Wine itself is NOT installed here (see /usr/libexec/lindos/install-compat.sh, run by the
+# Lindos helper action 'install-compat' from OOBE / Lindos Settings, and by the ISO build).
+set -e
+
+# (overridable through the environment so the merge logic can be tested against scratch files)
+LINDOS_MIMEAPPS_SRC="${LINDOS_MIMEAPPS_SRC:-/usr/share/lindos/mimeapps-lindos.list}"
+LINDOS_MIMEAPPS_DST="${LINDOS_MIMEAPPS_DST:-/etc/xdg/mimeapps.list}"
+LINDOS_UCA_SRC="${LINDOS_UCA_SRC:-/usr/share/lindos/thunar-uca-lindos.xml}"
+LINDOS_UCA_DST="${LINDOS_UCA_DST:-/etc/xdg/Thunar/uca.xml}"
+export LINDOS_MIMEAPPS_SRC LINDOS_MIMEAPPS_DST LINDOS_UCA_SRC LINDOS_UCA_DST
+
+log() {
+    printf 'lindos-compat: %s\n' "$*" >&2
+}
+
+merge_mimeapps() {
+    [ -f "$LINDOS_MIMEAPPS_SRC" ] || { log "missing $LINDOS_MIMEAPPS_SRC (skipping mimeapps merge)"; return 0; }
+    mkdir -p "$(dirname "$LINDOS_MIMEAPPS_DST")"
+    python3 - <<'PYEOF' || log "mimeapps.list merge failed (non-fatal)"
+import os, re, sys
+
+src = os.environ["LINDOS_MIMEAPPS_SRC"]
+dst = os.environ["LINDOS_MIMEAPPS_DST"]
+OURS = "lindos-run.desktop"
+
+
+def parse(path):
+    """-> (order, sections) where sections = {name: [(key, value) | (None, rawline)]}"""
+    order, sections, current = [], {}, None
+    if not os.path.exists(path):
+        return order, sections
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh.read().splitlines():
+            line = raw.strip()
+            m = re.match(r"^\[(.+)\]$", line)
+            if m:
+                current = m.group(1).strip()
+                if current not in sections:
+                    order.append(current)
+                    sections[current] = []
+                continue
+            if current is None:
+                current = "__head__"
+                if current not in sections:
+                    order.insert(0, current)
+                    sections[current] = []
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                sections[current].append((k.strip(), v.strip()))
+            else:
+                sections[current].append((None, raw))
+    return order, sections
+
+
+s_order, s_sections = parse(src)
+d_order, d_sections = parse(dst)
+changed = False
+
+
+def ensure_section(name):
+    global changed
+    if name not in d_sections:
+        d_order.append(name)
+        d_sections[name] = []
+        changed = True
+    return d_sections[name]
+
+
+def append_entry(entries, key, value):
+    """Insert before the trailing blank lines of the section (keeps the file tidy)."""
+    pos = len(entries)
+    while pos > 0 and entries[pos - 1][0] is None and not entries[pos - 1][1].strip():
+        pos -= 1
+    entries.insert(pos, (key, value))
+
+
+# [Default Applications]: add our key when absent; never override another app chosen by the admin.
+for key, value in s_sections.get("Default Applications", []):
+    if key is None:
+        continue
+    entries = ensure_section("Default Applications")
+    existing = [i for i, (k, _v) in enumerate(entries) if k == key]
+    if not existing:
+        append_entry(entries, key, value)
+        changed = True
+    else:
+        # drop duplicates of the same key, keep the first
+        for i in reversed(existing[1:]):
+            del entries[i]
+            changed = True
+
+# [Added Associations]: make sure lindos-run.desktop is listed (semicolon separated list).
+for key, value in s_sections.get("Added Associations", []):
+    if key is None:
+        continue
+    entries = ensure_section("Added Associations")
+    idx = [i for i, (k, _v) in enumerate(entries) if k == key]
+    if not idx:
+        append_entry(entries, key, value)
+        changed = True
+    else:
+        k, v = entries[idx[0]]
+        apps = [a for a in v.split(";") if a]
+        if OURS not in apps:
+            apps.append(OURS)
+            entries[idx[0]] = (k, ";".join(apps) + ";")
+            changed = True
+
+if not changed:
+    sys.exit(0)
+
+lines = []
+for name in d_order:
+    if name != "__head__":
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(f"[{name}]")
+    for k, v in d_sections[name]:
+        lines.append(v if k is None else f"{k}={v}")
+tmp = dst + ".lindos-tmp"
+with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+    fh.write("\n".join(lines).rstrip("\n") + "\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, dst)
+PYEOF
+}
+
+merge_thunar_actions() {
+    [ -f "$LINDOS_UCA_SRC" ] || { log "missing $LINDOS_UCA_SRC (skipping Thunar actions)"; return 0; }
+    mkdir -p "$(dirname "$LINDOS_UCA_DST")"
+    python3 - <<'PYEOF' || log "Thunar uca.xml merge failed (non-fatal)"
+import os, sys
+import xml.etree.ElementTree as ET
+
+src = os.environ["LINDOS_UCA_SRC"]
+dst = os.environ["LINDOS_UCA_DST"]
+
+new_root = ET.parse(src).getroot()
+if os.path.exists(dst):
+    try:
+        tree = ET.parse(dst)
+        root = tree.getroot()
+    except ET.ParseError as exc:
+        sys.stderr.write(f"lindos-compat: {dst} is not valid XML ({exc}); leaving it alone\n")
+        sys.exit(0)
+    if root.tag != "actions":
+        sys.stderr.write(f"lindos-compat: {dst} has root <{root.tag}>, expected <actions>; leaving it alone\n")
+        sys.exit(0)
+else:
+    root = ET.Element("actions")
+    tree = ET.ElementTree(root)
+
+existing = {(a.findtext("unique-id") or "").strip() for a in root.findall("action")}
+added = 0
+for action in new_root.findall("action"):
+    uid = (action.findtext("unique-id") or "").strip()
+    if not uid or uid in existing:
+        continue
+    action.tail = "\n"
+    root.append(action)
+    existing.add(uid)
+    added += 1
+if not added and os.path.exists(dst):
+    sys.exit(0)
+if len(root):
+    root.text = root.text or "\n"
+tmp = dst + ".lindos-tmp"
+tree.write(tmp, encoding="UTF-8", xml_declaration=True)
+with open(tmp, "ab") as fh:
+    fh.write(b"\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, dst)
+PYEOF
+}
+
+case "${1:-}" in
+    configure)
+        for f in /usr/libexec/lindos/install-compat.sh /usr/bin/lindos-run /usr/bin/lindos-compat; do
+            [ -f "$f" ] && chmod 0755 "$f" 2>/dev/null || true
+        done
+        mkdir -p /var/log/lindos 2>/dev/null || true
+        chmod 0755 /var/log/lindos 2>/dev/null || true
+
+        merge_mimeapps
+        merge_thunar_actions
+
+        if command -v update-mime-database >/dev/null 2>&1; then
+            update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        # xdg-mime (xdg-utils) keeps its own cache of the system defaults; nothing to refresh.
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

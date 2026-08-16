@@ -1,0 +1,347 @@
+#!/usr/bin/python3
+"""lindos-vm — create and manage an honest KVM/QEMU Windows VM (SPEC-VM §21).
+
+  lindos-vm check [--json]                          probe host virtualization capability
+  lindos-vm setup [--single-gpu|--dual-gpu] [--gpu PCI] [--dry-run] [--json]
+                                                    print the GPU-passthrough plan (never applies)
+  lindos-vm create --name N --windows-iso PATH [--disk-gb 64] [--ram-gb 8]
+                   [--cpus N] [--gpu auto|PCI] [--virtio-iso PATH] [--json]
+  lindos-vm start|stop|status <name> [--json]
+  lindos-vm list [--json]
+  lindos-vm passthrough list|bind <pci>|unbind <pci> [--json]
+  lindos-vm --version
+
+HONESTY (SPEC-VM §20): this is a truthful, standard Windows VM.  It ships and generates NO
+anti-cheat / VM-detection evasion.  VM-blocking anti-cheat (Vanguard etc.) will NOT run here.
+It needs a user-supplied, licensed Windows; Lindos never downloads Windows or bypasses
+activation.  Reading never needs root; every privileged step is printed as a pkexec/virsh
+command — this tool never calls sudo.
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 host-not-capable / backend-unreachable.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from typing import Any, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "lindos-vm"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos_vm")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    import lindos_vm
+    from lindos_vm import caps as vcaps
+    from lindos_vm import domain as vdomain
+    from lindos_vm import passthrough as vpass
+    from lindos_vm import plan as vplan
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-vm: the 'lindos_vm' package is missing ({exc}); install lindos-vm\n")
+    sys.exit(1)
+
+PROG = "lindos-vm"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOTCAP = 0, 1, 2, 3
+VIRSH_URI = "qemu:///system"
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit(data: Any) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _virsh(*args: str) -> List[str]:
+    return ["virsh", "--connect", VIRSH_URI, *args]
+
+
+def _run(cmd: List[str]) -> int:
+    binary = shutil.which(cmd[0])
+    if not binary:
+        print(f"  (not run: {cmd[0]} not installed) run this yourself:")
+        print("    " + " ".join(cmd))
+        return EXIT_ERROR
+    proc = subprocess.run(cmd, check=False)
+    return proc.returncode
+
+
+# --- check -------------------------------------------------------------------------------
+def cmd_check(ns: argparse.Namespace) -> int:
+    rep = vcaps.probe()
+    if ns.json:
+        _emit(rep)
+        return EXIT_OK if rep["vm_ready"] else EXIT_NOTCAP
+    cpu = rep["cpu"]
+    print(f"CPU vendor        : {cpu['vendor'] or '(unknown)'}")
+    print(f"Virtualization    : {cpu['virt_ext'] or 'NONE (vmx/svm not present)'}")
+    print(f"/dev/kvm          : {'yes' if rep['kvm'] else 'no'}")
+    iommu = rep["iommu"]
+    print(f"IOMMU             : {'enabled' if iommu['enabled'] else 'not enabled'} "
+          f"(cmdline={'yes' if iommu['cmdline_flag'] else 'no'}, "
+          f"groups={iommu['groups']})")
+    mem = rep["memory"]
+    print(f"RAM               : {mem['total_mib']} MiB total, {mem['available_mib']} MiB free")
+    tools = rep["tools"]
+    print(f"qemu/virsh/ovmf   : {'yes' if tools['qemu'] else 'no'}/"
+          f"{'yes' if tools['virsh'] else 'no'}/{'yes' if tools['ovmf'] else 'no'}")
+    if rep["gpus"]:
+        print("GPUs:")
+        for g in rep["gpus"]:
+            print(f"  {g['pci']}  {g.get('vendor_name') or g.get('vendor_id')} "
+                  f"[{g.get('pci_id')}]  iommu_group={g.get('iommu_group')} "
+                  f"driver={g.get('driver')}")
+    else:
+        print("GPUs              : none found in sysfs")
+    print("")
+    if rep["vm_ready"]:
+        print("VM ready          : YES — you can `lindos-vm create`.")
+    else:
+        print("VM ready          : NO")
+        for why in rep["vm_reasons"]:
+            print(f"  - {why}")
+    print(f"Passthrough ready : {'yes' if rep['passthrough_ready'] else 'no'}")
+    for why in rep["passthrough_reasons"]:
+        print(f"  - {why}")
+    return EXIT_OK if rep["vm_ready"] else EXIT_NOTCAP
+
+
+# --- setup -------------------------------------------------------------------------------
+def cmd_setup(ns: argparse.Namespace) -> int:
+    rep = vcaps.probe()
+    mode = "dual-gpu" if ns.dual_gpu else "single-gpu"
+    try:
+        plan = vplan.make_plan(rep, mode=mode, gpu_pci=ns.gpu)
+    except ValueError as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_USAGE
+    if ns.json:
+        _emit(plan.to_dict())
+        return EXIT_OK
+    print(f"GPU-passthrough setup plan ({mode})")
+    print("This tool APPLIES NOTHING.  Run each privileged step yourself:\n")
+    for i, step in enumerate(plan.steps, 1):
+        print(f"{i}. {step.title}")
+        for cmd in step.commands:
+            print(f"     {cmd}")
+        if step.note:
+            print(f"     note: {step.note}")
+        print("")
+    if plan.gpu_pci:
+        print(f"Passthrough GPU   : {plan.gpu_pci}  ids={','.join(plan.gpu_ids) or '(none)'}")
+    for warn in plan.warnings:
+        print(f"WARNING: {warn}")
+    if ns.dry_run:
+        print("\n(--dry-run: nothing was applied — as always)")
+    return EXIT_OK
+
+
+# --- create ------------------------------------------------------------------------------
+def _resolve_gpu(rep: dict, gpu: Optional[str]) -> Optional[str]:
+    if not gpu:
+        return None
+    if gpu == "auto":
+        gpus = rep.get("gpus", [])
+        if not gpus:
+            return None
+        for g in gpus:
+            if (g.get("vendor_name") in ("NVIDIA", "AMD")) and g is not gpus[0]:
+                return g["pci"]
+        return gpus[-1]["pci"]
+    return gpu
+
+
+def cmd_create(ns: argparse.Namespace) -> int:
+    rep = vcaps.probe()
+    if not rep["vm_ready"]:
+        sys.stderr.write(f"{PROG}: host not ready for a VM:\n")
+        for why in rep["vm_reasons"]:
+            sys.stderr.write(f"  - {why}\n")
+        return EXIT_NOTCAP
+    iso = os.path.abspath(os.path.expanduser(ns.windows_iso))
+    if not os.path.exists(iso):
+        sys.stderr.write(f"{PROG}: --windows-iso not found: {iso}\n")
+        return EXIT_ERROR
+    virtio = None
+    if ns.virtio_iso:
+        virtio = os.path.abspath(os.path.expanduser(ns.virtio_iso))
+    gpu = _resolve_gpu(rep, ns.gpu)
+    try:
+        xml = vdomain.render(
+            name=ns.name, windows_iso=iso, ram_mib=int(ns.ram_gb * 1024),
+            vcpus=ns.cpus, gpu=gpu, virtio_iso=virtio)
+    except vdomain.DomainError as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_ERROR
+    xml_path = vdomain.write_domain(ns.name, xml)
+    disk_path = vdomain.default_disk_path(ns.name)
+    disk_cmd = ["qemu-img", "create", "-f", "qcow2", disk_path, f"{ns.disk_gb}G"]
+    define_cmd = vdomain.define_command(xml_path)
+    if ns.json:
+        _emit({"name": ns.name, "xml": xml_path, "disk": disk_path, "gpu": gpu,
+               "disk_command": disk_cmd, "define_command": define_cmd})
+        return EXIT_OK
+    print(f"Wrote domain XML  : {xml_path}")
+    print(f"Disk image        : {disk_path}")
+    if not os.path.exists(disk_path):
+        print("Creating disk image:")
+        _run(disk_cmd)
+    else:
+        print("  (disk already exists — left as is)")
+    print("Registering domain with libvirt:")
+    rc = _run(define_cmd)
+    print("")
+    print("Next: install Windows (needs a licensed copy + virtio drivers), then:")
+    print(f"    lindos-vm start {ns.name}")
+    print("Note: VM-blocking anti-cheat (Vanguard etc.) will NOT run in this VM.")
+    return EXIT_OK if rc == EXIT_OK else EXIT_ERROR
+
+
+# --- start/stop/status/list --------------------------------------------------------------
+def cmd_start(ns: argparse.Namespace) -> int:
+    return _run(_virsh("start", ns.name))
+
+
+def cmd_stop(ns: argparse.Namespace) -> int:
+    return _run(_virsh("shutdown", ns.name))
+
+
+def cmd_status(ns: argparse.Namespace) -> int:
+    if not shutil.which("virsh"):
+        print("virsh not installed; run this to inspect the domain:")
+        print("    " + " ".join(_virsh("dominfo", ns.name)))
+        return EXIT_NOTCAP
+    proc = subprocess.run(_virsh("domstate", ns.name), capture_output=True, text=True,
+                          check=False)
+    state = proc.stdout.strip() or proc.stderr.strip()
+    if ns.json:
+        _emit({"name": ns.name, "state": state, "returncode": proc.returncode})
+    else:
+        print(f"{ns.name}: {state or '(unknown)'}")
+    return EXIT_OK if proc.returncode == 0 else EXIT_ERROR
+
+
+def cmd_list(ns: argparse.Namespace) -> int:
+    if not shutil.which("virsh"):
+        print("virsh not installed; run this to list domains:")
+        print("    " + " ".join(_virsh("list", "--all")))
+        return EXIT_NOTCAP
+    args = _virsh("list", "--all", "--name") if ns.json else _virsh("list", "--all")
+    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    if ns.json:
+        names = [n for n in proc.stdout.splitlines() if n.strip()]
+        _emit({"domains": names})
+    else:
+        sys.stdout.write(proc.stdout)
+    return EXIT_OK if proc.returncode == 0 else EXIT_ERROR
+
+
+# --- passthrough -------------------------------------------------------------------------
+def cmd_passthrough(ns: argparse.Namespace) -> int:
+    action = ns.pt_action
+    if action == "list":
+        devs = vpass.list_devices()
+        if ns.json:
+            _emit({"devices": devs})
+            return EXIT_OK
+        for d in devs:
+            print(f"{d['pci']}  {d['pci_id']}  class={d['class']}  "
+                  f"driver={d['driver']}  iommu_group={d['iommu_group']}")
+        return EXIT_OK
+    if action in ("bind", "unbind"):
+        try:
+            cmd = (vpass.bind_command(ns.pci) if action == "bind"
+                   else vpass.unbind_command(ns.pci))
+        except vdomain.DomainError as exc:
+            sys.stderr.write(f"{PROG}: {exc}\n")
+            return EXIT_USAGE
+        if ns.json:
+            _emit({"action": action, "pci": ns.pci, "command": cmd})
+            return EXIT_OK
+        print(f"Run this to {action} {ns.pci} "
+              f"{'to' if action == 'bind' else 'from'} vfio-pci (needs admin):")
+        print("    " + " ".join(cmd))
+        return EXIT_OK
+    sys.stderr.write(f"{PROG}: unknown passthrough action {action!r}\n")
+    return EXIT_USAGE
+
+
+# --- parser ------------------------------------------------------------------------------
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog=PROG, description="Honest KVM/QEMU Windows VM manager.")
+    p.add_argument("--version", action="version", version=f"{PROG} {lindos_vm.__version__}")
+    sub = p.add_subparsers(dest="command", metavar="command")
+
+    c = sub.add_parser("check", help="probe host virtualization capability")
+    c.add_argument("--json", action="store_true")
+    c.set_defaults(func=cmd_check)
+
+    s = sub.add_parser("setup", help="print the GPU-passthrough plan (never applies)")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--single-gpu", dest="single_gpu", action="store_true")
+    g.add_argument("--dual-gpu", dest="dual_gpu", action="store_true")
+    s.add_argument("--gpu", help="passthrough GPU PCI address (default: auto-pick)")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_setup)
+
+    cr = sub.add_parser("create", help="render + define a standard Windows VM")
+    cr.add_argument("--name", required=True)
+    cr.add_argument("--windows-iso", dest="windows_iso", required=True)
+    cr.add_argument("--disk-gb", dest="disk_gb", type=int, default=64)
+    cr.add_argument("--ram-gb", dest="ram_gb", type=float, default=8)
+    cr.add_argument("--cpus", type=int, default=4)
+    cr.add_argument("--gpu", help="auto or a PCI address for VFIO passthrough")
+    cr.add_argument("--virtio-iso", dest="virtio_iso", help="virtio-win driver ISO")
+    cr.add_argument("--json", action="store_true")
+    cr.set_defaults(func=cmd_create)
+
+    for name, fn, helptext in (("start", cmd_start, "start a defined VM"),
+                               ("stop", cmd_stop, "graceful shutdown of a VM"),
+                               ("status", cmd_status, "show a VM's state")):
+        sp = sub.add_parser(name, help=helptext)
+        sp.add_argument("name")
+        sp.add_argument("--json", action="store_true")
+        sp.set_defaults(func=fn)
+
+    li = sub.add_parser("list", help="list defined VMs")
+    li.add_argument("--json", action="store_true")
+    li.set_defaults(func=cmd_list)
+
+    pt = sub.add_parser("passthrough", help="vfio-pci bind/unbind helpers")
+    pt.add_argument("--json", action="store_true")
+    ptsub = pt.add_subparsers(dest="pt_action", metavar="action")
+    ptsub.add_parser("list", help="list PCI devices + drivers + IOMMU groups")
+    ptb = ptsub.add_parser("bind", help="print the command to bind a device to vfio-pci")
+    ptb.add_argument("pci")
+    ptu = ptsub.add_parser("unbind", help="print the command to release a device to the host")
+    ptu.add_argument("pci")
+    pt.set_defaults(func=cmd_passthrough, pt_action=None)
+
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    if getattr(ns, "command", None) == "passthrough" and not ns.pt_action:
+        parser.parse_args(["passthrough", "--help"])
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:  # pragma: no cover
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

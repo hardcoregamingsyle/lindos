@@ -1,0 +1,23 @@
+{
+  "id": "winrar",
+  "name": "WinRAR",
+  "vendor": "win.rar GmbH",
+  "category": "utility",
+  "status": "works",
+  "summary": "WinRAR runs through Wine (trial nag included); Lindos also opens RAR archives natively.",
+  "notes": "WinRAR (32- and 64-bit installers) installs and runs through Wine: browsing, creating RAR/ZIP archives, extracting, repairing, password-protected and multi-volume archives, self-extracting (SFX) modules. The 40-day trial reminder appears exactly as on Windows; a licence key file (rarreg.key) dropped into the program folder registers it. Not available: the Windows Explorer context-menu integration and shell icons - use the Start Menu entry Lindos creates, or 'Open With > WinRAR' in the file manager.\nYou may not need it: Lindos extracts .rar files natively (right-click > Extract Here, using unrar/unar) and creates 7z/zip archives. WinRAR through Wine is mainly useful when you need to *create* RAR archives with the official tool.\nThis recipe creates a 64-bit C:\\ drive with no special tweaks. Use the English 64-bit installer (winrar-x64-NNN.exe).",
+  "installer_hint": "lindos-run --prefix winrar ~/Downloads/winrar-x64-701.exe",
+  "homepage": "https://www.win-rar.com",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Archive Manager (native)", "how": "already installed on Lindos: right-click a .rar > Extract Here (apt install unrar for full RAR5 support)"},
+    {"name": "rar for Linux", "how": "official command-line RARLAB build (creates RAR archives): apt install rar"},
+    {"name": "PeaZip", "how": "native GUI archiver: Flatpak io.github.peazip.PeaZip"}
+  ]
+}

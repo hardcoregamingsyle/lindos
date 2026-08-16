@@ -1,0 +1,47 @@
+{
+  "id": "work",
+  "name": "Work",
+  "description": "Productivity: office and mail pinned, balanced power profile, night light on.",
+  "tagline": "LibreOffice, Thunderbird and a calm, balanced desktop.",
+  "icon": "x-office-document",
+  "ram_hint": "Idle target 350–500 MB",
+  "packages": [
+    "libreoffice-writer",
+    "libreoffice-calc",
+    "libreoffice-impress",
+    "libreoffice-gtk3",
+    "thunderbird",
+    "power-profiles-daemon",
+    "redshift-gtk",
+    "hunspell-en-us"
+  ],
+  "flatpaks": [],
+  "suggested_flatpaks": [
+    "org.onlyoffice.desktopeditors"
+  ],
+  "services_disable": [],
+  "services_enable": [
+    "power-profiles-daemon",
+    "earlyoom",
+    "fstrim.timer"
+  ],
+  "sysctl": {
+    "vm.dirty_writeback_centisecs": "1500"
+  },
+  "governor": "schedutil",
+  "pins": [
+    "lindos-files.desktop",
+    "firefox.desktop",
+    "libreoffice-writer.desktop",
+    "libreoffice-calc.desktop",
+    "thunderbird.desktop",
+    "lindos-settings.desktop",
+    "lindos-terminal.desktop"
+  ],
+  "compositor": "picom",
+  "zram_percent": 50,
+  "power_profile": "balanced",
+  "night_light": true,
+  "gamemode_auto": false,
+  "mangohud": false
+}

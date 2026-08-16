@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "unit": "MB",
+  "measurement": "free -m \"used\" (total - available) after login into XFCE with no apps open, 60 s after the panel appears; same figure `lindos-tune status` prints as the verdict line.",
+  "honesty": "Every figure below is an ESTIMATE from component RSS measurements and upstream numbers until it has been measured on the Lindos reference machines (see docs/RAM-BUDGET.md for the measurement log). Savings overlap and do not simply add up.",
+  "targets": {
+    "default": {"min": 350, "max": 500, "modes": ["everyday", "gaming", "work", "creator"]},
+    "lite": {"min": 300, "max": 380, "modes": ["lite"]}
+  },
+  "baselines": [
+    {"id": "stock-mint-22-xfce", "name": "Stock Linux Mint 22 XFCE (idle after login)", "min_mb": 600, "max_mb": 750, "status": "estimate", "note": "Mint 22.x XFCE, default session, mintupdate/mintreport/blueman trays, cups+bluetooth+ModemManager on, no zram."},
+    {"id": "lindos-everyday", "name": "Lindos 1.0 Everyday", "min_mb": 420, "max_mb": 520, "status": "estimate", "note": "picom on, zram 50 %, debloat presets, tray delayed."},
+    {"id": "lindos-lite", "name": "Lindos 1.0 Lite", "min_mb": 300, "max_mb": 380, "status": "estimate", "note": "no compositor, zram 100 %, minimal tray, bluetooth/ModemManager/cups-browsed off, earlyoom -m 8."}
+  ],
+  "measures": [
+    {
+      "id": "xfce-not-cinnamon",
+      "name": "XFCE session instead of Cinnamon",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [150, 250],
+      "how": "Base is Linux Mint XFCE (xfwm4 + xfce4-panel), not Cinnamon/muffin + nemo-desktop.",
+      "explanation": "Cinnamon idles around 800-950 MB, XFCE around 600-750 MB on the same Mint release. Already part of the base image; listed so the comparison to 'Mint' is fair.",
+      "reversible": "n/a (base choice)"
+    },
+    {
+      "id": "no-picom-lite",
+      "name": "No compositor in Lite (no picom, xfwm compositing off)",
+      "kind": "ram",
+      "modes": ["lite"],
+      "saves_mb": [25, 35],
+      "how": "lindos-compositor honours COMPOSITOR=none from /etc/lindos/tune.d/lite.conf; xfwm4 use_compositing=false.",
+      "explanation": "picom (glx backend) holds ~20-30 MB plus GPU buffers per window; xfwm4 compositing another few MB. Also removes vsync latency on very old GPUs.",
+      "reversible": "lindos-mode set everyday (or Lindos Settings > Home > Compositor)"
+    },
+    {
+      "id": "bluetooth-off",
+      "name": "bluetooth.service disabled + blueman-applet hidden",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [15, 25],
+      "how": "systemd preset 90-lindos.preset (disable bluetooth.service, SPEC §8 'disable, not purge') + autostart-hide.list (blueman-applet if-disabled=bluetooth.service).",
+      "explanation": "bluetoothd ~5-8 MB, blueman-applet (python3 + GTK) ~12-18 MB. Disabled in every mode by the preset (the ISO build does the same); the package stays installed, so headsets/mice work again after a single enable command (see 'reversible').",
+      "reversible": "lindos-tune services enable bluetooth.service"
+    },
+    {
+      "id": "cups-socket-activated",
+      "name": "CUPS socket/path activated instead of always-on; cups-browsed disabled",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [8, 14],
+      "how": "preset: disable cups.service, enable cups.socket + cups.path; disable cups-browsed.service.",
+      "explanation": "cupsd (~8-10 MB) starts on the first print job through cups.socket, cups-browsed (~4 MB, network printer discovery via avahi) is off; avahi-daemon itself stays on so printers are still found when you open the printer dialog.",
+      "reversible": "lindos-tune services enable cups.service cups-browsed.service"
+    },
+    {
+      "id": "modemmanager-off",
+      "name": "ModemManager disabled",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [6, 10],
+      "how": "preset: disable ModemManager.service.",
+      "explanation": "Only needed for built-in WWAN/3G/4G modems. Users with a mobile modem re-enable it (Lindos Settings > Network shows the hint).",
+      "reversible": "lindos-tune services enable ModemManager.service"
+    },
+    {
+      "id": "avahi-kept",
+      "name": "avahi-daemon KEPT enabled (documented, not a saving)",
+      "kind": "note",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 4],
+      "how": "preset: enable avahi-daemon.service (SPEC Â§8: keep for printer discovery).",
+      "explanation": "avahi uses ~3-4 MB; disabling it would save that but break network printer and .local discovery, so Lindos keeps it. Listed for transparency.",
+      "reversible": "lindos-tune services disable avahi-daemon.service (not recommended)"
+    },
+    {
+      "id": "crash-telemetry-off",
+      "name": "apport, whoopsie, kerneloops, ubuntu-report disabled",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [8, 12],
+      "how": "preset disable list + autostart-hide.list (apport, whoopsie autostart entries).",
+      "explanation": "Crash uploaders and telemetry that Lindos never sends anywhere: whoopsie ~5 MB resident, kerneloops ~2 MB, apport hooks. Nothing is lost for the user.",
+      "reversible": "lindos-tune services enable whoopsie.service (etc.)"
+    },
+    {
+      "id": "nm-wait-online-off",
+      "name": "NetworkManager-wait-online.service disabled",
+      "kind": "boot-time",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "preset: disable NetworkManager-wait-online.service.",
+      "explanation": "No RAM saving; removes up to 30-60 s of boot delay when Wi-Fi is slow to associate. Listed because it is in the debloat list.",
+      "reversible": "lindos-tune services enable NetworkManager-wait-online.service"
+    },
+    {
+      "id": "brltty-speech-off",
+      "name": "brltty and speech-dispatcher disabled by default",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [4, 8],
+      "how": "preset: disable brltty.service, speech-dispatcher.service; autostart-hide.list hides orca-autostart.",
+      "explanation": "Braille display and speech daemons only help users who need them; brltty also grabs some USB serial adapters (Arduino/ESP boards). Accessibility users re-enable them in Settings.",
+      "reversible": "lindos-tune services enable brltty.service speech-dispatcher.service"
+    },
+    {
+      "id": "mint-trays",
+      "name": "mintwelcome/mintreport tray hidden; mintupdate tray kept",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [15, 25],
+      "how": "autostart-hide.list: mintwelcome (replaced by lindos-setup OOBE), mintreport (System Reports tray). mintupdate stays (its own autostart delays 90 s).",
+      "explanation": "mintwelcome ~15-20 MB (python3 + WebKit view) at every login, mintreport-tray ~10 MB polling for crash reports. mintupdate's tray is kept: it is how users learn about updates; it starts late so the early idle measurement is ~20 MB lower.",
+      "reversible": "remove NotShowIn=XFCE; from /etc/xdg/autostart/mintreport.desktop (or copy the entry to ~/.config/autostart)"
+    },
+    {
+      "id": "zram",
+      "name": "zram compressed swap (50 % / 75 % gaming / 100 % lite of RAM, zstd)",
+      "kind": "headroom",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "/etc/systemd/zram-generator.conf or /etc/default/zramswap (detected) + vm.swappiness=180, vm.page-cluster=0.",
+      "explanation": "Not an idle-RAM saving (zram itself costs a few hundred KB until used) but it turns 4 GB into 'feels like 6-7 GB' by compressing idle anonymous pages ~3:1 in RAM instead of hitting the disk. Effective headroom on 4 GB: +1.5-2.5 GB.",
+      "reversible": "lindos-tune zram 0"
+    },
+    {
+      "id": "journald-cap",
+      "name": "journald capped at 64 MB persistent (8 MB files, 32 MB runtime)",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [5, 20],
+      "how": "/etc/systemd/journald.conf.d/lindos.conf.",
+      "explanation": "journald mmaps its active journal files; huge journals mean more page cache and slower boots. 64 MB keeps about a week of desktop logs. Storage stays persistent for bug reports.",
+      "reversible": "delete /etc/systemd/journald.conf.d/lindos.conf"
+    },
+    {
+      "id": "tmp-tmpfs",
+      "name": "/tmp on tmpfs (tmp.mount)",
+      "kind": "disk",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "systemctl enable tmp.mount (fallback: fstab tmpfs line, size=50%).",
+      "explanation": "Uses RAM only for what is actually in /tmp (nothing at idle); saves SSD writes and speeds up installers/Wine temp files. Big /tmp users are covered by zram swap.",
+      "reversible": "systemctl disable tmp.mount"
+    },
+    {
+      "id": "earlyoom",
+      "name": "earlyoom (-m 4, Lite -m 8) protects the desktop",
+      "kind": "stability",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "/etc/default/earlyoom EARLYOOM_ARGS with --avoid for Xorg/xfwm4/xfce4-panel/lightdm.",
+      "explanation": "Costs ~1 MB. Kills the biggest offender (usually a browser tab process) before the kernel OOM freezes the whole desktop for minutes on 4 GB machines.",
+      "reversible": "systemctl disable --now earlyoom"
+    },
+    {
+      "id": "no-indexers",
+      "name": "No file indexers or preloaders",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [30, 80],
+      "how": "Base image ships no tracker/baloo/recoll/preload; ananicy-cpp rules push updatedb/man-db/timeshift to idle priority.",
+      "explanation": "Desktop search indexers keep 30-80 MB resident and thrash the disk after login. Lindos uses plain Thunar search + catfish on demand.",
+      "reversible": "install what you like (apt install plocate)"
+    },
+    {
+      "id": "no-snapd",
+      "name": "snapd not present",
+      "kind": "ram",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "Linux Mint already ships without snapd (pinned); Flatpak is used instead and adds no daemon.",
+      "explanation": "Listed because Ubuntu-based comparisons often include snapd (~25 MB + loop mounts). Not a Lindos saving relative to Mint.",
+      "reversible": "n/a"
+    },
+    {
+      "id": "sysctl-cache",
+      "name": "vm.vfs_cache_pressure=50, dirty ratios 10/5, page-cluster 0",
+      "kind": "responsiveness",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "/etc/sysctl.d/70-lindos-base.conf.",
+      "explanation": "Keeps directory/inode cache warmer and writes dirty pages sooner so a big copy does not stall the UI. Neutral for idle RAM.",
+      "reversible": "edit /etc/lindos/tune.d/<mode>.conf or delete 70-lindos-base.conf"
+    },
+    {
+      "id": "greeter",
+      "name": "LightDM + slick-greeter kept (already light)",
+      "kind": "note",
+      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "saves_mb": [0, 0],
+      "how": "No change; slick-greeter exits after login, lightdm ~4 MB.",
+      "explanation": "GDM/SDDM would cost 20-60 MB more. Nothing to gain by switching.",
+      "reversible": "n/a"
+    },
+    {
+      "id": "lite-minimal-tray",
+      "name": "Lite: minimal tray (no clipman, no notes/weather plugins, no power-manager tray)",
+      "kind": "ram",
+      "modes": ["lite"],
+      "saves_mb": [10, 20],
+      "how": "modes/lite panel profile (lindos-desktop) â€” outside lindos-tune, listed for the budget total.",
+      "explanation": "Every panel plugin is a GTK object tree; the Lite profile keeps whisker, docklike, systray, audio, clock only.",
+      "reversible": "lindos-mode set everyday"
+    }
+  ]
+}

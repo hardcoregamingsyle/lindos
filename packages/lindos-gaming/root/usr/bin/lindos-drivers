@@ -1,0 +1,1175 @@
+#!/usr/bin/env python3
+"""lindos-drivers — GPU detection, driver status and driver installation for Lindos.
+
+Usage:
+  lindos-drivers detect  [--json]              GPUs from `lspci -nn` (sysfs fallback)
+  lindos-drivers autodetect [--json]           GPU + Broadcom Wi-Fi + audio-firmware package
+                                              recommendations (Wi-Fi mapped through
+                                              /usr/share/lindos/drivers/wifi.json)
+  lindos-drivers status  [--json]              installed NVIDIA packages, kernel modules,
+  lindos-drivers --status [--json]             OpenGL/Vulkan renderer, Secure Boot, reboot flag
+  lindos-drivers install [--nvidia-open|--nvidia-proprietary|--amd|--intel]
+                         [--dry-run] [--json]  (root; non-root re-executes through the
+                                              lindos helper action 'install-drivers')
+  lindos-drivers install --auto [--dry-run] [--json]
+                                              install the autodetect recommendations for GPU +
+                                              Wi-Fi + audio in one pass (root via the lindos
+                                              helper; offline exits 3)
+  lindos-drivers gui                           open mintdrivers / Driver Manager
+  lindos-drivers xpadneo install|remove|status optional Xbox Bluetooth driver (dkms)
+  lindos-drivers xone    install|remove|status optional Xbox wireless-adapter driver (dkms,
+                                              needs --accept-firmware-license)
+
+NVIDIA: follows the `ubuntu-drivers devices` recommendation (apt-get install
+nvidia-driver-<N>[-open]), writes /etc/modprobe.d/nvidia-lindos.conf with
+`options nvidia-drm modeset=1 fbdev=1`, runs update-initramfs -u and reports
+that a reboot is required.  AMD / Intel: Mesa Vulkan + 32-bit libraries and
+firmware (no reboot).  Everything is safe to call offline: install exits 3.
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 offline.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+LOG = logging.getLogger("lindos-drivers")
+
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_OFFLINE = 0, 1, 2, 3
+
+VENDORS = {
+    "10de": "nvidia",
+    "12d2": "nvidia",   # NVIDIA/SGS-Thomson (very old)
+    "1002": "amd",
+    "1022": "amd",
+    "8086": "intel",
+    "15ad": "vmware",
+    "1234": "qemu",
+    "1b36": "qemu",
+    "1af4": "virtio",
+    "1414": "hyperv",
+    "80ee": "virtualbox",
+    "5333": "s3",
+    "1a03": "aspeed",
+    "102b": "matrox",
+}
+GPU_CLASSES = {"0300": "VGA", "0302": "3D", "0380": "Display"}
+
+MODPROBE_CONF = Path("/etc/modprobe.d/nvidia-lindos.conf")
+MODPROBE_TEXT = (
+    "# Written by lindos-drivers — enables kernel modesetting for the NVIDIA driver\n"
+    "# (needed for Wayland/xwayland, tear-free Xorg with PRIME, and Plymouth).\n"
+    "options nvidia-drm modeset=1 fbdev=1\n"
+)
+REBOOT_FLAG = Path("/run/reboot-required")
+REBOOT_PKGS = Path("/run/reboot-required.pkgs")
+LIBEXEC = Path(os.environ.get("LINDOS_ROOT", "") + "/usr/libexec/lindos")
+
+MESA_COMMON = ["mesa-vulkan-drivers", "libvulkan1", "vulkan-tools", "mesa-utils", "libgl1-mesa-dri", "mesa-va-drivers"]
+MESA_I386 = ["mesa-vulkan-drivers:i386", "libvulkan1:i386", "libgl1-mesa-dri:i386", "libgl1:i386"]
+AMD_EXTRA = ["linux-firmware", "libdrm-amdgpu1", "xserver-xorg-video-amdgpu"]
+INTEL_EXTRA = ["linux-firmware", "intel-media-va-driver-non-free", "i965-va-driver"]
+
+# Broadcom Wi-Fi mapping ships as data (LINDOS_ROOT-aware; falls back to the copy next to this
+# script so the probe is testable on Windows against a faked /sys tree).
+WIFI_JSON_REL = "usr/share/lindos/drivers/wifi.json"
+# Audio: SOF firmware + UCM configuration for modern Intel/AMD DSP (SmartSound/cAVS) codecs.
+AUDIO_CLASSES = {"0401": "multimedia-audio", "0403": "audio-device"}
+AUDIO_PACKAGES = ["sof-firmware", "alsa-ucm-conf"]
+# firmware-sof-signed is only relevant where Secure Boot demands a signed SOF blob.
+AUDIO_SECUREBOOT_PACKAGE = "firmware-sof-signed"
+
+RE_LSPCI = re.compile(
+    r"^(?P<slot>[0-9a-fA-F:.]+)\s+(?P<class>.+?)\s+\[(?P<classid>[0-9a-fA-F]{4})\]:\s+"
+    r"(?P<desc>.*?)\s+\[(?P<vid>[0-9a-fA-F]{4}):(?P<did>[0-9a-fA-F]{4})\](?:\s+\(rev\s+(?P<rev>[^)]+)\))?\s*$"
+)
+
+
+# --------------------------------------------------------------------------- #
+# subprocess helpers (never shell=True, always guarded)
+# --------------------------------------------------------------------------- #
+def run(cmd: list[str], timeout: float = 30.0, env: Optional[dict] = None) -> tuple[int, str, str]:
+    """Run a command; return (rc, stdout, stderr).  Missing binaries -> rc 127."""
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, check=False)
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: not found"
+    except (subprocess.TimeoutExpired, PermissionError, OSError) as exc:
+        return 1, "", str(exc)
+    return cp.returncode, cp.stdout, cp.stderr
+
+
+def have(binary: str) -> bool:
+    return shutil.which(binary) is not None
+
+
+def is_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return bool(geteuid and geteuid() == 0)
+
+
+def is_linux() -> bool:
+    return sys.platform.startswith("linux")
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------- #
+# detection
+# --------------------------------------------------------------------------- #
+def parse_lspci(text: str) -> list[dict]:
+    """Parse `lspci -nn` output; keep display-class devices only."""
+    gpus: list[dict] = []
+    for line in text.splitlines():
+        m = RE_LSPCI.match(line.strip())
+        if not m:
+            continue
+        classid = m.group("classid").lower()
+        if classid not in GPU_CLASSES:
+            continue
+        vid = m.group("vid").lower()
+        gpus.append({
+            "slot": m.group("slot"),
+            "class": GPU_CLASSES[classid],
+            "class_id": classid,
+            "vendor_id": vid,
+            "device_id": m.group("did").lower(),
+            "vendor": VENDORS.get(vid, "other"),
+            "model": m.group("desc").strip(),
+            "revision": (m.group("rev") or "").strip() or None,
+            "driver": None,
+        })
+    return gpus
+
+
+def sysfs_driver(slot: str) -> Optional[str]:
+    """Kernel driver bound to a PCI slot ('01:00.0' or '0000:01:00.0')."""
+    if not is_linux():
+        return None
+    full = slot if slot.count(":") == 2 else f"0000:{slot}"
+    link = Path("/sys/bus/pci/devices") / full / "driver"
+    try:
+        if link.is_symlink() or link.exists():
+            return os.path.basename(os.path.realpath(str(link)))
+    except OSError:
+        pass
+    return None
+
+
+def sysfs_gpus() -> list[dict]:
+    """Fallback GPU enumeration from sysfs when pciutils is missing."""
+    gpus: list[dict] = []
+    base = Path("/sys/bus/pci/devices")
+    if not is_linux() or not base.is_dir():
+        return gpus
+    for dev in sorted(base.iterdir()):
+        cls = read_text(dev / "class").strip().lower()
+        if not cls.startswith("0x03"):
+            continue
+        classid = cls[2:6]
+        vid = read_text(dev / "vendor").strip().lower().replace("0x", "")
+        did = read_text(dev / "device").strip().lower().replace("0x", "")
+        gpus.append({
+            "slot": dev.name.replace("0000:", ""),
+            "class": GPU_CLASSES.get(classid, "Display"),
+            "class_id": classid,
+            "vendor_id": vid,
+            "device_id": did,
+            "vendor": VENDORS.get(vid, "other"),
+            "model": f"PCI device {vid}:{did} (install pciutils for the name)",
+            "revision": read_text(dev / "revision").strip().replace("0x", "") or None,
+            "driver": sysfs_driver(dev.name),
+        })
+    return gpus
+
+
+def detect_gpus() -> list[dict]:
+    gpus: list[dict] = []
+    rc, out, _ = run(["lspci", "-nn"])
+    if rc == 0 and out.strip():
+        gpus = parse_lspci(out)
+        for g in gpus:
+            g["driver"] = sysfs_driver(g["slot"])
+    if not gpus:
+        gpus = sysfs_gpus()
+    return gpus
+
+
+def vendors_present(gpus: list[dict]) -> list[str]:
+    seen: list[str] = []
+    for g in gpus:
+        if g["vendor"] not in seen:
+            seen.append(g["vendor"])
+    return seen
+
+
+# --------------------------------------------------------------------------- #
+# autodetect: full PCI enumeration + Wi-Fi/audio mapping (LINDOS_ROOT-aware)
+# --------------------------------------------------------------------------- #
+def lindos_root() -> Path:
+    """Prefix prepended to system paths for testability (mirrors lindos-core)."""
+    return Path(os.environ.get("LINDOS_ROOT", ""))
+
+
+def parse_lspci_all(text: str) -> list[dict]:
+    """Parse `lspci -nn`, keeping every device (not just display class)."""
+    devices: list[dict] = []
+    for line in text.splitlines():
+        m = RE_LSPCI.match(line.strip())
+        if not m:
+            continue
+        vid = m.group("vid").lower()
+        devices.append({
+            "slot": m.group("slot"),
+            "class_id": m.group("classid").lower(),
+            "vendor_id": vid,
+            "device_id": m.group("did").lower(),
+            "vendor": VENDORS.get(vid, "other"),
+            "model": m.group("desc").strip(),
+            "revision": (m.group("rev") or "").strip() or None,
+        })
+    return devices
+
+
+def sysfs_devices() -> list[dict]:
+    """Enumerate every PCI device from sysfs, honouring LINDOS_ROOT (works on Windows in tests)."""
+    devices: list[dict] = []
+    base = lindos_root() / "sys" / "bus" / "pci" / "devices"
+    if not base.is_dir():
+        return devices
+    for dev in sorted(base.iterdir()):
+        cls = read_text(dev / "class").strip().lower()
+        classid = cls[2:6] if cls.startswith("0x") else cls[:4]
+        vid = read_text(dev / "vendor").strip().lower().replace("0x", "")
+        did = read_text(dev / "device").strip().lower().replace("0x", "")
+        if not (classid and vid and did):
+            continue
+        devices.append({
+            "slot": dev.name.replace("0000:", ""),
+            "class_id": classid,
+            "vendor_id": vid,
+            "device_id": did,
+            "vendor": VENDORS.get(vid, "other"),
+            "model": f"PCI device {vid}:{did} (install pciutils for the name)",
+            "revision": read_text(dev / "revision").strip().replace("0x", "") or None,
+        })
+    return devices
+
+
+def all_pci_devices() -> list[dict]:
+    """Every PCI device: `lspci -nn` when available, else the LINDOS_ROOT sysfs tree."""
+    rc, out, _ = run(["lspci", "-nn"])
+    if rc == 0 and out.strip():
+        return parse_lspci_all(out)
+    return sysfs_devices()
+
+
+def wifi_json_path() -> Path:
+    """Locate wifi.json: LINDOS_ROOT copy first, else the copy shipped beside this script."""
+    root_copy = lindos_root() / WIFI_JSON_REL
+    if root_copy.is_file():
+        return root_copy
+    # dev/installed layout: <root>/usr/bin/lindos-drivers -> <root>/usr/share/lindos/drivers/wifi.json
+    here = Path(__file__).resolve()
+    return here.parent.parent / "share" / "lindos" / "drivers" / "wifi.json"
+
+
+def load_wifi_map() -> dict:
+    path = wifi_json_path()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        LOG.warning("could not read Wi-Fi map %s: %s", path, exc)
+        return {"vendor": "14e4", "wireless_classes": ["0280"], "drivers": {}, "chips": {}, "default": {}}
+
+
+def _wifi_recommended(entry: dict, wmap: dict) -> tuple[list[str], str]:
+    """Resolve a chip/default entry to (recommended packages, note) via the drivers table."""
+    drivers_tbl = wmap.get("drivers", {})
+    drv = entry.get("driver", "")
+    info = drivers_tbl.get(drv, {})
+    rec = list(info.get("recommended", []))
+    note = info.get("note", "") or entry.get("note", "")
+    return rec, note
+
+
+def detect_wifi(devices: Optional[list[dict]] = None) -> dict:
+    """Recommend Broadcom Wi-Fi driver packages for the PCI devices present."""
+    if devices is None:
+        devices = all_pci_devices()
+    wmap = load_wifi_map()
+    vendor = str(wmap.get("vendor", "14e4")).lower()
+    classes = {c.lower() for c in wmap.get("wireless_classes", ["0280"])}
+    chips = wmap.get("chips", {})
+    default = wmap.get("default", {})
+    matched: list[dict] = []
+    recommended: list[str] = []
+    for d in devices:
+        if d["vendor_id"] != vendor or d["class_id"] not in classes:
+            continue
+        chip = chips.get(d["device_id"])
+        if chip is not None:
+            rec, note = _wifi_recommended(chip, wmap)
+            name = chip.get("name", "")
+        else:
+            rec, note = _wifi_recommended(default, wmap)
+            name = default.get("name", "unknown Broadcom wireless chip")
+        matched.append({
+            "slot": d["slot"], "device_id": d["device_id"], "chip": name,
+            "recommended": rec, "note": note, "known": chip is not None,
+        })
+        for p in rec:
+            if p not in recommended:
+                recommended.append(p)
+    return {"devices": matched, "recommended": recommended}
+
+
+def detect_audio(devices: Optional[list[dict]] = None) -> dict:
+    """Recommend SOF firmware + UCM config when an HD-audio controller is present."""
+    if devices is None:
+        devices = all_pci_devices()
+    matched: list[dict] = []
+    for d in devices:
+        if d["class_id"] in AUDIO_CLASSES:
+            matched.append({"slot": d["slot"], "vendor": d["vendor"],
+                            "device_id": d["device_id"], "class_id": d["class_id"]})
+    recommended = list(AUDIO_PACKAGES) if matched else []
+    note = ""
+    if matched:
+        note = ("SOF firmware + UCM profiles for modern Intel/AMD DSP audio; "
+                f"under Secure Boot also consider {AUDIO_SECUREBOOT_PACKAGE}.")
+    return {"devices": matched, "recommended": recommended, "note": note}
+
+
+def autodetect_dict() -> dict:
+    """GPU + Broadcom Wi-Fi + audio-firmware recommendations in one structure."""
+    devices = all_pci_devices()
+    gpus = detect_gpus()
+    gpu_vendors = [v for v in vendors_present(gpus) if v in ("nvidia", "amd", "intel")]
+    wifi = detect_wifi(devices)
+    audio = detect_audio(devices)
+    return {
+        "gpus": gpus,
+        "gpu_vendors": gpu_vendors,
+        "wifi": wifi,
+        "audio": audio,
+        "recommended": {
+            "gpu": gpu_vendors,
+            "wifi": wifi["recommended"],
+            "audio": audio["recommended"],
+        },
+    }
+
+
+def print_autodetect(auto: dict) -> None:
+    print("GPU(s):")
+    if not auto["gpus"]:
+        print("  none detected (is pciutils installed?)")
+    for g in auto["gpus"]:
+        print(f"  [{g['vendor']:<6}] {g['model']}  [{g['vendor_id']}:{g['device_id']}]")
+    print(f"  -> driver targets: {', '.join(auto['gpu_vendors']) or 'none'}")
+    print("Broadcom Wi-Fi:")
+    if not auto["wifi"]["devices"]:
+        print("  no Broadcom wireless device detected")
+    for w in auto["wifi"]["devices"]:
+        mark = "" if w["known"] else " (unrecognised id)"
+        print(f"  {w['slot']}  {w['chip']} [14e4:{w['device_id']}]{mark} -> {', '.join(w['recommended'])}")
+    print("Audio firmware:")
+    if not auto["audio"]["devices"]:
+        print("  no audio controller detected")
+    else:
+        print(f"  {len(auto['audio']['devices'])} audio controller(s) -> {', '.join(auto['audio']['recommended'])}")
+    rec = auto["recommended"]
+    print(f"Recommended: gpu={', '.join(rec['gpu']) or '-'}  "
+          f"wifi={', '.join(rec['wifi']) or '-'}  audio={', '.join(rec['audio']) or '-'}")
+
+
+# --------------------------------------------------------------------------- #
+# status
+# --------------------------------------------------------------------------- #
+def dpkg_installed(pattern: str) -> list[dict]:
+    """dpkg-query for packages matching a glob; only 'installed' ones."""
+    rc, out, _ = run(["dpkg-query", "-W", "-f", "${binary:Package}\t${Version}\t${db:Status-Status}\n", pattern])
+    pkgs: list[dict] = []
+    if rc not in (0, 1) or not out:
+        return pkgs
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[2].strip() == "installed":
+            pkgs.append({"package": parts[0].strip(), "version": parts[1].strip()})
+    return pkgs
+
+
+def loaded_modules() -> list[str]:
+    text = read_text(Path("/proc/modules"))
+    interesting = {"nvidia", "nvidia_drm", "nvidia_modeset", "nvidia_uvm", "nouveau", "amdgpu", "radeon", "i915", "xe"}
+    found = [line.split()[0] for line in text.splitlines() if line.split() and line.split()[0] in interesting]
+    return sorted(found)
+
+
+def modinfo_version(module: str) -> Optional[str]:
+    rc, out, _ = run(["modinfo", "-F", "version", module], timeout=15)
+    if rc == 0 and out.strip():
+        return out.strip().splitlines()[0]
+    return None
+
+
+def nvidia_smi() -> list[dict]:
+    rc, out, _ = run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"], timeout=20)
+    rows: list[dict] = []
+    if rc == 0:
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2:
+                rows.append({"name": parts[0], "driver_version": parts[1]})
+    return rows
+
+
+def glx_renderer() -> Optional[str]:
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return None
+    rc, out, _ = run(["glxinfo", "-B"], timeout=20)
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        if "OpenGL renderer string:" in line:
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def vulkan_devices() -> list[str]:
+    rc, out, _ = run(["vulkaninfo", "--summary"], timeout=30)
+    names: list[str] = []
+    if rc != 0:
+        return names
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("deviceName"):
+            val = s.split("=", 1)[1].strip() if "=" in s else s
+            if val and val not in names:
+                names.append(val)
+    return names
+
+
+def nvidia_drm_modeset() -> Optional[bool]:
+    val = read_text(Path("/sys/module/nvidia_drm/parameters/modeset")).strip()
+    if val in ("Y", "1"):
+        return True
+    if val in ("N", "0"):
+        return False
+    return None
+
+
+def secure_boot() -> str:
+    rc, out, _ = run(["mokutil", "--sb-state"], timeout=10)
+    if rc == 0 and out:
+        low = out.lower()
+        if "enabled" in low:
+            return "enabled"
+        if "disabled" in low:
+            return "disabled"
+    efivars = Path("/sys/firmware/efi/efivars")
+    if is_linux() and efivars.is_dir():
+        for f in efivars.glob("SecureBoot-*"):
+            try:
+                data = f.read_bytes()
+                return "enabled" if data and data[-1] == 1 else "disabled"
+            except OSError:
+                continue
+        return "unknown"
+    return "not-uefi" if is_linux() else "unknown"
+
+
+def parse_ubuntu_drivers(text: str) -> list[dict]:
+    """Parse `ubuntu-drivers devices` output into [{package, recommended, tags}]."""
+    drivers: list[dict] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("driver"):
+            continue
+        # driver   : nvidia-driver-550-open - distro non-free recommended
+        _, _, rest = s.partition(":")
+        rest = rest.strip()
+        if not rest:
+            continue
+        pkg, _, tags = rest.partition(" - ")
+        pkg = pkg.strip()
+        tags = tags.strip()
+        drivers.append({"package": pkg, "recommended": "recommended" in tags.split(), "tags": tags})
+    return drivers
+
+
+def ubuntu_drivers_devices() -> list[dict]:
+    rc, out, _ = run(["ubuntu-drivers", "devices"], timeout=120)
+    if rc != 0:
+        return []
+    return parse_ubuntu_drivers(out)
+
+
+def status_dict() -> dict:
+    gpus = detect_gpus()
+    vendors = vendors_present(gpus)
+    st = {
+        "gpus": gpus,
+        "vendors": vendors,
+        "nvidia_packages": dpkg_installed("nvidia-driver-*"),
+        "nvidia_smi": nvidia_smi() if "nvidia" in vendors else [],
+        "nvidia_drm_modeset": nvidia_drm_modeset(),
+        "modules_loaded": loaded_modules(),
+        "amdgpu_version": modinfo_version("amdgpu") if "amd" in vendors else None,
+        "opengl_renderer": glx_renderer(),
+        "vulkan_devices": vulkan_devices(),
+        "mesa_vulkan": {
+            "amd64": bool(dpkg_installed("mesa-vulkan-drivers")),
+            "i386": bool(dpkg_installed("mesa-vulkan-drivers:i386")),
+        },
+        "secure_boot": secure_boot(),
+        "reboot_required": REBOOT_FLAG.exists(),
+        "modprobe_conf": MODPROBE_CONF.exists(),
+        "ubuntu_drivers": ubuntu_drivers_devices() if have("ubuntu-drivers") else [],
+    }
+    return st
+
+
+def print_status(st: dict) -> None:
+    print("GPU(s):")
+    if not st["gpus"]:
+        print("  none detected (is pciutils installed? are we inside a container?)")
+    for g in st["gpus"]:
+        drv = g.get("driver") or "no kernel driver bound"
+        print(f"  [{g['vendor']:<6}] {g['model']}  [{g['vendor_id']}:{g['device_id']}]  driver: {drv}")
+    if "nvidia" in st["vendors"] or st["nvidia_packages"]:
+        pk = ", ".join(f"{p['package']} {p['version']}" for p in st["nvidia_packages"]) or "none installed"
+        print(f"NVIDIA driver packages: {pk}")
+        for row in st["nvidia_smi"]:
+            print(f"  nvidia-smi: {row['name']} — driver {row['driver_version']}")
+        ms = st["nvidia_drm_modeset"]
+        print(f"  nvidia-drm modeset: {'on' if ms else 'off' if ms is False else 'n/a (module not loaded)'}"
+              f"  · /etc/modprobe.d/nvidia-lindos.conf: {'present' if st['modprobe_conf'] else 'absent'}")
+    if st["amdgpu_version"]:
+        print(f"amdgpu module version: {st['amdgpu_version']}")
+    print(f"Kernel modules loaded: {', '.join(st['modules_loaded']) or 'none of nvidia/amdgpu/i915/xe/nouveau'}")
+    print(f"OpenGL renderer: {st['opengl_renderer'] or 'unknown (glxinfo unavailable or no display)'}")
+    print(f"Vulkan devices: {', '.join(st['vulkan_devices']) or 'unknown (vulkaninfo unavailable)'}")
+    mv = st["mesa_vulkan"]
+    print(f"Mesa Vulkan: 64-bit {'yes' if mv['amd64'] else 'no'} · 32-bit {'yes' if mv['i386'] else 'no (needed by many Steam/Wine games)'}")
+    print(f"Secure Boot: {st['secure_boot']}"
+          + ("  — NVIDIA/DKMS modules must be MOK-signed; Ubuntu prompts to enrol a key on install" if st["secure_boot"] == "enabled" else ""))
+    if st["ubuntu_drivers"]:
+        rec = [d["package"] for d in st["ubuntu_drivers"] if d["recommended"]]
+        print(f"ubuntu-drivers recommends: {', '.join(rec) or '(none marked recommended)'}")
+        print("  available: " + ", ".join(d["package"] for d in st["ubuntu_drivers"]))
+    print(f"Reboot required: {'YES' if st['reboot_required'] else 'no'}")
+
+
+# --------------------------------------------------------------------------- #
+# install
+# --------------------------------------------------------------------------- #
+def online(timeout: float = 4.0) -> bool:
+    if os.environ.get("LINDOS_OFFLINE"):
+        return False
+    for host, port in (("archive.ubuntu.com", 80), ("packages.linuxmint.com", 80), ("deb.debian.org", 80), ("1.1.1.1", 53)):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def apt_candidate(pkg: str) -> bool:
+    rc, out, _ = run(["apt-cache", "policy", pkg], timeout=60)
+    if rc != 0:
+        return False
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("Candidate:"):
+            return s.split(":", 1)[1].strip() not in ("", "(none)")
+    return False
+
+
+def i386_enabled() -> bool:
+    rc, out, _ = run(["dpkg", "--print-foreign-architectures"])
+    return rc == 0 and "i386" in out.split()
+
+
+def nvidia_available_from_apt() -> list[str]:
+    rc, out, _ = run(["apt-cache", "search", "--names-only", "^nvidia-driver-[0-9]+(-open)?$"], timeout=60)
+    pkgs: list[str] = []
+    if rc == 0:
+        for line in out.splitlines():
+            name = line.split(" - ", 1)[0].strip()
+            if re.fullmatch(r"nvidia-driver-\d+(-open)?", name):
+                pkgs.append(name)
+    return pkgs
+
+
+def choose_nvidia_package(flavour: str, drivers: list[dict], apt_pkgs: list[str]) -> Optional[str]:
+    """Pick the NVIDIA metapackage.
+
+    flavour: 'auto' | 'open' | 'proprietary'.  Prefers the ubuntu-drivers
+    recommendation, then the highest branch available from apt.  Server
+    branches are ignored.
+    """
+    forced = os.environ.get("LINDOS_NVIDIA_DRIVER")
+    if forced:
+        return forced
+    cands = [d["package"] for d in drivers if re.fullmatch(r"nvidia-driver-\d+(-open)?", d["package"])]
+    rec = [d["package"] for d in drivers if d["recommended"] and d["package"] in cands]
+    base: Optional[str] = None
+    if rec:
+        base = rec[0]
+    elif cands:
+        base = sorted(cands, key=lambda p: int(re.search(r"\d+", p).group(0)))[-1]  # type: ignore[union-attr]
+    elif apt_pkgs:
+        base = sorted(apt_pkgs, key=lambda p: int(re.search(r"\d+", p).group(0)))[-1]  # type: ignore[union-attr]
+    if base is None:
+        return None
+    branch = re.search(r"\d+", base).group(0)  # type: ignore[union-attr]
+    if flavour == "open":
+        want = f"nvidia-driver-{branch}-open"
+    elif flavour == "proprietary":
+        want = f"nvidia-driver-{branch}"
+    else:
+        want = base
+    known = set(cands) | set(apt_pkgs)
+    if known and want not in known and (flavour != "auto"):
+        # requested flavour not offered for the recommended branch: try any branch that has it
+        alts = sorted((p for p in known if p.endswith("-open") == (flavour == "open")),
+                      key=lambda p: int(re.search(r"\d+", p).group(0)))  # type: ignore[union-attr]
+        if alts:
+            return alts[-1]
+    return want
+
+
+def build_plan(targets: list[str], gpus: list[dict], flavour: str,
+               extra_packages: Optional[list[str]] = None) -> dict:
+    """Return {'targets','packages','commands','notes','reboot'} — pure, no side effects except lookups.
+
+    *extra_packages* (Wi-Fi/audio recommendations for ``install --auto``) are appended to the apt
+    install list so a single pass installs GPU + Wi-Fi + audio.
+    """
+    packages: list[str] = []
+    commands: list[list[str]] = []
+    notes: list[str] = []
+    reboot = False
+    if targets:  # 32-bit libs only matter for the GPU stack, not Wi-Fi/audio firmware
+        i386 = i386_enabled()
+        if not i386:
+            notes.append("i386 architecture is not enabled: 32-bit Vulkan/GL libraries (needed by many Steam/Wine games) will be enabled first")
+            commands.append(["dpkg", "--add-architecture", "i386"])
+    commands.append(["apt-get", "update"])
+
+    if "nvidia" in targets:
+        drivers = ubuntu_drivers_devices() if have("ubuntu-drivers") else []
+        pkg = choose_nvidia_package(flavour, drivers, nvidia_available_from_apt())
+        if not pkg:
+            notes.append("no NVIDIA driver package found via ubuntu-drivers or apt — check that the 'restricted' component is enabled")
+        else:
+            packages.append(pkg)
+            packages.append("nvidia-settings")
+            branch = re.search(r"\d+", pkg).group(0)  # type: ignore[union-attr]
+            packages.append(f"libnvidia-gl-{branch}:i386")
+            if any(v in ("intel", "amd") for v in vendors_present(gpus)):
+                packages.append("nvidia-prime")
+                notes.append("hybrid graphics detected: nvidia-prime installed; use `prime-select` or the NVIDIA settings to switch modes")
+            if pkg.endswith("-open"):
+                notes.append("open kernel modules need a Turing or newer GPU (GTX 16xx / RTX 20xx+); use --nvidia-proprietary for older cards")
+            reboot = True
+    if "amd" in targets or "intel" in targets:
+        packages += MESA_COMMON + MESA_I386
+        if "amd" in targets:
+            packages += AMD_EXTRA
+        if "intel" in targets:
+            packages += INTEL_EXTRA
+    if extra_packages:
+        packages += list(extra_packages)
+    # de-duplicate, keep order
+    seen: set[str] = set()
+    packages = [p for p in packages if not (p in seen or seen.add(p))]
+    if packages:
+        commands.append(["apt-get", "install", "-y", *packages])
+    if reboot:
+        commands.append(["write", str(MODPROBE_CONF)])
+        commands.append(["update-initramfs", "-u"])
+    return {"targets": targets, "flavour": flavour, "packages": packages, "commands": commands, "notes": notes, "reboot": reboot}
+
+
+def apt_env() -> dict:
+    env = dict(os.environ)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    env["LC_ALL"] = "C.UTF-8"
+    return env
+
+
+def execute_plan(plan: dict, log=LOG.info) -> tuple[bool, list[dict]]:
+    """Run the plan (root).  Returns (ok, step results)."""
+    results: list[dict] = []
+    ok = True
+    env = apt_env()
+    optional = {"nvidia-prime"}
+    for cmd in plan["commands"]:
+        if cmd[0] == "write":
+            try:
+                MODPROBE_CONF.write_text(MODPROBE_TEXT, encoding="utf-8")
+                results.append({"step": f"write {MODPROBE_CONF}", "ok": True})
+                log("wrote %s", MODPROBE_CONF)
+            except OSError as exc:
+                results.append({"step": f"write {MODPROBE_CONF}", "ok": False, "error": str(exc)})
+                ok = False
+            continue
+        if cmd[0] == "apt-get" and cmd[1] == "install":
+            # install optional/i386 extras separately so a missing extra never sinks the driver itself
+            core = [p for p in cmd[3:] if p not in optional and not p.endswith(":i386")]
+            extras = [p for p in cmd[3:] if p in optional or p.endswith(":i386")]
+            batches = [core] + [[e] for e in extras]
+        else:
+            batches = [None]
+        for batch in batches:
+            if batch is not None:
+                if not batch:
+                    continue
+                real = ["apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confdef",
+                        "-o", "Dpkg::Options::=--force-confold", *batch]
+            else:
+                real = cmd
+            log("$ %s", " ".join(real))
+            rc, out, err = run(real, timeout=3600, env=env)
+            step = {"step": " ".join(real), "ok": rc == 0, "rc": rc}
+            if rc != 0:
+                tail = (err or out).strip().splitlines()[-5:]
+                step["error"] = "\n".join(tail)
+                is_extra = batch is not None and len(batch) == 1 and (batch[0] in optional or batch[0].endswith(":i386"))
+                if is_extra:
+                    log("optional package %s failed (continuing): %s", batch[0], step["error"])
+                    step["optional"] = True
+                elif real[:2] == ["apt-get", "update"]:
+                    log("apt-get update reported problems (continuing): %s", step["error"])
+                else:
+                    ok = False
+                    log("FAILED: %s", step["error"])
+            results.append(step)
+            if not ok:
+                break
+        if not ok:
+            break
+    if ok and plan["reboot"]:
+        try:
+            REBOOT_FLAG.parent.mkdir(parents=True, exist_ok=True)
+            REBOOT_FLAG.write_text("*** System restart required ***\n", encoding="utf-8")
+            with open(REBOOT_PKGS, "a", encoding="utf-8") as fh:
+                fh.write("lindos-drivers\n")
+        except OSError:
+            pass
+    return ok, results
+
+
+def resolve_targets(args: argparse.Namespace, gpus: list[dict]) -> tuple[list[str], str]:
+    targets: list[str] = []
+    flavour = "auto"
+    if args.nvidia_open:
+        targets.append("nvidia")
+        flavour = "open"
+    if args.nvidia_proprietary:
+        targets.append("nvidia")
+        flavour = "proprietary"
+    if args.amd:
+        targets.append("amd")
+    if args.intel:
+        targets.append("intel")
+    if not targets:
+        for v in vendors_present(gpus):
+            if v in ("nvidia", "amd", "intel"):
+                targets.append(v)
+    seen: set[str] = set()
+    targets = [t for t in targets if not (t in seen or seen.add(t))]
+    return targets, flavour
+
+
+def helper_flags(args: argparse.Namespace) -> list[str]:
+    """Flags forwarded to the helper action 'install-drivers' ({"args": [...]}).
+
+    Only the four driver selectors are whitelisted by lindos.helper (SPEC §4.6);
+    --json is handled locally by wrapping the helper result.
+    """
+    flags = []
+    if args.nvidia_open:
+        flags.append("--nvidia-open")
+    if args.nvidia_proprietary:
+        flags.append("--nvidia-proprietary")
+    if args.amd:
+        flags.append("--amd")
+    if args.intel:
+        flags.append("--intel")
+    return flags
+
+
+def escalate(flags: list[str], as_json: bool = False) -> int:
+    """Re-run `install` as root through the lindos helper (or pkexec as a fallback)."""
+    try:
+        from lindos.helper import run_privileged  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - lindos-core missing (dev box): fall back to pkexec/sudo
+        run_privileged = None
+    if run_privileged is not None:
+        # run_privileged streams every helper output line to `log` as it is produced;
+        # in text mode we forward it live and do not print `out` a second time.
+        stream = None if as_json else (lambda line: print(line, flush=True))
+        res = run_privileged("install-drivers", {"args": flags}, log=stream)
+        out = getattr(res, "out", "") or ""
+        err = getattr(res, "err", "") or ""
+        code = int(getattr(res, "code", 0 if getattr(res, "ok", False) else 1))
+        if as_json:
+            print(json.dumps({"status": "ok" if res.ok else ("offline" if code == EXIT_OFFLINE else "error"),
+                              "via": "lindos-helper", "args": flags, "code": code, "out": out, "err": err,
+                              "reboot_required": bool(res.ok and "reboot required" in out)}, indent=2))
+        elif not res.ok and not (out or err):
+            LOG.error("helper failed with exit code %s", code)
+        return code
+    for pre in (["pkexec"], ["sudo", "-n"]):
+        if have(pre[0]):
+            cmd = [*pre, os.path.abspath(sys.argv[0]), "install", *flags]
+            if as_json:
+                cmd.append("--json")
+            try:
+                return subprocess.run(cmd, check=False).returncode
+            except OSError as exc:
+                LOG.error("%s failed: %s", pre[0], exc)
+    LOG.error("root privileges required (no lindos helper, pkexec or sudo available)")
+    return EXIT_ERROR
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    if getattr(args, "auto", False):
+        if args.nvidia_open or args.nvidia_proprietary or args.amd or args.intel:
+            LOG.error("--auto cannot be combined with explicit --nvidia-*/--amd/--intel flags")
+            return EXIT_USAGE
+        return cmd_install_auto(args)
+    if args.nvidia_open and args.nvidia_proprietary:
+        LOG.error("--nvidia-open and --nvidia-proprietary are mutually exclusive")
+        return EXIT_USAGE
+    gpus = detect_gpus()
+    targets, flavour = resolve_targets(args, gpus)
+    if not targets:
+        msg = "no supported GPU (NVIDIA/AMD/Intel) detected and no --nvidia-*/--amd/--intel flag given"
+        if args.json:
+            print(json.dumps({"status": "error", "error": msg, "gpus": gpus}))
+        else:
+            LOG.error(msg)
+        return EXIT_ERROR
+    if not args.dry_run and not is_root():
+        return escalate(helper_flags(args), as_json=bool(args.json))
+    if not args.dry_run and not online():
+        msg = "offline: driver installation needs the Ubuntu/Mint apt repositories (and NVIDIA's 'restricted' component)"
+        if args.json:
+            print(json.dumps({"status": "offline", "error": msg}))
+        else:
+            LOG.error(msg)
+        return EXIT_OFFLINE
+    plan = build_plan(targets, gpus, flavour)
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({"status": "dry-run", "plan": plan}, indent=2))
+        else:
+            print(f"Targets: {', '.join(targets)} (nvidia flavour: {flavour})")
+            for c in plan["commands"]:
+                print("  $ " + (" ".join(c) if c[0] != "write" else f"write {c[1]}: options nvidia-drm modeset=1 fbdev=1"))
+            for n in plan["notes"]:
+                print("  note: " + n)
+            print("Reboot required afterwards: " + ("yes" if plan["reboot"] else "no"))
+        return EXIT_OK
+    if not plan["packages"]:
+        msg = "nothing to install: " + ("; ".join(plan["notes"]) or "no packages resolved")
+        if args.json:
+            print(json.dumps({"status": "error", "error": msg, "plan": plan}))
+        else:
+            LOG.error(msg)
+        return EXIT_ERROR
+    for n in plan["notes"]:
+        LOG.info("note: %s", n)
+    ok, results = execute_plan(plan)
+    out = {"status": "ok" if ok else "error", "plan": plan, "steps": results, "reboot_required": bool(ok and plan["reboot"])}
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        if ok:
+            print("Driver installation finished: " + ", ".join(plan["packages"]))
+            if plan["reboot"]:
+                print("reboot required")
+        else:
+            failed = [s for s in results if not s.get("ok") and not s.get("optional")]
+            print("Driver installation FAILED" + (f": {failed[-1].get('error', '')}" if failed else ""))
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def installable_wifi_packages(wifi: dict) -> list[str]:
+    """Pick, per detected Broadcom device, the first recommended package apt actually offers."""
+    chosen: list[str] = []
+    for dev in wifi.get("devices", []):
+        recs = dev.get("recommended", [])
+        pick = next((p for p in recs if apt_candidate(p)), None) or (recs[0] if recs else None)
+        if pick and pick not in chosen:
+            chosen.append(pick)
+    return chosen
+
+
+def _auto_extra_for_install(auto: dict) -> list[str]:
+    """Concrete Wi-Fi (first-available) + audio packages to hand to apt for a real install."""
+    extra = installable_wifi_packages(auto["wifi"]) + list(auto["audio"]["recommended"])
+    seen: set[str] = set()
+    return [p for p in extra if not (p in seen or seen.add(p))]
+
+
+def escalate_auto(auto: dict, extra: list[str], as_json: bool = False) -> int:
+    """Root-install GPU (via the 'install-drivers' helper) + Wi-Fi/audio (via 'install-packages').
+
+    Falls back to re-executing ``lindos-drivers install --auto`` through pkexec/sudo when
+    lindos-core's helper is unavailable (dev boxes), so a single elevation does everything.
+    """
+    try:
+        from lindos.helper import run_privileged  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - lindos-core missing: fall back to a self re-exec
+        run_privileged = None
+    if run_privileged is None:
+        for pre in (["pkexec"], ["sudo", "-n"]):
+            if have(pre[0]):
+                cmd = [*pre, os.path.abspath(sys.argv[0]), "install", "--auto"]
+                if as_json:
+                    cmd.append("--json")
+                try:
+                    return subprocess.run(cmd, check=False).returncode
+                except OSError as exc:
+                    LOG.error("%s failed: %s", pre[0], exc)
+        LOG.error("root privileges required (no lindos helper, pkexec or sudo available)")
+        return EXIT_ERROR
+    stream = None if as_json else (lambda line: print(line, flush=True))
+    steps: list[dict] = []
+    overall = EXIT_OK
+    if auto["gpu_vendors"]:
+        res = run_privileged("install-drivers", {"args": []}, log=stream)
+        code = int(getattr(res, "code", 1))
+        steps.append({"stage": "gpu", "via": "install-drivers", "code": code, "ok": bool(res.ok)})
+        if not res.ok:
+            overall = code or EXIT_ERROR
+    if extra:
+        res = run_privileged("install-packages", {"packages": extra}, log=stream)
+        code = int(getattr(res, "code", 1))
+        steps.append({"stage": "wifi+audio", "via": "install-packages", "packages": extra,
+                      "code": code, "ok": bool(res.ok)})
+        if not res.ok and overall == EXIT_OK:
+            overall = code or EXIT_ERROR
+    if as_json:
+        print(json.dumps({"status": "ok" if overall == EXIT_OK else "error", "steps": steps}, indent=2))
+    return overall
+
+
+def cmd_install_auto(args: argparse.Namespace) -> int:
+    """`install --auto`: GPU + Broadcom Wi-Fi + audio recommendations in one pass."""
+    auto = autodetect_dict()
+    gpu_targets = auto["gpu_vendors"]
+    wifi_recs = auto["wifi"]["recommended"]
+    audio_recs = auto["audio"]["recommended"]
+    if args.dry_run:
+        extra = list(wifi_recs) + list(audio_recs)
+        plan = build_plan(gpu_targets, auto["gpus"], "auto", extra_packages=extra)
+        if args.json:
+            print(json.dumps({"status": "dry-run", "auto": auto, "plan": plan}, indent=2))
+        else:
+            print_autodetect(auto)
+            print("Install plan (candidate packages; the installer picks the available Wi-Fi driver):")
+            for c in plan["commands"]:
+                print("  $ " + (" ".join(c) if c[0] != "write" else f"write {c[1]}"))
+            print("Reboot required afterwards: " + ("yes" if plan["reboot"] else "no"))
+        return EXIT_OK
+    if not (gpu_targets or wifi_recs or audio_recs):
+        msg = "autodetect found no GPU/Wi-Fi/audio packages to install"
+        if args.json:
+            print(json.dumps({"status": "error", "error": msg, "auto": auto}))
+        else:
+            LOG.error(msg)
+        return EXIT_ERROR
+    if not online():
+        msg = "offline: --auto needs the apt repositories to install GPU/Wi-Fi/audio packages"
+        if args.json:
+            print(json.dumps({"status": "offline", "error": msg}))
+        else:
+            LOG.error(msg)
+        return EXIT_OFFLINE
+    extra = _auto_extra_for_install(auto)
+    if not is_root():
+        return escalate_auto(auto, extra, as_json=bool(args.json))
+    plan = build_plan(gpu_targets, auto["gpus"], "auto", extra_packages=extra)
+    if not plan["packages"]:
+        msg = "nothing to install: " + ("; ".join(plan["notes"]) or "no packages resolved")
+        if args.json:
+            print(json.dumps({"status": "error", "error": msg, "plan": plan}))
+        else:
+            LOG.error(msg)
+        return EXIT_ERROR
+    for n in plan["notes"]:
+        LOG.info("note: %s", n)
+    ok, results = execute_plan(plan)
+    out = {"status": "ok" if ok else "error", "auto": auto, "plan": plan, "steps": results,
+           "reboot_required": bool(ok and plan["reboot"])}
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        if ok:
+            print("Auto driver installation finished: " + ", ".join(plan["packages"]))
+            if plan["reboot"]:
+                print("reboot required")
+        else:
+            failed = [s for s in results if not s.get("ok") and not s.get("optional")]
+            print("Auto driver installation FAILED" + (f": {failed[-1].get('error', '')}" if failed else ""))
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# optional controller drivers + GUI
+# --------------------------------------------------------------------------- #
+def cmd_script(script: str, extra: list[str]) -> int:
+    path = LIBEXEC / script
+    if not path.exists():
+        LOG.error("%s not found", path)
+        return EXIT_ERROR
+    cmd = [str(path), *extra]
+    if not is_root() and extra and extra[0] in ("install", "remove"):
+        for pre in (["pkexec"], ["sudo", "-n"]):
+            if have(pre[0]):
+                cmd = [*pre, *cmd]
+                break
+    try:
+        return subprocess.run(cmd, check=False).returncode
+    except OSError as exc:
+        LOG.error("could not run %s: %s", path, exc)
+        return EXIT_ERROR
+
+
+def cmd_gui() -> int:
+    for prog in (["mintdrivers"], ["software-properties-gtk", "--open-tab=4"], ["lindos-settings", "hardware"]):
+        if have(prog[0]):
+            try:
+                subprocess.Popen(prog, start_new_session=True)
+                return EXIT_OK
+            except OSError as exc:
+                LOG.error("%s: %s", prog[0], exc)
+    LOG.error("no driver GUI found (mintdrivers / software-properties-gtk)")
+    return EXIT_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lindos-drivers", description="GPU detection and driver installation for Lindos.")
+    p.add_argument("--status", action="store_true", help="same as the 'status' command")
+    p.add_argument("--json", action="store_true", help="JSON output (with --status)")
+    p.add_argument("-v", "--verbose", action="store_true")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    pd = sub.add_parser("detect", help="list GPUs (lspci -nn / sysfs)")
+    pd.add_argument("--json", action="store_true")
+
+    pa = sub.add_parser("autodetect", help="GPU + Broadcom Wi-Fi + audio package recommendations")
+    pa.add_argument("--json", action="store_true")
+
+    ps = sub.add_parser("status", help="driver status report")
+    ps.add_argument("--json", action="store_true")
+
+    pi = sub.add_parser("install", help="install GPU drivers (root or via lindos helper)")
+    pi.add_argument("--nvidia-open", action="store_true", help="NVIDIA open kernel modules (Turing+)")
+    pi.add_argument("--nvidia-proprietary", action="store_true", help="NVIDIA proprietary kernel modules")
+    pi.add_argument("--amd", action="store_true", help="AMD: Mesa Vulkan + 32-bit libs + firmware")
+    pi.add_argument("--intel", action="store_true", help="Intel: Mesa Vulkan + 32-bit libs + media driver")
+    pi.add_argument("--auto", action="store_true",
+                    help="install the autodetect GPU + Broadcom Wi-Fi + audio recommendations in one pass")
+    pi.add_argument("--dry-run", action="store_true", help="print the plan only")
+    pi.add_argument("--json", action="store_true")
+
+    sub.add_parser("gui", help="open the Driver Manager (mintdrivers)")
+
+    px = sub.add_parser("xpadneo", help="optional Xbox-controller Bluetooth driver (dkms)")
+    px.add_argument("action", choices=["install", "remove", "status"])
+
+    po = sub.add_parser("xone", help="optional Xbox wireless-adapter driver (dkms; downloads Microsoft firmware)")
+    po.add_argument("action", choices=["install", "remove", "status"])
+    po.add_argument("--accept-firmware-license", action="store_true",
+                    help="you accept Microsoft's licence for the wireless-adapter firmware download")
+    po.add_argument("--skip-firmware", action="store_true")
+    return p
+
+
+def _tolerant_streams() -> None:
+    """Never crash on a non-UTF-8 console (status text contains '·', '—')."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    _tolerant_streams()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s", stream=sys.stderr)
+    cmd = args.cmd
+    if cmd is None and args.status:
+        cmd = "status"
+    if cmd == "detect":
+        gpus = detect_gpus()
+        if args.json:
+            print(json.dumps({"gpus": gpus, "vendors": vendors_present(gpus)}, indent=2))
+        else:
+            if not gpus:
+                print("no GPU detected (lspci unavailable or no display-class PCI device)")
+            for g in gpus:
+                print(f"{g['slot']}  {g['vendor']:<6} {g['model']}  [{g['vendor_id']}:{g['device_id']}]"
+                      f"{'  rev ' + g['revision'] if g['revision'] else ''}  driver={g['driver'] or '-'}")
+        return EXIT_OK
+    if cmd == "autodetect":
+        auto = autodetect_dict()
+        if args.json:
+            print(json.dumps(auto, indent=2))
+        else:
+            print_autodetect(auto)
+        return EXIT_OK
+    if cmd == "status":
+        st = status_dict()
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print_status(st)
+        return EXIT_OK
+    if cmd == "install":
+        return cmd_install(args)
+    if cmd == "gui":
+        return cmd_gui()
+    if cmd == "xpadneo":
+        return cmd_script("install-xpadneo.sh", [args.action])
+    if cmd == "xone":
+        extra = [args.action]
+        if args.accept_firmware_license:
+            extra.append("--accept-firmware-license")
+        if args.skip_firmware:
+            extra.append("--skip-firmware")
+        return cmd_script("install-xone.sh", extra)
+    parser.print_help()
+    return EXIT_USAGE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

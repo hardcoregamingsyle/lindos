@@ -1,0 +1,4 @@
+/etc/gamemode.ini
+/etc/xdg/MangoHud/MangoHud.conf
+/etc/udev/rules.d/60-lindos-controllers.rules
+/etc/sysctl.d/80-lindos-gaming.conf

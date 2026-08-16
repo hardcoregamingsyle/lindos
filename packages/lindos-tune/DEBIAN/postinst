@@ -1,0 +1,93 @@
+#!/bin/sh
+# postinst for lindos-tune — idempotent, offline-safe, chroot-safe (SPEC §1.1, §11).
+# The full tune (sysctl/zram/presets/…) is applied by `lindos-tune apply --mode <id> --system`
+# (build/chroot/50-tune.sh at ISO build time, the Lindos helper on every mode switch); this
+# script only does the light, package-level wiring.
+set -e
+
+log() {
+    printf 'lindos-tune: %s\n' "$*" >&2
+}
+
+in_chroot() {
+    # ischroot(1) exits 0 inside a chroot; systemd-detect-virt --chroot likewise;
+    # a missing /run/systemd/system means systemd is not running here at all.
+    if command -v ischroot >/dev/null 2>&1 && ischroot; then
+        return 0
+    fi
+    if command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --quiet --chroot; then
+        return 0
+    fi
+    [ ! -d /run/systemd/system ]
+}
+
+have_unit() {
+    command -v systemctl >/dev/null 2>&1 && systemctl cat -- "$1" >/dev/null 2>&1
+}
+
+case "${1:-}" in
+    configure)
+        # 1. state / log directories (also declared in /etc/tmpfiles.d/lindos.conf)
+        mkdir -p /var/log/lindos /var/lib/lindos-tune 2>/dev/null || true
+        chmod 0755 /var/log/lindos /var/lib/lindos-tune 2>/dev/null || true
+        if command -v systemd-tmpfiles >/dev/null 2>&1; then
+            systemd-tmpfiles --create /etc/tmpfiles.d/lindos.conf >/dev/null 2>&1 || true
+        fi
+
+        # 2. executables (defensive against a tarball that lost the mode bits)
+        for f in /usr/bin/lindos-tune /usr/libexec/lindos/install-nbfc.sh /usr/libexec/lindos/sensors-detect-once.sh; do
+            [ -f "$f" ] && chmod 0755 "$f" 2>/dev/null || true
+        done
+
+        # 3. earlyoom defaults.  /etc/default/earlyoom is a conffile of the earlyoom package, so
+        #    lindos-tune cannot ship it; take it over once (only while it is not lindos-managed).
+        earlyoom_changed=0
+        if [ -f /usr/share/lindos/tune/earlyoom.default ]; then
+            if [ ! -f /etc/default/earlyoom ] || ! grep -q 'managed by lindos-tune' /etc/default/earlyoom 2>/dev/null; then
+                if cp /usr/share/lindos/tune/earlyoom.default /etc/default/earlyoom.lindos-tmp 2>/dev/null \
+                   && mv -f /etc/default/earlyoom.lindos-tmp /etc/default/earlyoom 2>/dev/null; then
+                    log "wrote /etc/default/earlyoom (Lindos defaults: -m 4 -s 100 --avoid desktop)"
+                    earlyoom_changed=1
+                else
+                    rm -f /etc/default/earlyoom.lindos-tmp 2>/dev/null || true
+                    log "warning: could not write /etc/default/earlyoom"
+                fi
+            fi
+        fi
+
+        # 4. systemd: reload unit files, preset ONLY our listed units (never preset-all)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            for u in earlyoom.service fstrim.timer lindos-sensors-detect.service; do
+                if have_unit "$u"; then
+                    systemctl preset -- "$u" >/dev/null 2>&1 || true
+                fi
+            done
+        fi
+
+        if in_chroot; then
+            log "chroot/no systemd: sysctl, unit restarts and sensors-detect deferred to first boot"
+        else
+            # 5. sysctl drop-ins (70-lindos-base.conf, 90-lindos-mode.conf)
+            if command -v sysctl >/dev/null 2>&1; then
+                sysctl --system >/dev/null 2>&1 || true
+            fi
+            # 6. earlyoom picks up new args
+            if [ "$earlyoom_changed" = 1 ] && have_unit earlyoom.service; then
+                systemctl try-restart earlyoom.service >/dev/null 2>&1 || true
+            fi
+            # 7. lm-sensors: run sensors-detect --auto once, guarded (never in a chroot, only when
+            #    nothing was configured yet); the same script runs at first boot via
+            #    lindos-sensors-detect.service on ISO installs.
+            if [ -x /usr/libexec/lindos/sensors-detect-once.sh ]; then
+                /usr/libexec/lindos/sensors-detect-once.sh >/dev/null 2>&1 || true
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

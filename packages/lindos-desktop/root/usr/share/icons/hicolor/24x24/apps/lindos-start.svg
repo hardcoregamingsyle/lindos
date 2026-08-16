@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos icon (c) Lindos Team, GPL-3.0-or-later. Original geometric mark: an "L" and a four-point spark. Not derived from any Microsoft artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#60CDFF"/><stop offset="1" stop-color="#0067C0"/></linearGradient>
+  </defs>
+  <rect x="1.5" y="1.5" width="21" height="21" rx="5" fill="url(#g)"/>
+  <rect x="7.00" y="6.50" width="3.08" height="11.00" rx="0.88" fill="#FFFFFF"/><rect x="7.00" y="14.42" width="11.00" height="3.08" rx="0.88" fill="#FFFFFF"/>
+  <polygon points="17.50,4.30 18.22,6.78 20.70,7.50 18.22,8.22 17.50,10.70 16.78,8.22 14.30,7.50 16.78,6.78" fill="#FFFFFF" opacity="1.0"/>
+</svg>

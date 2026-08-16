@@ -1,0 +1,16 @@
+#!/bin/sh
+# prerm for lindos-setup -- remove byte-compiled files (idempotent)
+set -e
+
+case "${1:-}" in
+    remove|upgrade|deconfigure)
+        if command -v py3clean >/dev/null 2>&1; then
+            py3clean /usr/lib/lindos-setup 2>/dev/null || true
+        fi
+        find /usr/lib/lindos-setup -name '__pycache__' -type d -prune -exec rm -rf '{}' + 2>/dev/null || true
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

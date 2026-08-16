@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+"""lindos-ram — how much RAM Lindos uses right now (SPEC §4.9, §4.10, §0.1).
+
+Alias for ``lindos-tune status``: when lindos-tune is installed its richer status (RAM, zram,
+services, governor, compositor, score vs the 350–500 MB idle target) is shown; otherwise the
+built-in ``lindos.ram.report()`` is printed.
+
+  lindos-ram [--json] [--top N] [--aggregate] [--builtin]
+
+Exit codes: 0 ok · 1 error · 2 usage.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from typing import List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import ram as lram
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-ram: the 'lindos' python package is missing ({exc}); install lindos-core\n")
+    sys.exit(1)
+
+PROG = "lindos-ram"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _delegate(as_json: bool) -> Optional[int]:
+    """Run ``lindos-tune status [--json]``; None when lindos-tune is unavailable."""
+    tune = shutil.which("lindos-tune")
+    if not tune or os.environ.get("LINDOS_RAM_BUILTIN") == "1":
+        return None
+    cmd = [tune, "status"] + (["--json"] if as_json else [])
+    try:
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, check=False)
+    except OSError:
+        return None
+    return int(proc.returncode)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog=PROG, description="RAM usage vs the Lindos 350–500 MB idle target "
+                                                          "(alias for 'lindos-tune status').")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--top", type=int, default=10, metavar="N", help="processes to list (default 10)")
+    parser.add_argument("--aggregate", action="store_true", help="sum same-named processes")
+    parser.add_argument("--builtin", action="store_true", help="never delegate to lindos-tune")
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    ns = parser.parse_args(argv)
+    if ns.top < 0:
+        parser.error("--top must be >= 0")
+    if not ns.builtin and ns.top == 10 and not ns.aggregate:
+        code = _delegate(ns.json)
+        if code is not None:
+            return code
+    try:
+        print(lram.report("json" if ns.json else "text", top_n=ns.top, aggregate=ns.aggregate))
+    except (OSError, ValueError) as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

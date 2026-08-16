@@ -1,0 +1,31 @@
+Lindos per-user configuration (~/.config/lindos)
+================================================
+
+Files that Lindos tools keep in this directory (all optional; missing = defaults):
+
+  config.json        Your settings: mode (everyday|gaming|work|creator|lite), browser
+                     (edge|chrome|firefox), theme (dark|light), accent (#RRGGBB),
+                     wallpaper (path), setup_done, gamemode_auto, mangohud, telemetry
+                     (always false - Lindos sends nothing).  Edit with Lindos Settings,
+                     `lindos-config get|set|show` or by hand (JSON, schema 1).
+  setup-done         Created when the first-run experience (OOBE) finished.  Delete it and
+                     log in again to run the setup once more (or run `lindos-setup
+                     --reconfigure`).
+  panel-init.done    Written by /usr/libexec/lindos/first-login-panel.sh after it seeded
+                     the taskbar layout of your Lindos Mode into ~/.config/xfce4/ at your
+                     first login.  Delete it to re-seed missing panel files next login.
+  picom.conf         Optional: your own picom compositor config.  When present it is used
+                     instead of /etc/xdg/picom-lindos.conf by `lindos-compositor start`.
+
+Related locations
+  ~/.config/xfce4/xfconf/xfce-perchannel-xml/   XFCE settings (panel, keyboard, xfwm4 ...)
+  ~/.config/xfce4/panel/                        panel plugin rc files (Start menu, taskbar pins)
+  ~/.config/gtk-3.0/lindos-accent.css           accent colour written by Lindos Settings
+  ~/.local/share/lindos/prefixes/               Wine prefixes of your Windows apps
+  ~/.local/state/lindos/                        logs (Windows apps, mode switches, panel seeding)
+
+Switch mode:      lindos-mode set gaming        Show RAM use:  lindos-tune status
+Compositor:       lindos-compositor toggle      Settings:      lindos-settings
+
+Lindos runs Windows programs through Wine/Proton (a translation layer, not a VM) - it is not
+Windows.  Games with kernel anti-cheat (Valorant, Fortnite ...) do not run on any Linux.

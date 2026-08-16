@@ -1,0 +1,27 @@
+#!/bin/sh
+# postrm for lindos-tune — remove generated (non-conffile) state on purge; never touch files
+# owned by other packages (/etc/default/earlyoom, /etc/default/zramswap stay as they are).
+set -e
+
+case "${1:-}" in
+    purge)
+        rm -f /etc/sysctl.d/70-lindos-base.conf \
+              /etc/tmpfiles.d/lindos-governor.conf \
+              /etc/modules-load.d/lindos.conf \
+              /var/log/lindos/tune.log 2>/dev/null || true
+        rm -rf /var/lib/lindos-tune 2>/dev/null || true
+        rmdir /etc/lindos/tune.d /etc/ananicy.d/lindos 2>/dev/null || true
+        ;;
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+if [ "${1:-}" = "purge" ] || [ "${1:-}" = "remove" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

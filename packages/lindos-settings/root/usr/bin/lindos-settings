@@ -1,0 +1,5 @@
+#!/bin/sh
+# lindos-settings -- Windows-11-style settings centre for Lindos (SPEC §7)
+# Usage: lindos-settings [page] [--power-menu] [--debug] [--list-pages]
+set -e
+exec python3 /usr/lib/lindos-settings/main.py "$@"

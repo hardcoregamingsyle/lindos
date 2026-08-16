@@ -1,0 +1,74 @@
+{
+  "_comment": [
+    "Broadcom Wi-Fi PCI-id -> recommended driver package map for `lindos-drivers autodetect`.",
+    "Broadcom PCI vendor id is 14e4; only the wireless network-controller class (0280) is matched",
+    "here (14e4 also ships wired NICs via the in-kernel tg3 driver, which need no extra package).",
+    "Each chip lists `recommended` packages in preference order; the installer picks the first one",
+    "that apt actually offers on this system. `bcmwl-kernel-source` is the Ubuntu/Mint name for the",
+    "Broadcom STA (wl) DKMS driver; `broadcom-sta-dkms` is the Debian name for the same driver;",
+    "`firmware-b43-installer` drives the open b43 kernel driver and downloads Broadcom's firmware;",
+    "`firmware-b43legacy-installer` covers the oldest BCM4306/4301-class parts. These are proprietary",
+    "or firmware-bearing packages: lindos NEVER installs them silently — only after first-boot/OOBE",
+    "consent (SPEC-VM.md section 24)."
+  ],
+  "vendor": "14e4",
+  "vendor_name": "Broadcom Inc. / Broadcom Limited",
+  "wireless_classes": ["0280"],
+  "drivers": {
+    "wl": {
+      "recommended": ["bcmwl-kernel-source", "broadcom-sta-dkms"],
+      "note": "Broadcom STA (wl) proprietary DKMS driver; conflicts with the open b43 driver."
+    },
+    "wl-or-b43": {
+      "recommended": ["bcmwl-kernel-source", "broadcom-sta-dkms", "firmware-b43-installer"],
+      "note": "STA (wl) preferred; the open b43 driver (firmware-b43-installer) is the fallback."
+    },
+    "b43": {
+      "recommended": ["firmware-b43-installer"],
+      "note": "Open b43 kernel driver; firmware-b43-installer downloads the redistributable firmware."
+    },
+    "b43legacy": {
+      "recommended": ["firmware-b43legacy-installer"],
+      "note": "Oldest BCM4306/4301-class parts use the b43legacy driver."
+    }
+  },
+  "chips": {
+    "4301": {"name": "BCM4301", "driver": "b43legacy"},
+    "4306": {"name": "BCM4306", "driver": "b43legacy"},
+    "4307": {"name": "BCM4307", "driver": "b43legacy"},
+    "4311": {"name": "BCM4311", "driver": "wl-or-b43"},
+    "4312": {"name": "BCM4312", "driver": "wl-or-b43"},
+    "4313": {"name": "BCM4313", "driver": "wl-or-b43"},
+    "4315": {"name": "BCM4312 (LP-PHY)", "driver": "wl-or-b43"},
+    "4318": {"name": "BCM4318", "driver": "b43"},
+    "4319": {"name": "BCM4318", "driver": "b43"},
+    "4320": {"name": "BCM4306", "driver": "b43legacy"},
+    "4321": {"name": "BCM4321", "driver": "wl-or-b43"},
+    "4324": {"name": "BCM4309", "driver": "b43legacy"},
+    "4325": {"name": "BCM4306", "driver": "b43legacy"},
+    "4328": {"name": "BCM4321", "driver": "wl"},
+    "4329": {"name": "BCM4321", "driver": "wl"},
+    "432a": {"name": "BCM4321", "driver": "wl"},
+    "432b": {"name": "BCM4322", "driver": "wl"},
+    "432c": {"name": "BCM4322", "driver": "wl-or-b43"},
+    "432d": {"name": "BCM4322", "driver": "wl"},
+    "4331": {"name": "BCM4331", "driver": "wl-or-b43"},
+    "4353": {"name": "BCM43224", "driver": "wl-or-b43"},
+    "4357": {"name": "BCM43225", "driver": "wl-or-b43"},
+    "4358": {"name": "BCM43227", "driver": "wl"},
+    "4359": {"name": "BCM43228", "driver": "wl"},
+    "435a": {"name": "BCM43228", "driver": "wl"},
+    "4360": {"name": "BCM4360", "driver": "wl"},
+    "4365": {"name": "BCM43142", "driver": "wl"},
+    "43a0": {"name": "BCM4360", "driver": "wl"},
+    "43a9": {"name": "BCM43217", "driver": "wl"},
+    "43aa": {"name": "BCM43131", "driver": "wl"},
+    "43b1": {"name": "BCM4352", "driver": "wl"},
+    "4727": {"name": "BCM4313", "driver": "wl-or-b43"}
+  },
+  "default": {
+    "name": "unknown Broadcom wireless chip",
+    "driver": "wl-or-b43",
+    "note": "Unrecognised Broadcom wireless device: the STA (wl) driver covers most; if it fails, install the open b43 driver (firmware-b43-installer). Check `lspci -nn` and report the id."
+  }
+}

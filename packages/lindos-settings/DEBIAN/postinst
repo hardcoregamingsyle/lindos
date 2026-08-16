@@ -1,0 +1,27 @@
+#!/bin/sh
+# postinst for lindos-settings -- idempotent
+set -e
+
+log() { printf 'lindos-settings: %s\n' "$*"; }
+
+case "${1:-}" in
+    configure)
+        # byte-compile for faster start-up (best effort)
+        if command -v py3compile >/dev/null 2>&1; then
+            py3compile /usr/lib/lindos-settings 2>/dev/null || log "py3compile failed (ignored)"
+        fi
+        # make sure the launcher is executable even if the builder missed it
+        if [ -f /usr/bin/lindos-settings ] && [ ! -x /usr/bin/lindos-settings ]; then
+            chmod 0755 /usr/bin/lindos-settings
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

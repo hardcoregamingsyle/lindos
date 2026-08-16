@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Roblox
+GenericName=Roblox player (Sober)
+Comment=Roblox via Sober (Lindos)
+Exec=flatpak run org.vinegarhq.Sober
+Icon=lindos-roblox
+Terminal=false
+Categories=Game;
+Keywords=roblox;sober;game;
+StartupNotify=true
+StartupWMClass=org.vinegarhq.Sober
+Actions=install;
+X-Lindos-Launcher=sober
+X-Lindos-Flatpak=org.vinegarhq.Sober
+X-Lindos-Note=Roblox has no official Linux client. Sober is a community runtime for the Android build (installed from Flathub by "lindos-game install sober"); Roblox's Windows player does not run under Wine.
+
+[Desktop Action install]
+Name=Install or repair Sober (Lindos)
+Exec=lindos-game launch sober --install

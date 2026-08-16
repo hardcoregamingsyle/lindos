@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""lindos-winapps -- seamless Windows apps over RDP (SPEC-VM §22).
+
+  lindos-winapps setup   [--backend libvirt|podman] [--host H] [--user U] ...
+  lindos-winapps check   [--json]
+  lindos-winapps list    [--json]
+  lindos-winapps install <id>
+  lindos-winapps run     <id> [-- args...]
+  lindos-winapps remove  <id>
+  lindos-winapps --version
+
+Thin launcher: the logic lives in the ``lindos_winapps`` package installed at
+/usr/lib/lindos-winapps.  Exit codes: 0 ok, 1 error, 2 usage, 3 backend unreachable.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+def _lib_dir() -> str:
+    """``/usr/bin/lindos-winapps`` -> ``/usr/lib/lindos-winapps`` (also valid in the repo tree)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates = [
+        os.path.join(os.path.dirname(here), "lib", "lindos-winapps"),
+        "/usr/lib/lindos-winapps",
+        os.environ.get("LINDOS_WINAPPS_LIB", ""),
+    ]
+    for cand in candidates:
+        if cand and os.path.isdir(os.path.join(cand, "lindos_winapps")):
+            return cand
+    return "/usr/lib/lindos-winapps"
+
+
+_LIB = _lib_dir()
+if _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+try:
+    from lindos_winapps import main  # noqa: E402
+except ImportError as exc:  # pragma: no cover - broken installation
+    sys.stderr.write(f"lindos-winapps: cannot load lindos_winapps from {_LIB}: {exc}\n"
+                     "Reinstall the package: apt install --reinstall lindos-winapps\n")
+    sys.exit(1)
+
+if __name__ == "__main__":
+    sys.exit(main())

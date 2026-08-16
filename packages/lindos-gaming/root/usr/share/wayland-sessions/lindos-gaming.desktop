@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Gaming
+GenericName=Gaming session
+Comment=A gamescope Wayland session hosting Steam Big Picture or a launcher (optional; does not replace the XFCE desktop)
+Exec=lindos-gamescope-session
+TryExec=lindos-gamescope-session
+Icon=input-gaming
+DesktopNames=Lindos-Gaming
+Keywords=game;gaming;gamescope;steam;big picture;couch;controller;
+X-Lindos-Component=gaming

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos wallpaper "bloom-blue" - original vector art (c) Lindos Team, GPL-3.0-or-later; 3840x2160 viewBox, scales to any size -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#061A3A"/><stop offset="1" stop-color="#0B3D91"/></linearGradient>
+    <radialGradient id="c1" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#60CDFF" stop-opacity="0.95"/><stop offset="0.6" stop-color="#2E8BF0" stop-opacity="0.55"/><stop offset="1" stop-color="#2E8BF0" stop-opacity="0"/></radialGradient>
+    <radialGradient id="c2" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#7B61FF" stop-opacity="0.9"/><stop offset="1" stop-color="#7B61FF" stop-opacity="0"/></radialGradient>
+    <radialGradient id="c3" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#00B7C3" stop-opacity="0.85"/><stop offset="1" stop-color="#00B7C3" stop-opacity="0"/></radialGradient>
+    <radialGradient id="c4" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></radialGradient>
+    <filter id="b1" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="70"/></filter>
+    <filter id="b2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="130"/></filter>
+    <filter id="b3" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="25"/></filter>
+    <filter id="grain" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope="0.045"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  <circle cx="2500" cy="1150" r="1150" fill="url(#c2)" filter="url(#b2)"/>
+  <circle cx="1450" cy="1250" r="1000" fill="url(#c3)" filter="url(#b2)"/>
+  <circle cx="1950" cy="1000" r="820" fill="url(#c1)" filter="url(#b1)"/>
+  <circle cx="1850" cy="950" r="380" fill="url(#c4)" filter="url(#b3)"/>
+  <circle cx="1950" cy="1000" r="600" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="40" filter="url(#b3)"/>
+  <circle cx="1950" cy="1000" r="880" fill="none" stroke="#60CDFF" stroke-opacity="0.12" stroke-width="60" filter="url(#b1)"/>
+  <ellipse cx="3400" cy="300" rx="900" ry="500" fill="url(#c1)" filter="url(#b2)" opacity="0.5"/>
+  <ellipse cx="300" cy="1900" rx="900" ry="500" fill="url(#c2)" filter="url(#b2)" opacity="0.5"/>
+  <rect width="3840" height="2160" filter="url(#grain)" opacity="0.5"/>
+</svg>

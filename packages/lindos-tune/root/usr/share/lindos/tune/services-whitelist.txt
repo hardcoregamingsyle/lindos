@@ -1,0 +1,72 @@
+# /usr/share/lindos/tune/services-whitelist.txt
+# The ONLY systemd units `lindos-tune services enable|disable <unit>` (and the helper action
+# `set-services`) may toggle.  One unit per line, `#` comments; names without a suffix mean
+# `.service`.  Keep in sync with lindos.helper.SERVICE_WHITELIST (lindos-core) — the privileged
+# helper re-checks every unit against its own list.
+#
+# Never list: NetworkManager, lightdm, dbus, polkit, systemd-*, udev, cups.socket is fine (it is
+# what keeps printing working after cups.service is disabled).
+
+# --- idle-RAM debloat (SPEC §8 10-debloat.sh; disabled, never purged) ---
+bluetooth.service
+ModemManager.service
+avahi-daemon.service
+avahi-daemon.socket
+cups.service
+cups.socket
+cups.path
+cups-browsed.service
+cups-browsed.socket
+NetworkManager-wait-online.service
+apport.service
+whoopsie.service
+kerneloops.service
+brltty.service
+speech-dispatcher.service
+ubuntu-report.service
+mintreport.service
+systemd-oomd.service
+motd-news.timer
+apt-daily.timer
+apt-daily-upgrade.timer
+unattended-upgrades.service
+fwupd.service
+fwupd-refresh.timer
+packagekit.service
+geoclue.service
+switcheroo-control.service
+colord.service
+upower.service
+udisks2.service
+cron.service
+anacron.service
+e2scrub_all.timer
+plymouth-quit-wait.service
+snapd.service
+snapd.socket
+ufw.service
+wpa_supplicant.service
+blueman-mechanism.service
+warpinator.service
+preload.service
+haveged.service
+smartmontools.service
+
+# --- Lindos tuning units (SPEC §11) ---
+earlyoom.service
+fstrim.timer
+tmp.mount
+zramswap.service
+systemd-zram-setup@zram0.service
+ananicy-cpp.service
+power-profiles-daemon.service
+tlp.service
+thermald.service
+irqbalance.service
+
+# --- hardware control ---
+nbfc_service.service
+fancontrol.service
+lm-sensors.service
+openrgb.service
+gamemoded.service

@@ -1,0 +1,41 @@
+#!/bin/sh
+# postrm for lindos-setup -- idempotent
+set -e
+
+log() { printf 'lindos-setup: %s\n' "$*"; }
+
+AUTOSTART=/etc/xdg/autostart/lindos-setup.desktop
+STATE_DIR=/var/lib/lindos-setup
+MARKER=/var/lib/lindos-setup/autostart.installed
+
+# Remove the autostart entry only if *we* created it in postinst (marker) and no
+# package (e.g. lindos-desktop) owns that path now.
+remove_autostart() {
+    if [ ! -f "$MARKER" ]; then
+        return 0
+    fi
+    if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$AUTOSTART" >/dev/null 2>&1; then
+        rm -f "$MARKER"
+        return 0
+    fi
+    rm -f "$AUTOSTART" "$MARKER"
+    log "removed $AUTOSTART"
+}
+
+case "${1:-}" in
+    remove|purge)
+        remove_autostart
+        if [ "$1" = "purge" ]; then
+            rm -rf "$STATE_DIR"
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

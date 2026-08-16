@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "comment": "Lindos WinApps catalog (SPEC-VM section 22). Each entry needs a user-supplied, licensed Windows with the app installed in the backend. Lindos never downloads Windows or bypasses licensing. rdp_path is the usual Windows install path; adjust it in the generated .desktop or re-run install if your version differs.",
+  "apps": [
+    {
+      "id": "photoshop",
+      "name": "Adobe Photoshop",
+      "rdp_path": "C:\\Program Files\\Adobe\\Adobe Photoshop 2024\\Photoshop.exe",
+      "categories": ["Graphics", "Photography", "2DGraphics"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Adobe Photoshop installed in the Windows backend. Lindos does not provide or license Photoshop."
+    },
+    {
+      "id": "illustrator",
+      "name": "Adobe Illustrator",
+      "rdp_path": "C:\\Program Files\\Adobe\\Adobe Illustrator 2024\\Support Files\\Contents\\Windows\\Illustrator.exe",
+      "categories": ["Graphics", "VectorGraphics", "2DGraphics"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Adobe Illustrator installed in the Windows backend."
+    },
+    {
+      "id": "premiere",
+      "name": "Adobe Premiere Pro",
+      "rdp_path": "C:\\Program Files\\Adobe\\Adobe Premiere Pro 2024\\Adobe Premiere Pro.exe",
+      "categories": ["AudioVideo", "Video"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Adobe Premiere Pro installed in the Windows backend."
+    },
+    {
+      "id": "office-word",
+      "name": "Microsoft Word",
+      "rdp_path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+      "categories": ["Office", "WordProcessor"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Microsoft Office (Word) installed in the Windows backend."
+    },
+    {
+      "id": "office-excel",
+      "name": "Microsoft Excel",
+      "rdp_path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
+      "categories": ["Office", "Spreadsheet"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Microsoft Office (Excel) installed in the Windows backend."
+    },
+    {
+      "id": "office-powerpoint",
+      "name": "Microsoft PowerPoint",
+      "rdp_path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\POWERPNT.EXE",
+      "categories": ["Office", "Presentation"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Microsoft Office (PowerPoint) installed in the Windows backend."
+    },
+    {
+      "id": "office-outlook",
+      "name": "Microsoft Outlook",
+      "rdp_path": "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
+      "categories": ["Office", "Email"],
+      "icon": "lindos-winapp",
+      "note": "Needs a licensed Microsoft Office (Outlook) installed in the Windows backend."
+    },
+    {
+      "id": "explorer",
+      "name": "Windows File Explorer",
+      "rdp_path": "C:\\Windows\\explorer.exe",
+      "categories": ["System", "FileManager", "Utility"],
+      "icon": "lindos-winapp",
+      "note": "Generic Windows Explorer window from the backend. Needs a running Windows backend."
+    }
+  ]
+}

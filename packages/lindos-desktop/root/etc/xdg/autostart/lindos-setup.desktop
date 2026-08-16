@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Setup
+Comment=Windows-style first-run experience: choose your Lindos Mode, browser and look (runs once)
+Exec=lindos-setup --first-run
+TryExec=lindos-setup
+Icon=lindos-logo
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Delay=2
+X-GNOME-Autostart-Phase=Applications
+X-XFCE-Autostart-Override=true
+StartupNotify=false
+Categories=System;
+X-Lindos-Component=desktop

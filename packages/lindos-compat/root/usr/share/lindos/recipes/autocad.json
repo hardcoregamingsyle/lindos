@@ -1,0 +1,24 @@
+{
+  "id": "autocad",
+  "name": "Autodesk AutoCAD (2016-2025)",
+  "vendor": "Autodesk",
+  "category": "engineering",
+  "status": "broken",
+  "summary": "Does NOT work through Wine: the installer, the licensing/sign-in service and the DirectX 11 canvas all fail.",
+  "notes": "AutoCAD does not run through Wine or Proton on Lindos or any other Linux. The modern installer (Autodesk Access / ODIS) needs .NET 4.8 + WPF with a working WebView2 sign-in, the licence manager (AdskLicensingService) has to run as a Windows service that talks to Autodesk's servers, and the drawing canvas uses DirectX 11 with features Wine's DXVK path does not cover for CAD (2D hardware acceleration falls back to a very slow software mode or crashes). Old releases (2007-2010) can be coaxed into starting but cannot activate. Autodesk does not support Linux and blocks it explicitly.\nWhat you can use on Lindos:\n- AutoCAD Web (web.autocad.com) - part of every AutoCAD subscription; opens/edits DWG in the browser (Edge/Chrome recommended).\n- FreeCAD - free parametric 3D CAD with a 2D drafting workbench, imports/exports DWG via the ODA converter and DXF natively.\n- LibreCAD / QCAD - free 2D CAD, DXF native, DWG import (QCAD Pro).\n- BricsCAD (commercial) and Bricsys' DWG-native tools ship a real Linux build; so does ODA's free DWG viewer.\n- Fusion 360 (Autodesk) has no Linux build either; Onshape (web) is a full parametric alternative.",
+  "installer_hint": "",
+  "homepage": "https://www.autodesk.com/products/autocad",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "AutoCAD Web", "how": "https://web.autocad.com - included with an AutoCAD subscription, works in Edge/Chrome/Firefox"},
+    {"name": "FreeCAD", "how": "native, free parametric CAD (2D drafting + 3D): apt install freecad or Flatpak org.freecad.FreeCAD"},
+    {"name": "LibreCAD / QCAD", "how": "native, free 2D CAD (DXF, DWG import): apt install librecad qcad"},
+    {"name": "BricsCAD (Linux build)", "how": "commercial DWG-native CAD with an official Linux version: https://www.bricsys.com"}
+  ]
+}

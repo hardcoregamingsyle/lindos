@@ -1,0 +1,35 @@
+Package: lindos-meta
+Version: 1.0.0
+Section: metapackages
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: lindos-core (= 1.0.0), lindos-desktop (= 1.0.0), lindos-setup (= 1.0.0), lindos-settings (= 1.0.0), lindos-compat (= 1.0.0), lindos-gaming (= 1.0.0), lindos-tune (= 1.0.0)
+Recommends: lindos-kernel, lindos-vm, lindos-winapps, firefox, steam-launcher | steam-installer, wine-staging | wine, winetricks, gamemode, mangohud, gamescope, flatpak, xfce4-panel-profiles, xfce4-docklike-plugin, picom, earlyoom, power-profiles-daemon
+Suggests: lutris, heroic, umu-launcher, corectrl, openrgb, nbfc-linux, scx
+Homepage: https://lindos.dev
+Description: Lindos 1.0 (Aurora) — complete Windows-11-style desktop remaster of Linux Mint XFCE
+ Meta package that pulls in every Lindos component: the core library and
+ helper (lindos-core), the theme/panel/branding (lindos-desktop), the
+ first-boot OOBE wizard (lindos-setup), the Settings centre (lindos-settings),
+ Windows-app support through Wine/Proton (lindos-compat), gaming launchers and
+ drivers (lindos-gaming) and the RAM/performance tuning (lindos-tune).
+ .
+ The Lindos-tuned kernel (lindos-kernel: ntsync, sched_ext, 1000 Hz preempt,
+ MGLRU) is Recommended, not required — the stock Mint/Ubuntu kernel stays
+ installed as a fallback and the Lindos kernel is selected in grub only when
+ its compiled image is actually present.
+ .
+ For software that genuinely needs Windows, two more components are Recommended
+ (both optional, both requiring a user-supplied licensed Windows): lindos-vm, an
+ honest KVM/QEMU Windows virtual machine with optional GPU passthrough, and
+ lindos-winapps, which shows individual Windows programs (Adobe, Office) as
+ seamless windows over RDP. Neither ships or performs any VM-detection evasion,
+ hardware/SMBIOS spoofing or licence bypass, and neither defeats VM-blocking
+ anti-cheat (Vanguard and the like) — that is impossible and is not attempted.
+ .
+ Honesty notes: Windows programs run through Wine/Proton (a translation
+ layer, not Windows and not a VM); Valorant and Fortnite do not run on any
+ Linux; Roblox runs through Sober; Edge/Chrome are downloaded from the vendor
+ at setup time (Firefox ships on the ISO); the idle RAM target is 350-500 MB.
+ No anti-cheat circumvention of any kind is shipped or possible.

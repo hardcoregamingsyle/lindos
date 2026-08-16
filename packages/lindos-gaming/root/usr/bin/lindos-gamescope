@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""lindos-gamescope -- run a command inside gamescope with sane Lindos defaults.
+
+gamescope (https://github.com/ValveSoftware/gamescope) is a Wayland micro-compositor
+that gives a game its own fullscreen output with upscaling (FSR), HDR passthrough and
+a MangoHud overlay, independent of the desktop compositor. This wrapper picks sensible
+defaults from the current Lindos **mode** and, optionally, a per-title **profile**
+(SPEC-KERNEL §17.2/§17.3), then execs::
+
+    gamescope <options> -- <command> [args...]
+
+Usage::
+
+    lindos-gamescope [options] -- COMMAND [ARGS...]
+    lindos-gamescope -W 2560 -H 1440 --fsr -- %command%
+    lindos-gamescope --profile /usr/share/lindos/gaming/profiles/elden-ring.json -- umu-run game.exe
+    lindos-gamescope --print -- steam            # show the command, run nothing
+
+If gamescope is not installed the wrapper degrades gracefully: it prints a clear,
+one-line explanation and runs the command directly (without gamescope) so the game
+still launches. Nothing here defeats or spoofs any anti-cheat, DRM or attestation —
+gamescope is purely a display/compositor layer (SPEC-KERNEL §14).
+
+Exit codes: 0 ok · 1 error · 2 usage (no command given).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import sys
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
+
+LOG = logging.getLogger("lindos-gamescope")
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+
+__version__ = "1.0.0"
+
+# Which Lindos mode enables the MangoHud overlay (via gamescope --mangoapp) by default.
+_MANGOAPP_DEFAULT_MODES = {"gaming"}
+
+
+def gamescope_available() -> bool:
+    return shutil.which("gamescope") is not None
+
+
+def effective_mode() -> str:
+    """Current Lindos mode, best-effort. lindos-core is optional (guarded import)."""
+    env = os.environ.get("LINDOS_MODE")
+    if env:
+        return env.strip().lower()
+    try:
+        from lindos.config import effective_mode as _mode  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - lindos-core absent (dev box / minimal install)
+        return "everyday"
+    try:
+        return str(_mode()).strip().lower() or "everyday"
+    except Exception:  # noqa: BLE001 - never fail because of config
+        return "everyday"
+
+
+def parse_resolution(text: str) -> Tuple[int, int]:
+    """'1920x1080' | '1920X1080' | '1920,1080' -> (1920, 1080). Raises ValueError."""
+    cleaned = str(text).strip().lower().replace(",", "x").replace(" ", "")
+    if "x" not in cleaned:
+        raise ValueError(f"resolution must look like WIDTHxHEIGHT, got {text!r}")
+    w_s, _, h_s = cleaned.partition("x")
+    w, h = int(w_s), int(h_s)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"resolution must be positive, got {text!r}")
+    return w, h
+
+
+def load_profile_gamescope(path: Path) -> dict:
+    """Read only the gamescope-relevant fields from a per-title profile (§17.3).
+
+    Returns a dict with any of: width, height, fsr, hdr, mangoapp. Reading the
+    profile's own JSON here is a display concern; the *runner* resolution of a
+    profile (env, Proton, prefix) is delegated to lindos-run, never reimplemented.
+    """
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: profile must be a JSON object")
+    out: dict = {}
+    gs = data.get("gamescope")
+    if isinstance(gs, dict):
+        if isinstance(gs.get("w"), int):
+            out["width"] = gs["w"]
+        if isinstance(gs.get("h"), int):
+            out["height"] = gs["h"]
+        if isinstance(gs.get("fsr"), bool):
+            out["fsr"] = gs["fsr"]
+        if isinstance(gs.get("hdr"), bool):
+            out["hdr"] = gs["hdr"]
+    if isinstance(data.get("mangohud"), bool):
+        out["mangoapp"] = data["mangohud"]
+    return out
+
+
+def build_gamescope_argv(
+    inner: Sequence[str],
+    *,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    refresh: Optional[int] = None,
+    fullscreen: bool = True,
+    borderless: bool = False,
+    fsr: bool = False,
+    hdr: bool = False,
+    mangoapp: bool = False,
+    steam: bool = False,
+    extra: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Pure builder: assemble the ``gamescope … -- <inner>`` command line.
+
+    Only ever produces standard gamescope display options — no anti-cheat,
+    DRM or attestation flags exist or are emitted (there are none to emit).
+    """
+    argv: List[str] = ["gamescope"]
+    if width:
+        argv += ["-W", str(width)]
+    if height:
+        argv += ["-H", str(height)]
+    if refresh:
+        argv += ["-r", str(refresh)]
+    if borderless:
+        argv += ["-b"]
+    elif fullscreen:
+        argv += ["-f"]
+    if fsr:
+        argv += ["-F", "fsr"]
+    if hdr:
+        argv += ["--hdr-enabled"]
+    if mangoapp:
+        argv += ["--mangoapp"]
+    if steam:
+        argv += ["-e"]
+    if extra:
+        argv += list(extra)
+    argv += ["--", *inner]
+    return argv
+
+
+def _split_dashdash(argv: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """Split at the first standalone ``--`` into (options, command)."""
+    argv = list(argv)
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1:]
+    return argv, []
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="lindos-gamescope",
+        description="Run a command inside gamescope with sane Lindos mode/profile defaults.",
+        epilog="Put the program to run after --:  lindos-gamescope -W 2560 -H 1440 --fsr -- %command%",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("-W", "--width", type=int, metavar="PX", help="output width in pixels (gamescope -W)")
+    p.add_argument("-H", "--height", type=int, metavar="PX", help="output height in pixels (gamescope -H)")
+    p.add_argument("--res", metavar="WxH", help="shortcut for --width/--height, e.g. 1920x1080")
+    p.add_argument("-r", "--refresh", type=int, metavar="HZ", help="output refresh rate (gamescope -r)")
+    fs = p.add_mutually_exclusive_group()
+    fs.add_argument("-f", "--fullscreen", dest="fullscreen", action="store_true", default=None,
+                    help="fullscreen output (default)")
+    fs.add_argument("-b", "--borderless", action="store_true", help="borderless window instead of fullscreen")
+    fs.add_argument("--windowed", action="store_true", help="neither fullscreen nor borderless")
+    p.add_argument("--fsr", action="store_true", default=None, help="enable AMD FSR upscaling (gamescope -F fsr)")
+    p.add_argument("--no-fsr", dest="fsr", action="store_false", help="disable FSR upscaling")
+    p.add_argument("--hdr", action="store_true", default=None, help="enable HDR passthrough (gamescope --hdr-enabled)")
+    p.add_argument("--no-hdr", dest="hdr", action="store_false", help="disable HDR passthrough")
+    p.add_argument("--mangoapp", action="store_true", default=None, help="show the MangoHud overlay (gamescope --mangoapp)")
+    p.add_argument("--no-mangoapp", dest="mangoapp", action="store_false", help="hide the MangoHud overlay")
+    p.add_argument("--steam", action="store_true", help="Steam integration / Big Picture layer (gamescope -e)")
+    p.add_argument("--mode", metavar="MODE",
+                   help="Lindos mode for defaults (gaming/everyday/work/creator/lite); default: the active mode")
+    p.add_argument("--profile", metavar="PATH", help="per-title profile JSON to read gamescope defaults from")
+    p.add_argument("--print", "--dry-run", dest="dry_run", action="store_true",
+                   help="print the resolved command instead of running it")
+    p.add_argument("--json", action="store_true", help="with --print, emit JSON")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--version", action="version", version=f"lindos-gamescope {__version__}")
+    return p
+
+
+def resolve_options(ns: argparse.Namespace) -> dict:
+    """Merge mode defaults < profile < explicit flags into the builder kwargs."""
+    mode = (ns.mode or effective_mode()).strip().lower()
+
+    opts = {
+        "width": None,
+        "height": None,
+        "refresh": ns.refresh,
+        "fullscreen": True,
+        "borderless": False,
+        "fsr": False,
+        "hdr": False,
+        "mangoapp": mode in _MANGOAPP_DEFAULT_MODES,
+        "steam": bool(ns.steam),
+    }
+
+    # profile defaults (only the display block)
+    if ns.profile:
+        prof = load_profile_gamescope(Path(os.path.expanduser(ns.profile)))
+        for key in ("width", "height", "fsr", "hdr", "mangoapp"):
+            if key in prof:
+                opts[key] = prof[key]
+
+    # explicit resolution
+    if ns.res:
+        opts["width"], opts["height"] = parse_resolution(ns.res)
+    if ns.width is not None:
+        opts["width"] = ns.width
+    if ns.height is not None:
+        opts["height"] = ns.height
+
+    # window mode
+    if ns.borderless:
+        opts["borderless"], opts["fullscreen"] = True, False
+    elif ns.windowed:
+        opts["borderless"], opts["fullscreen"] = False, False
+    elif ns.fullscreen:
+        opts["borderless"], opts["fullscreen"] = False, True
+
+    # tri-state toggles (None = leave the default)
+    if ns.fsr is not None:
+        opts["fsr"] = ns.fsr
+    if ns.hdr is not None:
+        opts["hdr"] = ns.hdr
+    if ns.mangoapp is not None:
+        opts["mangoapp"] = ns.mangoapp
+    return opts
+
+
+def _run(argv: List[str]) -> int:
+    LOG.debug("exec: %s", " ".join(argv))
+    try:
+        if os.name == "posix":
+            os.execvp(argv[0], argv)
+        import subprocess
+        return subprocess.run(argv, check=False).returncode
+    except OSError as exc:
+        LOG.error("could not start %s: %s", argv[0], exc)
+        return EXIT_ERROR
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    opt_args, inner = _split_dashdash(raw)
+    parser = build_parser()
+    ns, extra = parser.parse_known_args(opt_args)
+    # tokens before -- that argparse did not consume belong to the command
+    inner = [*extra, *inner]
+    logging.basicConfig(level=logging.DEBUG if ns.verbose else logging.INFO, format="%(message)s", stream=sys.stderr)
+
+    try:
+        opts = resolve_options(ns)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        LOG.error("%s", exc)
+        return EXIT_USAGE
+
+    if not inner:
+        LOG.error("no command to run. Put the program after --, e.g.  lindos-gamescope -- %%command%%")
+        return EXIT_USAGE
+
+    if not gamescope_available():
+        LOG.warning("gamescope is not installed — running '%s' directly, without it.", inner[0])
+        LOG.warning("Install it for fullscreen scaling/FSR/HDR:  sudo apt install gamescope")
+        if ns.dry_run:
+            if ns.json:
+                print(json.dumps({"gamescope": False, "command": inner}, indent=2))
+            else:
+                print(" ".join(inner))
+            return EXIT_OK
+        return _run(list(inner))
+
+    full = build_gamescope_argv(inner, **opts)
+    if ns.dry_run:
+        if ns.json:
+            print(json.dumps({"gamescope": True, "command": full, "options": opts}, indent=2))
+        else:
+            print(" ".join(full))
+        return EXIT_OK
+    return _run(full)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,32 @@
+# Lindos — git-ignored build products and local junk (SPEC §1: out/ is git-ignored)
+
+# Build products
+out/
+*.iso
+*.iso.sha256
+*.deb
+*.qcow2
+*.img
+*.squashfs
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Editors / OS
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local overrides
+build/config.local.env
+.env

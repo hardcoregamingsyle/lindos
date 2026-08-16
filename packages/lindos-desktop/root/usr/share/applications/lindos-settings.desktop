@@ -1,0 +1,36 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Settings
+GenericName=Lindos Settings
+Comment=Windows-11-style settings centre: system, personalization, apps, Windows apps, gaming, hardware, Lindos Mode
+Exec=lindos-settings %U
+TryExec=lindos-settings
+Icon=lindos-settings
+Terminal=false
+StartupNotify=true
+StartupWMClass=lindos-settings
+Categories=Settings;System;DesktopSettings;GTK;
+Keywords=settings;control panel;preferences;personalization;mode;gaming;wine;theme;accent;wallpaper;
+Actions=personalization;windows-apps;gaming;mode;about;
+X-Lindos-Component=desktop
+
+[Desktop Action personalization]
+Name=Personalization
+Exec=lindos-settings personalization
+
+[Desktop Action windows-apps]
+Name=Windows apps
+Exec=lindos-settings windows-apps
+
+[Desktop Action gaming]
+Name=Gaming
+Exec=lindos-settings gaming
+
+[Desktop Action mode]
+Name=Lindos Mode
+Exec=lindos-settings mode
+
+[Desktop Action about]
+Name=About
+Exec=lindos-settings about

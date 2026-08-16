@@ -1,0 +1,5 @@
+#!/bin/sh
+# lindos-setup -- Lindos first-boot setup (OOBE) launcher (SPEC §6)
+# Usage: lindos-setup [--first-run | --reconfigure] [--dry-run] [--page ID]
+set -e
+exec python3 /usr/lib/lindos-setup/main.py "$@"

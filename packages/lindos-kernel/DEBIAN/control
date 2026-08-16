@@ -1,0 +1,23 @@
+Package: lindos-kernel
+Version: 1.0.0
+Section: kernel
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: python3 (>= 3.10), lindos-core
+Recommends: scx-scheds
+Suggests: lindos-tune
+Homepage: https://lindos.dev
+Description: Lindos-tuned kernel recipe, boot integration and runtime CLI
+ The Lindos-tuned Linux kernel (ntsync, sched_ext, 1000 Hz + full preempt,
+ MGLRU, zram/zswap, BBR, tuned kconfig).  This package ships everything
+ *except* the compiled kernel image, which is a build artifact produced on a
+ Linux host by build/kernel/build-kernel.sh and never committed.
+ .
+ It provides the single sources of truth for the kernel config fragment and
+ feature manifest (/usr/share/lindos/kernel/), a conservative, reversible GRUB
+ cmdline drop-in (/etc/default/grub.d/50-lindos.cfg, marker-fenced), and the
+ /usr/bin/lindos-kernel command-line tool which reads the running kernel for
+ the Lindos performance features, manages the cmdline drop-in and drives the
+ out-of-tree build recipe.  Reading never needs root; mutating actions print
+ the exact pkexec/update-grub command instead of calling sudo themselves.

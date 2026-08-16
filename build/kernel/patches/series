@@ -1,0 +1,9 @@
+# patches/series — ordered list of quilt-style patches build-kernel.sh applies (patch -p1).
+#
+# One patch filename per line, relative to this directory, in apply order.  Blank lines and
+# lines starting with '#' are ignored.  This file ships EMPTY: Lindos builds a stock upstream
+# kernel by default.  Add BORE / scx / other patches here yourself — see README.md.  Nothing
+# is fabricated: no patch contents are shipped in this repository.
+#
+# Example (uncomment and drop the .patch files next to this file to use):
+# 0001-bore-scheduler.patch

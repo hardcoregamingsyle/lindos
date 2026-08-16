@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- Lindos xfdesktop defaults: aurora-dark wallpaper (zoomed), Windows-style desktop
+     icons (Home / This PC (filesystem) / Recycle Bin (trash), top-left, double-click).
+     xfdesktop migrates the "monitor0" backdrop to the real monitor name on first start. -->
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/lindos/aurora-dark.svg"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="1.0"/>
+          </property>
+          <property name="rgba2" type="array">
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="1.0"/>
+          </property>
+          <property name="backdrop-cycle-enable" type="bool" value="false"/>
+        </property>
+        <property name="workspace1" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/lindos/aurora-dark.svg"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="0.125"/>
+            <value type="double" value="1.0"/>
+          </property>
+          <property name="backdrop-cycle-enable" type="bool" value="false"/>
+        </property>
+      </property>
+    </property>
+    <property name="single-workspace-mode" type="bool" value="true"/>
+    <property name="single-workspace-number" type="int" value="0"/>
+  </property>
+  <property name="desktop-icons" type="empty">
+    <property name="style" type="int" value="2"/>
+    <property name="icon-size" type="uint" value="48"/>
+    <property name="tooltip-size" type="double" value="64.0"/>
+    <property name="show-tooltips" type="bool" value="true"/>
+    <property name="show-thumbnails" type="bool" value="true"/>
+    <property name="show-hidden-files" type="bool" value="false"/>
+    <property name="single-click" type="bool" value="false"/>
+    <property name="single-click-underline-hover" type="bool" value="false"/>
+    <property name="center-text" type="bool" value="true"/>
+    <property name="gravity" type="int" value="0"/>
+    <property name="use-custom-font-size" type="bool" value="false"/>
+    <property name="font-size" type="double" value="10.0"/>
+    <property name="file-icons" type="empty">
+      <property name="show-home" type="bool" value="true"/>
+      <property name="show-filesystem" type="bool" value="true"/>
+      <property name="show-trash" type="bool" value="true"/>
+      <property name="show-removable" type="bool" value="true"/>
+      <property name="show-device-removable" type="bool" value="true"/>
+      <property name="show-device-fixed" type="bool" value="false"/>
+      <property name="show-network-removable" type="bool" value="false"/>
+      <property name="show-unknown-removable" type="bool" value="true"/>
+    </property>
+  </property>
+  <property name="desktop-menu" type="empty">
+    <property name="show" type="bool" value="true"/>
+    <property name="show-icons" type="bool" value="true"/>
+  </property>
+  <property name="windowlist-menu" type="empty">
+    <property name="show" type="bool" value="false"/>
+    <property name="show-icons" type="bool" value="true"/>
+    <property name="show-workspace-names" type="bool" value="true"/>
+    <property name="show-submenus" type="bool" value="false"/>
+    <property name="show-sticky-once" type="bool" value="false"/>
+    <property name="show-add-remove-workspaces" type="bool" value="false"/>
+  </property>
+</channel>

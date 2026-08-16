@@ -1,0 +1,430 @@
+/*
+ * /usr/share/lindos/gtk-3.0/lindos.css — Lindos GTK 3 overlay (SPEC §5).
+ *
+ * Imported from ~/.config/gtk-3.0/gtk.css by lindos.theme.set_accent(), followed by
+ * ~/.config/gtk-3.0/lindos-accent.css which redefines @lindos_accent — so the colour
+ * below is only the default (dark accent #60CDFF).  Sits on top of Lindos-Dark/Light
+ * (Fluent) and nudges it towards Windows 11 / Fluent 2: 8 px radii, 48 px header bars,
+ * pill switches, accent focus rings, roomier list rows.  Deliberately conservative: no
+ * geometry changes that could break app layouts.
+ */
+
+@define-color lindos_accent #60CDFF;
+@define-color lindos_accent_fg #000000;
+@define-color lindos_bg #202020;
+@define-color lindos_card #2B2B2B;
+@define-color lindos_card_hover #323232;
+@define-color lindos_stroke rgba(255, 255, 255, 0.08);
+@define-color lindos_stroke_light rgba(0, 0, 0, 0.08);
+
+/* ---- radii ---------------------------------------------------------------------- */
+button,
+button.text-button,
+button.image-button,
+.linked > button:first-child,
+.linked > button:last-child,
+entry,
+spinbutton,
+combobox > box > button.combo,
+menu,
+.menu,
+.context-menu,
+popover,
+popover.background,
+tooltip,
+tooltip.background,
+notebook > header > tabs > tab,
+progressbar > trough,
+progressbar > trough > progress,
+scale > trough,
+scale > trough > highlight,
+levelbar > trough,
+frame > border,
+.frame,
+infobar,
+searchbar > revealer > box,
+actionbar > revealer > box,
+.card,
+.lindos-card,
+list.rich-list row,
+list.content row,
+switch,
+switch > slider {
+  border-radius: 8px;
+}
+
+button.circular,
+button.circular image,
+radio,
+scale > trough > slider,
+switch > slider {
+  border-radius: 9999px;
+}
+
+check {
+  border-radius: 4px;
+}
+
+.linked:not(.vertical) > button:not(:first-child):not(:last-child),
+.linked:not(.vertical) > entry:not(:first-child):not(:last-child) {
+  border-radius: 0;
+}
+
+.linked:not(.vertical) > button:first-child,
+.linked:not(.vertical) > entry:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.linked:not(.vertical) > button:last-child,
+.linked:not(.vertical) > entry:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* ---- header bars: 48 px like the Windows 11 title bar ---------------------------- */
+headerbar,
+.titlebar:not(headerbar),
+.csd headerbar {
+  min-height: 48px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+headerbar button.titlebutton,
+.titlebar button.titlebutton {
+  min-width: 46px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  border-radius: 6px;
+}
+
+headerbar button.titlebutton.close:hover,
+.titlebar button.titlebutton.close:hover {
+  background-color: #C42B1C;
+  color: #FFFFFF;
+}
+
+headerbar entry,
+headerbar button,
+headerbar spinbutton,
+headerbar separator {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+/* ---- buttons: Fluent spacing, accent for suggested actions ----------------------- */
+button {
+  min-height: 30px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+button.suggested-action,
+button.suggested-action:focus,
+button.default,
+.lindos-accent-button {
+  background-image: none;
+  background-color: @lindos_accent;
+  color: @lindos_accent_fg;
+  border-color: @lindos_accent;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+
+button.suggested-action:hover,
+button.default:hover,
+.lindos-accent-button:hover {
+  background-color: shade(@lindos_accent, 1.08);
+}
+
+button.suggested-action:active,
+button.default:active,
+.lindos-accent-button:active {
+  background-color: shade(@lindos_accent, 0.92);
+}
+
+button.suggested-action:disabled,
+button.default:disabled {
+  background-color: alpha(@lindos_accent, 0.35);
+  color: alpha(@lindos_accent_fg, 0.6);
+}
+
+/* ---- entries: bottom accent line on focus (WinUI TextBox) ------------------------- */
+entry,
+spinbutton {
+  min-height: 32px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+entry:focus,
+spinbutton:focus-within {
+  border-color: alpha(@lindos_accent, 0.7);
+  box-shadow: inset 0 -2px 0 0 @lindos_accent;
+}
+
+entry.error:focus {
+  box-shadow: inset 0 -2px 0 0 #FF99A4;
+}
+
+/* ---- switches: WinUI ToggleSwitch pill ------------------------------------------- */
+switch {
+  min-width: 44px;
+  min-height: 22px;
+  padding: 1px;
+  border-radius: 11px;
+  transition: all 150ms ease-out;
+}
+
+switch > slider {
+  min-width: 18px;
+  min-height: 18px;
+  margin: 1px;
+  border-radius: 9px;
+}
+
+switch:checked {
+  background-image: none;
+  background-color: @lindos_accent;
+  border-color: @lindos_accent;
+  color: @lindos_accent_fg;
+}
+
+switch:checked > slider {
+  background-image: none;
+  background-color: @lindos_accent_fg;
+  border-color: @lindos_accent_fg;
+}
+
+switch:checked:disabled {
+  background-color: alpha(@lindos_accent, 0.35);
+}
+
+/* ---- check / radio / progress / scale / spinner accent --------------------------- */
+check:checked,
+check:indeterminate,
+radio:checked,
+radio:indeterminate {
+  background-image: none;
+  background-color: @lindos_accent;
+  border-color: @lindos_accent;
+  color: @lindos_accent_fg;
+  -gtk-icon-shadow: none;
+}
+
+progressbar > trough > progress,
+levelbar > trough > block.filled,
+scale > trough > highlight,
+scale > trough > slider:hover {
+  background-image: none;
+  background-color: @lindos_accent;
+  border-color: @lindos_accent;
+}
+
+progressbar > trough {
+  min-height: 4px;
+}
+
+scale > trough > slider {
+  background-image: none;
+  background-color: @lindos_accent;
+  border-color: @lindos_accent;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+spinner {
+  color: @lindos_accent;
+}
+
+/* ---- selection / focus rings ----------------------------------------------------- */
+*:selected,
+*:selected:focus,
+treeview.view:selected,
+row:selected,
+.view:selected,
+textview text selection,
+entry selection,
+label selection {
+  background-color: @lindos_accent;
+  color: @lindos_accent_fg;
+}
+
+*:focus-visible,
+button:focus-visible,
+row:focus-visible,
+flowboxchild:focus-visible {
+  outline-color: alpha(@lindos_accent, 0.9);
+  outline-style: solid;
+  outline-width: 2px;
+  outline-offset: -2px;
+  -gtk-outline-radius: 8px;
+}
+
+link,
+*:link,
+label.link {
+  color: @lindos_accent;
+}
+
+/* ---- notebooks / tabs (WinUI TabView) -------------------------------------------- */
+notebook > header > tabs > tab {
+  min-height: 32px;
+  padding: 4px 14px;
+  margin: 4px 2px 0 2px;
+}
+
+notebook > header > tabs > tab:checked {
+  box-shadow: inset 0 -2px 0 0 @lindos_accent;
+}
+
+/* ---- sidebars / list rows: Fluent spacing ---------------------------------------- */
+list.rich-list row,
+list.content row,
+list.sidebar row,
+.sidebar row,
+placessidebar row {
+  min-height: 36px;
+  padding: 6px 10px;
+  margin: 1px 4px;
+  border-radius: 6px;
+}
+
+list.sidebar row:selected,
+.sidebar row:selected,
+placessidebar row:selected {
+  background-color: alpha(@lindos_accent, 0.16);
+  color: inherit;
+  box-shadow: inset 3px 0 0 0 @lindos_accent;
+}
+
+/* ---- menus / popovers / tooltips: acrylic-ish surfaces --------------------------- */
+menu,
+.menu,
+.context-menu {
+  padding: 6px;
+  border: 1px solid @lindos_stroke;
+}
+
+menu menuitem,
+.menu menuitem,
+.context-menu menuitem {
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+menu menuitem:hover,
+.menu menuitem:hover,
+.context-menu menuitem:hover {
+  background-color: alpha(@lindos_accent, 0.18);
+  color: inherit;
+}
+
+popover.background > contents,
+popover.background {
+  padding: 4px;
+}
+
+tooltip,
+tooltip.background {
+  padding: 6px 10px;
+  border: 1px solid @lindos_stroke;
+  background-color: alpha(@lindos_card, 0.96);
+}
+
+/* ---- scrollbars: thin, overlay style --------------------------------------------- */
+scrollbar slider {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 6px;
+}
+
+scrollbar.horizontal slider {
+  min-height: 6px;
+}
+
+scrollbar slider:hover,
+scrollbar slider:active {
+  background-color: alpha(@lindos_accent, 0.75);
+}
+
+/* ---- xfce4-panel bits (Windows 11 taskbar) ---------------------------------------- */
+#xfce4-panel button,
+.xfce4-panel button {
+  border-radius: 6px;
+  padding: 0 6px;
+  min-height: 0;
+}
+
+#xfce4-panel button:hover,
+.xfce4-panel button:hover,
+#xfce4-panel button:checked,
+.xfce4-panel button:checked {
+  background-color: alpha(#FFFFFF, 0.10);
+}
+
+#whiskermenu-button:hover,
+#whiskermenu-button:checked {
+  background-color: alpha(#FFFFFF, 0.12);
+}
+
+/* Whisker Menu popup: rounded surface, search entry pill, favorites grid spacing */
+#whiskermenu-window {
+  border-radius: 8px;
+  border: 1px solid @lindos_stroke;
+}
+
+#whiskermenu-window entry {
+  border-radius: 8px;
+  min-height: 34px;
+}
+
+#whiskermenu-window .view,
+#whiskermenu-window iconview {
+  background-color: transparent;
+}
+
+/* Docklike previews / tooltips */
+.docklike-window,
+#docklike-window {
+  border-radius: 8px;
+}
+
+/* ---- Lindos apps (setup / settings) helpers -------------------------------------- */
+.lindos-card {
+  background-color: @lindos_card;
+  border: 1px solid @lindos_stroke;
+  padding: 12px 16px;
+}
+
+.lindos-card:hover {
+  background-color: @lindos_card_hover;
+}
+
+.lindos-card.selected,
+.lindos-card:checked {
+  border-color: @lindos_accent;
+  box-shadow: inset 0 0 0 1px @lindos_accent;
+}
+
+.lindos-title {
+  font-size: 20pt;
+  font-weight: 600;
+}
+
+.lindos-subtitle {
+  font-size: 12pt;
+  font-weight: 600;
+}
+
+.lindos-caption {
+  font-size: 9pt;
+  opacity: 0.75;
+}
+
+.lindos-accent-text {
+  color: @lindos_accent;
+}

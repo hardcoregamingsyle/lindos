@@ -1,0 +1,279 @@
+#!/usr/bin/python3
+"""lindos-kernel — inspect and manage the Lindos-tuned kernel (SPEC-KERNEL §15.4).
+
+  lindos-kernel status   [--json]                running kernel + per-feature probe
+  lindos-kernel features [--json]                manifest features vs the running kernel
+  lindos-kernel list     [--json]                installed linux-image packages + default
+  lindos-kernel cmdline  show [--json]           the managed GRUB cmdline flags
+  lindos-kernel cmdline  set KEY=VAL...          add flags to the drop-in
+  lindos-kernel cmdline  reset                   restore the conservative default
+  lindos-kernel cmdline  --preset {default,gaming}
+  lindos-kernel build    [--kdir DIR] [--jobs N] [--menuconfig] [--out DIR] [--version X.Y.Z]
+  lindos-kernel --version
+
+Reading never needs root.  Mutating actions (cmdline set/reset/preset) print the exact
+`pkexec update-grub` command to run afterwards — this tool never calls sudo itself.
+
+Exit codes: 0 ok · 1 error · 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from typing import Any, Dict, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "lindos-kernel"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos_kernel")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    import lindos_kernel
+    from lindos_kernel import build as kbuild
+    from lindos_kernel import features as kfeatures
+    from lindos_kernel import grub as kgrub
+    from lindos_kernel import manifest as kmanifest
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-kernel: the 'lindos_kernel' package is missing ({exc}); install lindos-kernel\n")
+    sys.exit(1)
+
+PROG = "lindos-kernel"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+_KV_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:=+-]*$")
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit(data: Any) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _mark(present: Optional[bool]) -> str:
+    return {True: "yes", False: "no ", None: "?  "}[present]
+
+
+# --- status -------------------------------------------------------------------------------
+def cmd_status(ns: argparse.Namespace) -> int:
+    data = kfeatures.status()
+    if ns.json:
+        _emit(data)
+        return EXIT_OK
+    rel = data["release"] or "(unknown)"
+    print(f"Running kernel : {rel}")
+    print(f"Lindos build   : {'yes' if data['is_lindos'] else 'no (stock kernel)'}")
+    print(f"Config source  : {data['config_source'] or '(none readable)'}")
+    print("Features:")
+    features = data["features"]
+    assert isinstance(features, dict)
+    for fid in ("ntsync", "sched_ext", "preempt_full", "hz1000", "mglru", "bbr", "thp"):
+        info = features.get(fid)
+        if info:
+            print(f"  [{_mark(info.get('present'))}] {fid:<13} {info.get('detail')}")
+    return EXIT_OK
+
+
+# --- features -----------------------------------------------------------------------------
+def cmd_features(ns: argparse.Namespace) -> int:
+    try:
+        man = kmanifest.load()
+    except kmanifest.ManifestError as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_ERROR
+    rows = kfeatures.cross_check(man)
+    if ns.json:
+        _emit({"recommended": man.recommended.to_dict(), "features": rows})
+        return EXIT_OK
+    rec = man.recommended
+    print(f"Recommended kernel: {rec.series} (min {rec.min}, localversion {rec.localversion})")
+    for row in rows:
+        since = f" since {row['since']}" if row.get("since") else ""
+        print(f"  [{_mark(row.get('present'))}] {row['id']:<13} {row['kconfig']:<26}{since}")
+        if row.get("why"):
+            print(f"        {row['why']}")
+    return EXIT_OK
+
+
+# --- list ---------------------------------------------------------------------------------
+def _dpkg_images() -> List[Dict[str, str]]:
+    dpkg = shutil.which("dpkg-query") or shutil.which("dpkg")
+    if not dpkg:
+        return []
+    try:
+        proc = subprocess.run([dpkg, "-W", "-f=${db:Status-Abbrev} ${Package} ${Version}\n",
+                               "linux-image-*"], capture_output=True, text=True, check=False)
+    except OSError:
+        return []
+    out: List[Dict[str, str]] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].startswith("ii"):
+            pkg, ver = parts[1], parts[2]
+            out.append({"package": pkg, "version": ver, "lindos": "-lindos" in pkg or "-lindos" in ver})
+    return out
+
+
+def _grub_default() -> Optional[str]:
+    editenv = shutil.which("grub-editenv")
+    if editenv:
+        try:
+            proc = subprocess.run([editenv, "list"], capture_output=True, text=True, check=False)
+            for line in proc.stdout.splitlines():
+                if line.startswith("saved_entry="):
+                    return line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    grub_default = lindos_kernel.resolve("/etc/default/grub")
+    try:
+        with open(grub_default, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip().startswith("GRUB_DEFAULT="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return None
+
+
+def cmd_list(ns: argparse.Namespace) -> int:
+    images = _dpkg_images()
+    default = _grub_default()
+    running = kfeatures.running_release()
+    if ns.json:
+        _emit({"images": images, "grub_default": default, "running": running})
+        return EXIT_OK
+    if not images:
+        print("No linux-image packages found (dpkg unavailable or none installed).")
+    else:
+        print("Installed kernels:")
+        for img in images:
+            tag = " [lindos]" if img["lindos"] else ""
+            run_tag = " (running)" if running and running in img["version"] else ""
+            print(f"  {img['package']}  {img['version']}{tag}{run_tag}")
+    print(f"GRUB default   : {default or '(unknown)'}")
+    print(f"Running release: {running or '(unknown)'}")
+    return EXIT_OK
+
+
+# --- cmdline ------------------------------------------------------------------------------
+def _print_followup() -> None:
+    cmd = kgrub.update_grub_command()
+    print("")
+    print("Run this to regenerate the boot menu (needs admin):")
+    print("    " + " ".join(cmd))
+
+
+def cmd_cmdline(ns: argparse.Namespace) -> int:
+    path = kgrub.grub_dropin_path()  # type: ignore[attr-defined]
+    if ns.preset:
+        try:
+            kgrub.preset(ns.preset, path)
+        except kgrub.GrubError as exc:
+            sys.stderr.write(f"{PROG}: {exc}\n")
+            return EXIT_USAGE
+        print(f"Applied preset '{ns.preset}': {' '.join(kgrub.current_flags(path))}")
+        _print_followup()
+        return EXIT_OK
+
+    action = ns.cmdline_action or "show"
+    if action == "show":
+        flags = kgrub.current_flags(path)
+        if ns.json:
+            _emit({"path": path, "flags": flags})
+        else:
+            print(f"Drop-in : {path}")
+            print(f"Flags   : {' '.join(flags) or '(none)'}")
+        return EXIT_OK
+    if action == "set":
+        if not ns.assignments:
+            sys.stderr.write(f"{PROG}: cmdline set needs at least one KEY=VAL or flag\n")
+            return EXIT_USAGE
+        for item in ns.assignments:
+            if not _KV_RE.match(item):
+                sys.stderr.write(f"{PROG}: invalid flag {item!r}\n")
+                return EXIT_USAGE
+        try:
+            kgrub.add_flags(list(ns.assignments), path)
+        except kgrub.GrubError as exc:
+            sys.stderr.write(f"{PROG}: {exc}\n")
+            return EXIT_USAGE
+        print(f"Flags now: {' '.join(kgrub.current_flags(path))}")
+        _print_followup()
+        return EXIT_OK
+    if action == "reset":
+        kgrub.reset(path)
+        print(f"Reset to conservative default: {' '.join(kgrub.current_flags(path))}")
+        _print_followup()
+        return EXIT_OK
+    sys.stderr.write(f"{PROG}: unknown cmdline action {action!r}\n")
+    return EXIT_USAGE
+
+
+# --- build --------------------------------------------------------------------------------
+def cmd_build(ns: argparse.Namespace) -> int:
+    plan = kbuild.make_plan(version=ns.version, jobs=ns.jobs, out=ns.out, kdir=ns.kdir,
+                            menuconfig=ns.menuconfig)
+    rc = kbuild.run(plan, log=print)
+    return rc if rc in (0, 2) else EXIT_ERROR
+
+
+# --- parser -------------------------------------------------------------------------------
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=PROG, description="Inspect and manage the Lindos-tuned kernel.")
+    parser.add_argument("--version", action="version", version=f"{PROG} {lindos_kernel.__version__}")
+    sub = parser.add_subparsers(dest="command", metavar="command")
+
+    p = sub.add_parser("status", help="running kernel + per-feature probe")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("features", help="manifest features vs the running kernel")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_features)
+
+    p = sub.add_parser("list", help="installed linux-image packages + default")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("cmdline", help="manage the GRUB cmdline drop-in (50-lindos.cfg)")
+    p.add_argument("--preset", choices=sorted(kgrub.PRESETS), help="apply a named preset")
+    p.add_argument("--json", action="store_true")
+    csub = p.add_subparsers(dest="cmdline_action", metavar="action")
+    cshow = csub.add_parser("show", help="show the managed flags")
+    cshow.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    ps = csub.add_parser("set", help="add flags (KEY=VAL or bare flag)")
+    ps.add_argument("assignments", nargs="*", metavar="KEY=VAL")
+    csub.add_parser("reset", help="restore the conservative default")
+    p.set_defaults(func=cmd_cmdline, assignments=[])
+
+    p = sub.add_parser("build", help="build the kernel via build/kernel/build-kernel.sh (Linux only)")
+    p.add_argument("--kdir", help="use an existing kernel source tree (implies --skip-fetch)")
+    p.add_argument("--jobs", type=int, help="parallel make jobs (default nproc)")
+    p.add_argument("--menuconfig", action="store_true", help="run menuconfig after merging the fragment")
+    p.add_argument("--out", default="out/kernel", help="output directory for the .deb artifacts")
+    p.add_argument("--version", dest="version", help="kernel version X.Y.Z (default: manifest series)")
+    p.set_defaults(func=cmd_build)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:  # pragma: no cover
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

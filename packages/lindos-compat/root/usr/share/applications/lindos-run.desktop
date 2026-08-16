@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Windows App Runner (Lindos)
+GenericName=Windows program runner
+Comment=Run Windows programs (.exe, .msi, .bat, .lnk) through Wine or Proton - no virtual machine
+Exec=lindos-run %f
+TryExec=lindos-run
+Icon=lindos-exe
+Terminal=false
+NoDisplay=true
+StartupNotify=true
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/x-msi;application/x-ms-shortcut;application/x-bat;application/vnd.microsoft.portable-executable;application/x-ms-ne-executable;
+Categories=Utility;X-Wine;X-Lindos;
+Keywords=Windows;exe;msi;Wine;Proton;program;
+X-Lindos-Component=compat

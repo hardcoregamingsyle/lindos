@@ -1,0 +1,25 @@
+{
+  "id": "paint-net",
+  "name": "Paint.NET (4.2.16 classic)",
+  "vendor": "dotPDN LLC (Rick Brewster)",
+  "category": "creator",
+  "status": "partial",
+  "summary": "The last .NET-Framework release (4.2.16) works with .NET 4.8 installed by winetricks; Paint.NET 5.x does not.",
+  "notes": "Paint.NET is a .NET application. Version 4.2.16 (the last release built on the .NET Framework) installs and runs through Wine once .NET Framework 4.8 is in the C:\\ drive - this recipe installs it with winetricks (a large download, 10-20 minutes; the installer windows must be clicked through). Layers, adjustments, effects, plug-ins (Effects/FileTypes DLLs) and the standard file formats work. Paint.NET 4.3 and 5.x target .NET 5/7/9 (modern .NET, WPF/Direct2D UI); their installers either fail to download the runtime or the program crashes at start under Wine, so we call this recipe 'partial': use 4.2.16 (available from the getpaint.net 'Classic' download or the archive) and turn off automatic updates in Settings.\nKnown issues on 4.2.16: hardware acceleration must be off (Settings > UI > untick 'Hardware acceleration'), some effects that use Direct2D show blank previews, and the first start takes a while (.NET native-image generation).\nNative alternatives on Lindos: Pinta (a Paint.NET-inspired editor), GIMP, Krita.",
+  "installer_hint": "lindos-run --prefix paint-net ~/Downloads/paint.net.4.2.16.install.exe",
+  "homepage": "https://www.getpaint.net",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": ["dotnet48", "corefonts", "win10"],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [
+    {"key": "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D", "name": "renderer", "type": "REG_SZ", "value": "gl"}
+  ],
+  "alternatives": [
+    {"name": "Pinta", "how": "native, Paint.NET-like editor: apt install pinta or Flatpak com.github.PintaProject.Pinta"},
+    {"name": "GIMP", "how": "native, free: Lindos Settings > Apps > Store, or: apt install gimp"},
+    {"name": "Krita", "how": "native painting: apt install krita"}
+  ]
+}

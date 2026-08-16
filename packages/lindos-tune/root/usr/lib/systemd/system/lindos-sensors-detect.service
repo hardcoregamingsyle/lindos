@@ -1,0 +1,20 @@
+[Unit]
+Description=Lindos: detect hardware monitoring sensors once (lm-sensors)
+Documentation=man:sensors-detect(8)
+# Runs exactly once per installation: the marker is written by the script.  Never runs inside
+# containers/chroots (postinst in the ISO build defers to this unit on the user's machine).
+ConditionPathExists=!/var/lib/lindos-tune/sensors-detect.done
+ConditionPathExists=/usr/sbin/sensors-detect
+ConditionVirtualization=!container
+After=systemd-modules-load.service
+Before=lm-sensors.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lindos/sensors-detect-once.sh
+TimeoutStartSec=240
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

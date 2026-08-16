@@ -1,0 +1,25 @@
+{
+  "id": "photoshop-cs6",
+  "name": "Adobe Photoshop CS6 (13.x)",
+  "vendor": "Adobe",
+  "category": "creator",
+  "status": "works",
+  "summary": "The classic 2012 release runs well through Wine for photo editing; keep GPU acceleration off.",
+  "notes": "Photoshop CS6 is one of the best-supported Adobe releases on Wine: installing, opening/saving PSD/JPEG/PNG/TIFF, layers, adjustment layers, filters, brushes, text and Camera Raw all work. You need the offline CS6 installer (Set-up.exe) and a licence/serial you already own; the Adobe sign-in and updater do not work, so install with the serial number, not with an Adobe ID trial that needs online activation.\nAfter installing: Edit > Preferences > Performance > untick 'Use Graphics Processor' (the OpenGL/3D features and some GPU filters (Oil Paint, Blur Gallery, 3D) do not work). If the installer window is blank or the program crashes on start, run: lindos-compat recipes apply photoshop-cs6 --fresh and try again.\nThis recipe creates a 64-bit C:\\ drive with the runtimes CS6 expects (Visual C++ 2008/2010, GDI+, ATM, MSXML, core fonts, RGB font smoothing) and reports Windows 7. The 32-bit Photoshop.exe inside 'Program Files (x86)' is also installed and can be used if a plug-in needs it.\nNative alternatives on Lindos: GIMP, Krita, Photopea (web).",
+  "installer_hint": "Set-up.exe from the CS6 package: lindos-run --prefix photoshop-cs6 ~/Downloads/Adobe\\ CS6/Set-up.exe",
+  "homepage": "https://helpx.adobe.com/photoshop.html",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": ["vcrun2008", "vcrun2010", "vcrun2012", "gdiplus", "atmlib", "msxml3", "msxml6", "corefonts", "fontsmooth=rgb", "win7"],
+  "dll_overrides": {"gdiplus": "native,builtin", "atmlib": "native,builtin", "msxml3": "native,builtin", "msxml6": "native,builtin"},
+  "env": {},
+  "post_cmds": [],
+  "registry": [
+    {"key": "HKEY_CURRENT_USER\\Software\\Wine\\Direct3D", "name": "renderer", "type": "REG_SZ", "value": "gl"}
+  ],
+  "alternatives": [
+    {"name": "GIMP", "how": "native, free: Lindos Settings > Apps > Store, or: apt install gimp"},
+    {"name": "Krita", "how": "native painting/illustration: apt install krita (or Flatpak org.kde.krita)"},
+    {"name": "Photopea", "how": "web app that opens/saves PSD files: https://www.photopea.com"}
+  ]
+}
