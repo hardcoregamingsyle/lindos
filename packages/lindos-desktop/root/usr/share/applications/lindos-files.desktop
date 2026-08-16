@@ -18,7 +18,7 @@ X-Lindos-Component=desktop
 
 [Desktop Action open-home]
 Name=Home
-Exec=thunar %h
+Exec=thunar
 
 [Desktop Action open-computer]
 Name=This PC

@@ -149,7 +149,10 @@ apt_install() {
 install_vendor() {
     # install_vendor <package> <key_url> <keyring> <list> <repo-line> <name>
     local package="$1" key_url="$2" keyring="$3" list="$4" repo="$5" name="$6"
-    if is_installed "${package}"; then
+    # In --dry-run, always print the full plan (keyring + .list + apt) so it is
+    # visible regardless of what the *host* already has installed; only a real
+    # run short-circuits when the package is present.
+    if [[ "${DRY_RUN}" -eq 0 ]] && is_installed "${package}"; then
         log "${name} (${package}) is already installed"
         return 0
     fi
@@ -164,7 +167,7 @@ install_vendor() {
 }
 
 install_firefox() {
-    if is_installed "${FIREFOX_PACKAGE}"; then
+    if [[ "${DRY_RUN}" -eq 0 ]] && is_installed "${FIREFOX_PACKAGE}"; then
         log "Mozilla Firefox is already installed (Mint .deb)"
         return 0
     fi

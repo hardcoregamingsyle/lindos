@@ -127,7 +127,10 @@ def test_cli_sched_status(capsys) -> None:
     assert "scheduler" in capsys.readouterr().out
 
 
-def test_cli_sched_set_exit3_without_sched_ext(capsys) -> None:
+def test_cli_sched_set_exit3_without_sched_ext(staging: Path, capsys) -> None:
+    # `staging` points LINDOS_ROOT at an empty tree (no /sys/kernel/sched_ext),
+    # so the probe reports no sched_ext regardless of the *host* kernel — a CI
+    # runner's own kernel may actually provide sched_ext.
     assert cli.main(["sched", "set", "scx_lavd"]) == common.EXIT_NO_SCHED_EXT
     assert "sched_ext" in capsys.readouterr().err
 

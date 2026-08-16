@@ -40,8 +40,16 @@ def test_cli_refuses_not_possible_profile(fake_core, home, shipped_profiles, tmp
 
     exe = tmp_path / "VALORANT.exe"
     exe.write_bytes(b"MZ")
-    with caplog.at_level(logging.ERROR):
-        rc = cli_run.main([str(exe)])
+    # lindos-run's logger sets propagate=False, so caplog's root handler never
+    # sees its records; attach the capture handler directly to that logger so
+    # the assertion works the same on every host.
+    logger = logging.getLogger("lindos-run")
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.ERROR, logger="lindos-run"):
+            rc = cli_run.main([str(exe)])
+    finally:
+        logger.removeHandler(caplog.handler)
     assert rc == cli_run.EXIT_ERROR
     assert "cannot run on Lindos" in caplog.text and "Vanguard" in caplog.text
 

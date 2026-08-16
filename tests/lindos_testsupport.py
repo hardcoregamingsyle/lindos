@@ -321,9 +321,17 @@ def install_gi_stub(force: bool = False) -> bool:
         if gi_is_stub():
             return True
         try:
-            importlib.import_module("gi")
+            # Real PyGObject is only good enough to leave in place if a usable
+            # GTK typelib is actually present.  A CI runner can ship python3-gi
+            # WITHOUT gir1.2-gtk-3.0, so `import gi` succeeds but
+            # `require_version("Gtk", "3.0")` raises "Namespace Gtk not
+            # available" — in that case fall through and install the stub, so
+            # the tests behave exactly as they do on Windows/macOS.
+            real = importlib.import_module("gi")
+            real.require_version("Gtk", "3.0")
+            importlib.import_module("gi.repository.Gtk")
             return False
-        except Exception:  # noqa: BLE001 - ImportError or broken installs
+        except Exception:  # noqa: BLE001 - ImportError, ValueError, broken installs
             pass
     stub = _build_gi_stub()
     # Purge any half-imported real gi so submodule imports resolve to the stub.

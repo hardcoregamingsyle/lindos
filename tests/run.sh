@@ -399,6 +399,14 @@ if command -v desktop-file-validate >/dev/null 2>&1 && [ "${#DESKTOP_FILES[@]}" 
     dfv_out="${TMP_DIR}/dfv"
     : >"${dfv_out}"
     for f in "${DESKTOP_FILES[@]}"; do
+        # desktop-file-validate validates *application* entries (the menu spec).
+        # Session files under wayland-sessions/ and xsessions/ follow the
+        # display-manager session spec instead (their 'DesktopNames' key is
+        # valid there but flagged as an unknown key here), so skip them — like
+        # GNOME/KDE session files, they are not menu entries.
+        case "${f}" in
+            */wayland-sessions/*|*/xsessions/*) continue ;;
+        esac
         # desktop-file-validate is strict about unknown keys/categories; only
         # 'error:' lines fail the build, hints/warnings are printed.
         desktop-file-validate "${f}" >>"${dfv_out}" 2>&1 || true
