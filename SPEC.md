@@ -407,6 +407,11 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
   xfce4-notifyd picom zram-tools|systemd-zram-generator earlyoom gamemode mangohud
   power-profiles-daemon lm-sensors fancontrol python3-gi gir1.2-gtk-3.0 polkitd pkexec
   flatpak fonts-noto-color-emoji xdg-desktop-portal-gtk winbind cabextract`, plus mode packages.
+  `xfce4-docklike-plugin` is not packaged for Ubuntu 24.04 "noble" as of this writing (only
+  25.10+ / Debian trixie+ carry it): `20-base.sh` already skips any package `pkg_available`
+  reports as absent with a loud warning rather than failing the build, and
+  `packages/lindos-desktop/DEBIAN/control` lists it as a Recommends (not a Depends) for exactly
+  this reason — see `docs/BUILDING.md` and `CI-LOGS.md`.
 - `30-lindos-debs.sh` — `apt-get install ./tmp/lindos/debs/*.deb`.
 - `40-theme.sh` — run `fetch-assets` outputs already staged in `/tmp/lindos/assets` (theme,
   icons, cursors, fonts) → install (`install.sh -n Lindos …`), os-release sed, plymouth default,

@@ -4,8 +4,8 @@ Section: x11
 Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
-Depends: xfce4-panel, xfce4-whiskermenu-plugin, xfce4-docklike-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
-Recommends: xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall
+Depends: xfce4-panel, xfce4-whiskermenu-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
+Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall
 Suggests: lindos-settings, lindos-setup, fonts-jetbrains-mono, emote
 Homepage: https://lindos.dev
 Description: Lindos desktop look and feel (Windows-11-style XFCE)
@@ -25,3 +25,10 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  The GTK/icon/cursor themes themselves (built from Fluent by
  build/fetch-assets.sh) and the Selawik/Inter fonts are installed by the
  ISO build; this package never downloads anything at install time.
+ .
+ xfce4-docklike-plugin is a Recommends, not a Depends: as of this writing it
+ is not packaged for Ubuntu 24.04 "noble" (only Ubuntu 25.10+ and Debian
+ trixie+ carry it) — see docs/BUILDING.md. The panel ships configured to use
+ it (plugin-2 = docklike in xfce4-panel.xml) and xfce4-panel will simply
+ leave that slot empty if it is absent; nothing else about the desktop
+ depends on it being present.

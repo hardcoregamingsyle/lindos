@@ -562,14 +562,20 @@ def test_debian_metadata() -> None:
     assert fields["Architecture"] == "all"
     assert fields["Maintainer"] == "Lindos Team <team@lindos.dev>"
     depends = {d.strip().split()[0] for d in fields["Depends"].split(",")}
-    for pkg in ("xfce4-panel", "xfce4-whiskermenu-plugin", "xfce4-docklike-plugin", "xfwm4", "xfconf",
+    for pkg in ("xfce4-panel", "xfce4-whiskermenu-plugin", "xfwm4", "xfconf",
                 "xfce4-settings", "xfce4-notifyd", "picom", "xfce4-panel-profiles", "xfce4-clipman-plugin",
                 "xfce4-screenshooter", "xfce4-taskmanager", "lightdm", "slick-greeter", "plymouth",
                 "fontconfig", "lindos-core"):
         assert pkg in depends, pkg
+    # xfce4-docklike-plugin is deliberately NOT a hard Depends: it is not packaged for Ubuntu
+    # 24.04 "noble" (only Ubuntu 25.10+ / Debian trixie+ carry it as of this writing), so a hard
+    # Depends would make lindos-desktop uninstallable on the very base Lindos targets. It is a
+    # Recommends instead — apt still tries to install it, and xfce4-panel just leaves that panel
+    # slot empty if it is genuinely absent.
+    assert "xfce4-docklike-plugin" not in depends
     recommends = {d.strip().split()[0] for d in fields["Recommends"].split(",")}
-    for pkg in ("xfce4-pulseaudio-plugin", "xfce4-power-manager", "network-manager-gnome",
-                "librsvg2-bin", "fonts-noto-color-emoji"):
+    for pkg in ("xfce4-docklike-plugin", "xfce4-pulseaudio-plugin", "xfce4-power-manager",
+                "network-manager-gnome", "librsvg2-bin", "fonts-noto-color-emoji"):
         assert pkg in recommends, pkg
     postinst = (DEBIAN / "postinst").read_text(encoding="utf-8")
     for forbidden in ("curl ", "wget ", "git clone", "apt-get install"):
