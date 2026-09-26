@@ -7,6 +7,9 @@ so it never shells out for real. Works on Windows and Linux.
 """
 from __future__ import annotations
 
+import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -243,3 +246,135 @@ def test_main_no_iso_match_is_usage_error(tmp_path, capsys):
     rc = boot_test.main(["--iso", str(tmp_path / "no-such-*.iso"), "--out-dir", str(tmp_path / "out")])
     assert rc == 2
     assert "no ISO matched" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# ci-boot-smoke-test.sh's check() / check_compat_doctor() -- the guest-side
+# helpers this same file's serial-log parser above consumes. Sourced from the
+# real script (never re-typed) and driven with fake commands/fake JSON, so a
+# real bash is required but no real lindos-*/QEMU tooling is.
+#
+# This exists because of a real, shipped bug: check() used
+# `if "$@" ...; then ok; fi; local rc=$?` -- when that condition is false,
+# POSIX defines the *if statement's own* exit status as 0 (no branch ran),
+# which clobbers $? back to 0 right before it's read. Every failing check
+# silently reported rc=0, which both hid genuine failures (default --ok "0"
+# always "matched") and made every --ok'd check look like a failure (the
+# real non-zero code could never match the whitelist). It only surfaced on
+# real Linux (see CI-LOGS.md), never in bash -n/shellcheck.
+# --------------------------------------------------------------------------- #
+
+SMOKE_SCRIPT = (HERE.parent.parent / "packages" / "lindos-core" / "root" / "usr" / "libexec"
+                / "lindos" / "qa" / "ci-boot-smoke-test.sh")
+BASH = shutil.which("bash")
+
+
+def _extract_function(script_text: str, name: str) -> str:
+    """Pull one `name() { ... }` function body out of the real script by its source text, so
+    the test exercises the exact shipped implementation instead of a re-typed copy. Relies on
+    the script's own style: the closing brace is un-indented on its own line."""
+    m = re.search(rf"^{re.escape(name)}\(\) \{{\n(.*?\n)^\}}\n", script_text, re.M | re.S)
+    assert m, f"could not find function {name}() in {SMOKE_SCRIPT}"
+    return f"{name}() {{\n{m.group(1)}}}\n"
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_captures_real_exit_code_not_zero(tmp_path):
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\nRC=0\n"
+        + _extract_function(script_text, "check")
+        + "\n"
+        "check truly-ok true\n"
+        "check truly-fail bash -c 'exit 5'\n"
+        "check allowed-3 --ok 3 bash -c 'exit 3'\n"
+        "check allowed-3-but-got-7 --ok 3 bash -c 'exit 7'\n"
+        'echo "FINAL_RC=${RC}"\n',
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    assert res.returncode == 0, res.stderr
+    out = res.stdout
+    assert "LINDOS_CHECK truly-ok=OK\n" in out
+    # The regression: these must carry the command's REAL exit code, never rc=0.
+    assert "LINDOS_CHECK truly-fail=FAIL rc=5" in out
+    assert "LINDOS_CHECK allowed-3=OK rc=3" in out
+    assert "LINDOS_CHECK allowed-3-but-got-7=FAIL rc=7" in out
+    assert "FINAL_RC=1" in out
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_all_pass_gives_rc_zero(tmp_path):
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\nRC=0\n"
+        + _extract_function(script_text, "check")
+        + "\ncheck ok-one true\ncheck ok-two --ok 3 true\n"
+        'echo "FINAL_RC=${RC}"\n',
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    assert res.returncode == 0, res.stderr
+    assert "LINDOS_CHECK ok-one=OK\n" in res.stdout
+    assert "LINDOS_CHECK ok-two=OK\n" in res.stdout
+    assert "FINAL_RC=0" in res.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_compat_doctor_excuses_only_display(tmp_path):
+    """lindos-compat doctor's 'required' DISPLAY check genuinely fails when this smoke test runs
+    as an early-boot systemd.run= oneshot with no logged-in desktop session -- that's expected,
+    not a bug, so check_compat_doctor() must still report OK. Any OTHER required check failing
+    must still be a real FAIL."""
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    def doctor_report(extra_bad_required: bool) -> str:
+        checks = [
+            {"id": "core", "level": "required", "ok": True},
+            {"id": "wine", "level": "required", "ok": True},
+            {"id": "prefixes-dir", "level": "required", "ok": True},
+            {"id": "display", "level": "required", "ok": False},
+            {"id": "wine32", "level": "recommended", "ok": False},
+        ]
+        if extra_bad_required:
+            checks.append({"id": "core", "level": "required", "ok": False})
+        return json.dumps({"ok": False, "summary": {}, "checks": checks})
+
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_doctor = fake_bin / "lindos-compat"
+    fake_doctor.write_text(
+        "#!/bin/bash\n"
+        f'if [ "$1" = "doctor" ]; then cat "{tmp_path.as_posix()}/report.json"; exit 1; fi\n',
+        encoding="utf-8",
+    )
+    fake_doctor.chmod(0o755)
+
+    def run_it(extra_bad_required: bool) -> subprocess.CompletedProcess:
+        (tmp_path / "report.json").write_text(doctor_report(extra_bad_required), encoding="utf-8")
+        harness = tmp_path / "harness.sh"
+        body = _extract_function(script_text, "check_compat_doctor")
+        body = body.replace("/usr/bin/lindos-compat", str(fake_doctor.as_posix()))
+        # The real script hard-codes /tmp/... (a real path on the real Linux boot target this
+        # runs on). On a Windows dev host, git-bash's own /tmp alias isn't understood by the
+        # native (non-MSYS) python3.exe the same way, so point the log at an ordinary absolute
+        # path both sides agree on -- test portability only, the shipped script is untouched.
+        body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.log",
+                            (tmp_path / "doctor-check.log").as_posix())
+        harness.write_text(
+            "#!/bin/bash\nRC=0\n" + body + '\ncheck_compat_doctor\necho "FINAL_RC=${RC}"\n',
+            encoding="utf-8",
+        )
+        return subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+
+    only_display = run_it(extra_bad_required=False)
+    assert only_display.returncode == 0, only_display.stderr
+    assert "LINDOS_CHECK lindos-compat-doctor=OK rc=1" in only_display.stdout
+    assert "FINAL_RC=0" in only_display.stdout
+
+    core_also_broken = run_it(extra_bad_required=True)
+    assert core_also_broken.returncode == 0, core_also_broken.stderr
+    assert "LINDOS_CHECK lindos-compat-doctor=FAIL rc=1" in core_also_broken.stdout
+    assert "FINAL_RC=1" in core_also_broken.stdout

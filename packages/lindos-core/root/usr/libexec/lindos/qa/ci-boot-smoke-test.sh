@@ -30,20 +30,57 @@ check() {
     #   (e.g. lindos-update's "check" subcommand deliberately exits 3, EXIT_NOTHING, when there
     #   is nothing to update -- a designed result, not a failure; see lindos-update's own
     #   EXIT_OK/EXIT_ERROR/EXIT_USAGE/EXIT_NOTHING constants)
+    #
+    # NOTE: the command runs as its own statement, and $? is captured on the very next line --
+    # deliberately NOT via 'if "$@" ...; then ... fi' with no else, because when that condition
+    # is false, POSIX defines the *if statement's own* exit status as 0 (no branch ran), which
+    # clobbers $? back to 0 before it can be read after the 'fi'. That bug previously made every
+    # failing check here silently report rc=0 regardless of the command's real exit code.
     local name="$1"; shift
     local ok="0"
     if [ "$1" = "--ok" ]; then
         ok="$2"; shift 2
     fi
-    if "$@" >/tmp/lindos-smoke-"${name}".log 2>&1; then
+    "$@" >/tmp/lindos-smoke-"${name}".log 2>&1
+    local rc=$?
+    if [ "${rc}" -eq 0 ]; then
         echo "LINDOS_CHECK ${name}=OK"
         return
     fi
-    local rc=$?
     case ",${ok}," in
         *",${rc},"*) echo "LINDOS_CHECK ${name}=OK rc=${rc}" ;;
         *)           echo "LINDOS_CHECK ${name}=FAIL rc=${rc}"; RC=1 ;;
     esac
+}
+
+check_compat_doctor() {
+    # lindos-compat doctor's exit code is EXIT_ERROR (1) if ANY 'required'-level check failed
+    # (doctor.py: DoctorReport.ok / cmd_doctor). This smoke test runs as a systemd.run= oneshot
+    # unit very early in boot, outside any logged-in desktop session -- so doctor's 'required'
+    # "Graphical session (DISPLAY)" check genuinely and correctly reports failure here (Windows
+    # programs really can't run without a desktop); that is expected in *this* invocation
+    # context, not a real problem. Parse the JSON and only fail this check if some OTHER
+    # required check failed.
+    local logf="/tmp/lindos-smoke-lindos-compat-doctor.log"
+    /usr/bin/lindos-compat doctor --json >"${logf}" 2>&1
+    local rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        echo "LINDOS_CHECK lindos-compat-doctor=OK"
+        return
+    fi
+    if python3 -c "
+import json, sys
+with open('${logf}', encoding='utf-8') as fh:
+    data = json.load(fh)
+bad = [c.get('id') for c in data.get('checks', [])
+       if c.get('level') == 'required' and not c.get('ok') and c.get('id') != 'display']
+sys.exit(1 if bad else 0)
+" 2>/dev/null; then
+        echo "LINDOS_CHECK lindos-compat-doctor=OK rc=${rc} (no DISPLAY in this early-boot context, expected)"
+    else
+        echo "LINDOS_CHECK lindos-compat-doctor=FAIL rc=${rc}"
+        RC=1
+    fi
 }
 
 echo "LINDOS_INFO uname=$(uname -r)"
@@ -61,7 +98,7 @@ check lindos-mode /usr/bin/lindos-mode list --json
 check lindos-config /usr/bin/lindos-config show --json
 check lindos-ram /usr/bin/lindos-ram --json
 check lindos-tune /usr/bin/lindos-tune status --json
-check lindos-compat-doctor /usr/bin/lindos-compat doctor --json
+check_compat_doctor
 check lindos-run-version /usr/bin/lindos-run --version
 check lindos-game-list /usr/bin/lindos-game list --json
 check lindos-transfer-sources /usr/bin/lindos-transfer sources --json
