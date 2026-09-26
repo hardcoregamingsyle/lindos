@@ -13,6 +13,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -262,15 +263,56 @@ def _write_fake_tool(directory: Path, name: str, script_body: str) -> None:
 
 
 def _source_and_call(function_and_args: str, extra_path: Optional[Path] = None,
-                     timeout: float = 30) -> subprocess.CompletedProcess:
+                     timeout: float = 30, base_env: Optional[Dict[str, str]] = None
+                     ) -> subprocess.CompletedProcess:
     assert BASH is not None
-    env = dict(os.environ)
+    env = dict(base_env) if base_env is not None else dict(os.environ)
     if extra_path is not None:
         env["PATH"] = str(extra_path) + os.pathsep + env.get("PATH", "")
     script = f'set -e\n. "{BASE_CONFIG_LIB.as_posix()}"\n{function_and_args}\n'
     return subprocess.run([BASH, "-c", script], capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout, check=False,
                           env=env)
+
+
+# Coreutils base-config.sh's *own* (non-apt) code paths need: enough that
+# lindos_kernel_find_boot_generic_config / lindos_kernel_fetch_generic_config behave normally.
+# Deliberately excludes apt-cache/apt-get/dpkg-deb -- that absence is the point of
+# _no_apt_tooling_env() below.
+_COMMON_TOOLS = (
+    "ls", "sort", "tail", "head", "cat", "grep", "awk", "sed", "mkdir", "tar", "find",
+    "mktemp", "rm", "cp", "mv", "wc", "dirname", "basename", "tr", "cut", "xargs",
+    "true", "false", "printf", "seq", "date", "id", "uname", "env", "test", "expr",
+)
+
+
+def _no_apt_tooling_env() -> Dict[str, str]:
+    """A PATH with the common coreutils base-config.sh's functions call, but *never*
+    apt-cache/apt-get/dpkg-deb -- simulates "apt tooling genuinely absent" without depending on
+    whether the runner happens to have real apt tooling elsewhere on PATH. A plain prepended
+    empty directory (the previous approach) is not enough: it still leaves the rest of the host's
+    real PATH reachable, and a real Ubuntu CI runner (unlike this project's usual Windows dev
+    host) does ship a real apt-cache -- see CI-LOGS.md.
+    """
+    mirror = Path(tempfile.mkdtemp(prefix="lindos-no-apt-path-"))
+    for name in _COMMON_TOOLS:
+        src = shutil.which(name)
+        if not src:
+            continue
+        dst = mirror / Path(src).name
+        try:
+            os.link(src, dst)
+        except OSError:
+            try:
+                os.symlink(src, dst)
+            except OSError:
+                try:
+                    shutil.copy2(src, dst)
+                except OSError:
+                    continue
+    env = dict(os.environ)
+    env["PATH"] = str(mirror)
+    return env
 
 
 def test_find_boot_generic_config_picks_newest(tmp_path: Path) -> None:
@@ -307,10 +349,9 @@ fi
     assert res.stdout.strip() == "linux-modules-6.8.0-40-generic"
 
 
-def test_resolve_modules_pkg_fails_without_apt_cache(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "fakebin_empty"
-    fake_bin.mkdir()
-    res = _source_and_call("lindos_kernel_resolve_modules_pkg", extra_path=fake_bin)
+def test_resolve_modules_pkg_fails_without_apt_cache() -> None:
+    res = _source_and_call("lindos_kernel_resolve_modules_pkg",
+                           base_env=_no_apt_tooling_env())
     assert res.returncode != 0
 
 
@@ -366,11 +407,9 @@ def test_ubuntu_base_config_fails_clearly_without_any_tooling(tmp_path: Path) ->
     boot = tmp_path / "boot"
     boot.mkdir()
     work = tmp_path / "work"
-    fake_bin = tmp_path / "fakebin_empty"
-    fake_bin.mkdir()
     res = _source_and_call(
         f'lindos_kernel_ubuntu_base_config "{boot.as_posix()}" "{work.as_posix()}"',
-        extra_path=fake_bin,
+        base_env=_no_apt_tooling_env(),
     )
     assert res.returncode != 0
     assert res.stdout.strip() == ""

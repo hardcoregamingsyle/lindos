@@ -743,7 +743,7 @@ def build_routes(entry: Dict[str, Any], matrix: Dict[str, Any], region: Optional
         if provider is None:
             continue
         region_ok = provider_region_available(provider, region)
-        client_ok, client_via = provider_client_ready(provider)
+        client_ok, client_via = provider_client_ready(provider, which=_which)
         action: Optional[Dict[str, Any]] = None
         if region_ok is False:
             available, why = False, f"{provider['name']} is not offered in your region ({region})."

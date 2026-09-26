@@ -6,6 +6,7 @@
 /etc/xdg/autostart/lindos-mode-apply-user.desktop
 /etc/xdg/autostart/lindos-picom.desktop
 /etc/xdg/autostart/lindos-setup.desktop
+/etc/xdg/autostart/lindos-update-notify.desktop
 /etc/xdg/gtk-3.0/settings.ini
 /etc/xdg/picom-lindos.conf
 /etc/xdg/xfce4/panel/docklike-2.rc
