@@ -357,7 +357,18 @@ jobs:
         run: |
           if [ -e /dev/kvm ]; then
             ls -la /dev/kvm
-            echo "KVM available — boot test will be fast."
+            # The device node exists (nested virt is on) but the 'runner' user's membership in
+            # the 'kvm' group, added by udev when the node was created, doesn't apply to this
+            # already-running shell/job (group membership is only re-read on a fresh login) --
+            # this is the well-known GitHub-hosted-runner KVM gotcha, not anything Lindos-side.
+            # boot_test.py already falls back to TCG on 'Permission denied' rather than hard-
+            # failing, but TCG's software CPU emulation has real correctness gaps in 32-bit
+            # WoW64 LDT/segment handling that real KVM does not (see CI-LOGS.md) -- so make the
+            # existing device actually usable on this ephemeral, single-job runner instead of
+            # silently eating the slower + less accurate fallback.
+            sudo chmod 0666 /dev/kvm
+            ls -la /dev/kvm
+            echo "KVM available — boot test will be fast and accurate."
           else
             echo "::warning::no /dev/kvm on this runner — falling back to TCG (much slower); see build/qa/boot_test.py"
           fi

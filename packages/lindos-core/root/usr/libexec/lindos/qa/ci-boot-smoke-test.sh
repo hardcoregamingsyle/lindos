@@ -25,14 +25,25 @@ echo "LINDOS_SMOKE_START"
 RC=0
 
 check() {
-    # check NAME -- COMMAND...   (everything after NAME is the command/argv)
+    # check NAME COMMAND...                  -- exit 0 is the only acceptable result
+    # check NAME --ok CSV_CODES COMMAND...   -- any code listed in CSV_CODES also counts as OK
+    #   (e.g. lindos-update's "check" subcommand deliberately exits 3, EXIT_NOTHING, when there
+    #   is nothing to update -- a designed result, not a failure; see lindos-update's own
+    #   EXIT_OK/EXIT_ERROR/EXIT_USAGE/EXIT_NOTHING constants)
     local name="$1"; shift
+    local ok="0"
+    if [ "$1" = "--ok" ]; then
+        ok="$2"; shift 2
+    fi
     if "$@" >/tmp/lindos-smoke-"${name}".log 2>&1; then
         echo "LINDOS_CHECK ${name}=OK"
-    else
-        echo "LINDOS_CHECK ${name}=FAIL rc=$?"
-        RC=1
+        return
     fi
+    local rc=$?
+    case ",${ok}," in
+        *",${rc},"*) echo "LINDOS_CHECK ${name}=OK rc=${rc}" ;;
+        *)           echo "LINDOS_CHECK ${name}=FAIL rc=${rc}"; RC=1 ;;
+    esac
 }
 
 echo "LINDOS_INFO uname=$(uname -r)"
@@ -47,7 +58,7 @@ fi
 
 check python-import python3 -c "import lindos, lindos.paths, lindos.modes, lindos.config, lindos.hardware, lindos.ram, lindos.theme, lindos.compat, lindos.browsers"
 check lindos-mode /usr/bin/lindos-mode list --json
-check lindos-config /usr/bin/lindos-config get --json
+check lindos-config /usr/bin/lindos-config show --json
 check lindos-ram /usr/bin/lindos-ram --json
 check lindos-tune /usr/bin/lindos-tune status --json
 check lindos-compat-doctor /usr/bin/lindos-compat doctor --json
@@ -55,7 +66,7 @@ check lindos-run-version /usr/bin/lindos-run --version
 check lindos-game-list /usr/bin/lindos-game list --json
 check lindos-transfer-sources /usr/bin/lindos-transfer sources --json
 check lindos-dualboot-status /usr/bin/lindos-dualboot status --json
-check lindos-update-check /usr/bin/lindos-update check --json
+check lindos-update-check --ok 3 /usr/bin/lindos-update check --json
 
 failed_units="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)"
 echo "LINDOS_INFO failed_units=${failed_units}"
