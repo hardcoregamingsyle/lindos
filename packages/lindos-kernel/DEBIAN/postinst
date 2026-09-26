@@ -22,8 +22,16 @@ case "$1" in
             python3 -m py_compile "$CLI" 2>/dev/null || true
         fi
 
-        # regenerate the boot menu so the conservative cmdline drop-in takes effect.
-        # Best-effort only: a chroot / container without grub must not fail the install.
+        # recompute the Secure-Boot-aware default-kernel selection (SPEC-WINDOWS §31.3) before
+        # regenerating the boot menu.  Best-effort only: never fails the install, and a system
+        # with no lindos-kernel binary yet (partial install) is a harmless no-op.
+        if [ -x "$CLI" ] && command -v python3 >/dev/null 2>&1; then
+            "$CLI" secureboot apply-selection >/dev/null 2>&1 || true
+        fi
+
+        # regenerate the boot menu so the conservative cmdline drop-in and the kernel-selection
+        # drop-in above take effect.  Best-effort only: a chroot / container without grub must
+        # not fail the install.
         if [ -d "$GRUB_DROPIN_DIR" ] && command -v update-grub >/dev/null 2>&1; then
             update-grub 2>/dev/null || true
         fi

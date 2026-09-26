@@ -1,1 +1,2 @@
 /etc/default/grub.d/50-lindos.cfg
+/etc/default/grub.d/51-lindos-kernel-select.cfg

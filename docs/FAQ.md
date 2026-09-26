@@ -24,6 +24,45 @@ support; Rust's developer refused; Call of Duty's Ricochet is a kernel driver. N
 Lindos side can change a publisher's decision. See [COMPATIBILITY.md](COMPATIBILITY.md) (56
 titles) and [areweanticheatyet.com](https://areweanticheatyet.com/).
 
+Lindos does not pretend otherwise — it ships **no** attestation/TPM/Secure-Boot forger, no HWID or
+CPUID spoofer, no VM-hiding trick, because none of that can produce the hardware-rooted signature
+the anti-cheat server checks; it would only get the account **hardware-banned**. Instead, run
+`lindos-game route <title>` for the honest way to actually play: an official cloud-streaming
+service where the publisher offers one (GeForce NOW, Xbox Cloud Gaming, Boosteroid, Amazon Luna —
+`lindos-game cloud install geforce-now` installs the official Flatpak), or a one-command,
+one-shot restart into the PC's *own* Windows installation with `lindos-dualboot reboot-to-windows`
+(a genuine UEFI `BootNext`/GRUB one-shot boot; it never edits Windows, BCD or firmware settings,
+and clears itself after one boot). See [docs/DUALBOOT.md](DUALBOOT.md).
+
+### Can I open MSIX/APPX apps, `.reg` files, PowerShell scripts, disk images, DOS programs?
+Yes — `lindos-run` opens essentially every Windows file type, not just `.exe`/`.msi`: MSIX/APPX
+packages and bundles, `.appinstaller` (download only on your consent, HTTPS-only, hash-verified),
+`.msp` patches, `.reg` (Lindos previews what it will delete before merging — Wine's own regedit
+never asks), `.ps1`/`.vbs` scripts, `.url` shortcuts, `.scr` screensavers, `.cpl` Control Panel
+items, software `.inf`, `.cab` archives, `.iso`/`.img` disk images (AutoPlay-style "Run setup?"),
+ClickOnce apps, and DOS/16-bit Windows programs (DOSBox-X). A file Lindos genuinely cannot run
+(ARM-only binaries, drivers, Windows Update packages, Store-encrypted/true-UWP apps) is explained,
+never silently "tried anyway". `./setup.exe` also works straight from a terminal. Details:
+[docs/WINDOWS-FORMATS.md](WINDOWS-FORMATS.md).
+
+### Can I install software by package name, like `winget`?
+Yes: `lindos-compat winget search <name>` / `winget install <id>` downloads straight from the
+publisher's own URL named in Microsoft's official winget manifest, verifies the SHA-256 before
+running it (no override — a failed hash refuses to install), and runs it through the same
+`lindos-run` flow as a double-clicked installer. See [docs/WINGET.md](WINGET.md).
+
+### How do I bring my files, bookmarks and settings over from Windows?
+`lindos-transfer` (or **Lindos Settings → Windows apps → Transfer from Windows…**) works two ways:
+straight from the Windows partition on the same PC (mounted strictly **read-only** — nothing is
+ever written to it) if you dual-booted or dual-installed, or from a "transfer folder" you make by
+double-clicking the bundled `LindosTransfer.cmd`/`.ps1` kit on the old PC first (handy when
+Windows is BitLocker-locked, on a different disk, or already gone). It brings over your files
+(Desktop/Documents/Pictures/Music/Videos/Saved games), Chromium/Firefox bookmarks, wallpaper,
+fonts, Wi-Fi networks (only from your own `netsh wlan export … key=clear`, opt-in), your Steam
+library, and a list of your Windows programs with an honest way to get each one back. It never
+opens Windows account/security databases, DPAPI/Credential-Manager/Vault data, browser
+password/cookie stores, or hibernation/page/swap files. See [docs/TRANSFER.md](TRANSFER.md).
+
 ### Which games do work?
 Native Linux builds (Counter-Strike 2, Dota 2, Minecraft Java, Stardew Valley, Terraria, War
 Thunder), most single-player Steam titles through Proton (Elden Ring, Cyberpunk 2077, Baldur's

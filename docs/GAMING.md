@@ -183,3 +183,52 @@ anti-cheat titles.
 
 The performance env `lindos-run` sets for games (`PROTON_USE_NTSYNC` when `/dev/ntsync` exists,
 `DXVK_ASYNC`, MangoHud/gamescope per flags) is documented in [WINDOWS-APPS.md](WINDOWS-APPS.md).
+
+## 7. Play-anywhere — honest routes for blocked titles
+
+For the 15 `not_possible` titles in the compat matrix, `lindos-game` adds routing commands instead
+of pretending Wine/Proton can run them (SPEC-WINDOWS §30; the full honest explanation is
+[ANTI-CHEAT.md](ANTI-CHEAT.md)):
+
+```
+lindos-game route <title|exe|appid> [--json] [--region CC]
+lindos-game play  <title> [--route cloud|windows|proton|native] [--provider ID] [--region CC] [--yes]
+lindos-game shortcut <title> --route cloud|windows [--provider ID] [--region CC]
+lindos-game cloud install geforce-now [--system] [--print] [--json]
+```
+
+* **`route`** prints (or `--json`s) every honest route for a title: each **cloud** provider that
+  actually carries it, and **restart into Windows** — never the Lindos VM (`type: vm` is always
+  `available: false`; kernel-mode anti-cheat blocks virtual machines too, so a VM would only risk a
+  hardware ban). Region comes from `--region`, `~/.config/lindos/config.json` `"region"`, the system
+  locale (`LC_ALL`/`LANG`) or the timezone (`/etc/timezone`) — **never** IP geolocation. Cloud
+  availability also checks whether the provider's client is actually installed (GeForce NOW's
+  Flatpak, Boosteroid's `.deb`, or a Chrome/Edge binary for a browser provider — **never** Firefox
+  for Xbox Cloud Gaming or Amazon Luna, and never a spoofed user agent). The Windows route checks
+  `lindos-dualboot status --json` (`can_reboot_to_windows`) and warns when a title's
+  `windows_requires` (`secure-boot`/`tpm2`) is not yet met on your Windows install.
+* **`play`** launches the recommended (or `--route`-chosen) route: the GeForce NOW Flatpak or a
+  provider's official page in Chrome/Edge for `cloud`; `lindos-dualboot reboot-to-windows` for
+  `windows`, after a confirmation (skip with `--yes`) that shows the Secure-Boot/TPM checklist when
+  needed. `--route vm` is always refused with the reason named.
+* **`shortcut`** writes `~/.local/share/applications/lindos-play-<id>-<route>.desktop` (e.g.
+  *"Valorant — restarts into Windows"*, *"Fortnite — NVIDIA GeForce NOW"*) that re-runs `lindos-game
+  play … --yes` at click time, so it always re-checks region/dual-boot state rather than baking in a
+  stale answer.
+* **`cloud install geforce-now`** installs NVIDIA's own Linux Flatpak (`com.nvidia.geforcenow` from
+  NVIDIA's `GeForceNOW` remote, **not Flathub** — Flathub does not carry it). `--system`
+  (system-wide, every user) goes through `lindos.helper.install_flatpaks(ids, remote={"name":
+  "GeForceNOW", "url": …})` → the privileged helper's `install-flatpaks` action (SPEC-WINDOWS
+  §33.1/§30.4), which adds NVIDIA's remote instead of assuming Flathub; without `--system` (or if
+  the helper is unavailable/fails), it runs the same two documented `flatpak remote-add`/`flatpak
+  install --user` commands itself — a user-scope Flatpak needs no root at all — and always prints
+  them too. `--print` shows the commands without running anything; `--json` returns the exact argv
+  plus which helper action would run. Every other provider (`xbox-cloud`/`boosteroid`/
+  `amazon-luna`) has no scripted installer here; `cloud install <id>` prints that provider's
+  official download/play page instead.
+
+The compat matrix's `cloud_providers` object (NVIDIA GeForce NOW, Xbox Cloud Gaming, Boosteroid,
+Amazon Luna) and each blocked title's `routes` (`cloud`, `windows`, `windows_requires`, `vm: false`,
+`verified`) are the single source of truth for all of this — the same JSON `python3
+tests/gen-compat-doc.py` renders into [COMPATIBILITY.md](COMPATIBILITY.md)'s **Other ways to play**
+section.

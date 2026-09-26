@@ -34,7 +34,7 @@ from .widgets import (  # noqa: E402
 log = logging.getLogger("lindos-setup.pages")
 
 PAGE_ORDER: List[str] = [
-    "welcome", "mode", "browser", "personalize", "apps", "privacy", "summary", "apply", "done",
+    "welcome", "mode", "browser", "personalize", "apps", "privacy", "transfer", "summary", "apply", "done",
 ]
 
 MODE_ICON_FALLBACK: Dict[str, str] = {
@@ -81,6 +81,7 @@ class PageContext:
         self.plan: Optional[Plan] = None
         self.run_result: Optional[RunResult] = None
         self.applied = False
+        self.transfer_launched = False   # DonePage spawns lindos-transfer-gui at most once
 
     # connectivity ------------------------------------------------------------
     def set_online(self, online: bool) -> bool:
@@ -710,6 +711,164 @@ class PrivacyPage(Page):
 
 
 # ---------------------------------------------------------------------------
+# transfer (optional; SPEC-WINDOWS §29 / §32)
+# ---------------------------------------------------------------------------
+class TransferPage(Page):
+    id = "transfer"
+    title = "Bring your stuff from Windows"
+    subtitle = ("Optional. Copy documents, browser bookmarks, wallpaper and more from a Windows "
+                "drive or a transfer folder made with the Windows kit. Nothing is copied now -- "
+                "the Transfer tool opens after setup finishes.")
+
+    SKIP_KEY = "skip"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.group = CardGroup(on_change=self._changed)
+        self.banner: Optional[InfoBanner] = None
+        self.recheck: Optional[Gtk.Button] = None
+        self.list_box: Optional[Gtk.Box] = None
+        self._sources: Dict[str, Dict[str, str]] = {}
+        self._loading = False
+        self._loaded = False
+
+    def build_content(self, ctx: PageContext) -> Gtk.Widget:
+        box = vbox(10)
+        self.banner = InfoBanner(_("Looking for a Windows drive or a transfer folder…"),
+                                 "drive-harddisk-symbolic")
+        box.pack_start(self.banner, False, False, 0)
+        self.list_box = vbox(8)
+        box.pack_start(scrolled(self.list_box, height=300), True, True, 0)
+        self.recheck = Gtk.Button(label=_("Check again"))
+        add_class(self.recheck, "btn-link")
+        self.recheck.set_halign(Gtk.Align.START)
+        self.recheck.connect("clicked", self._on_recheck)
+        self.recheck.set_no_show_all(True)
+        self.recheck.hide()
+        box.pack_start(self.recheck, False, False, 0)
+        return box
+
+    def on_enter(self, ctx: PageContext) -> None:
+        if not self._loaded and not self._loading:
+            self._start_load(ctx)
+
+    # -- loading (worker thread; never blocks the UI, handles the CLI being absent) -----------
+    def _start_load(self, ctx: PageContext) -> None:
+        self._loading = True
+        assert self.banner is not None and self.recheck is not None
+        self.banner.get_style_context().remove_class("warn")
+        self.banner.set_text(_("Looking for a Windows drive or a transfer folder…"))
+        self.recheck.hide()
+
+        def worker() -> None:
+            data = core.transfer_sources()
+            GLib.idle_add(self._loaded_cb, data)
+
+        threading.Thread(target=worker, name="lindos-setup-transfer-sources", daemon=True).start()
+
+    def _loaded_cb(self, data: Dict[str, Any]) -> bool:
+        self._loading = False
+        self._loaded = True
+        assert self.list_box is not None and self.banner is not None and self.recheck is not None
+        for child in list(self.list_box.get_children()):
+            self.list_box.remove(child)
+        self.group = CardGroup(on_change=self._changed)
+        self._sources = {self.SKIP_KEY: {"type": "", "source": ""}}
+        skip = Card(self.SKIP_KEY, _("Skip for now"),
+                   _("Bring your stuff later from Lindos Settings › Windows apps › "
+                     "Transfer from Windows…"),
+                   icon_name="edit-clear-all-symbolic", icon_size=32, height=88)
+        self.group.add(skip)
+        self.list_box.pack_start(skip, False, False, 0)
+
+        if not data.get("available", True):
+            self.banner.get_style_context().add_class("warn")
+            self.banner.set_text(str(data.get("note")) if data.get("note") else _(
+                "The Transfer tool isn't installed. Add it later from Lindos Settings."))
+            self.recheck.hide()
+        else:
+            found = self._add_cards(data)
+            if found:
+                self.banner.get_style_context().remove_class("warn")
+                self.banner.set_text(_("Choose what to bring in, or skip and do it later -- "
+                                       "everything can be picked again in the Transfer tool."))
+                self.recheck.hide()
+            else:
+                self.banner.get_style_context().remove_class("warn")
+                self.banner.set_text(_(
+                    "No Windows drive or transfer folder found yet. Plug in a USB stick made "
+                    "with the Windows kit, or open the Windows drive once in File Explorer, "
+                    "then check again."))
+                self.recheck.show()
+        self.list_box.show_all()
+        self._select_current(ctx=self.ctx)
+        return False
+
+    def _add_cards(self, data: Dict[str, Any]) -> int:
+        assert self.list_box is not None
+        found = 0
+        for part in data.get("partitions") or []:
+            if not isinstance(part, dict) or not part.get("windows"):
+                continue
+            found += 1
+            device = str(part.get("device") or found)
+            key = "part:%s" % device
+            tags = [t for t, ok in (("BitLocker", part.get("bitlocker")),
+                                    ("hibernated", part.get("hibernated"))) if ok]
+            title = str(part.get("label") or device or _("Windows drive"))
+            card = Card(key, title, str(part.get("note") or ""), icon_name="drive-harddisk",
+                       hint=", ".join(tags), icon_size=32, height=104)
+            if not part.get("mountpoint"):
+                card.set_disabled(True, _("Not opened yet -- open it once in File Explorer, "
+                                          "then press Check again"))
+            self.group.add(card)
+            self.list_box.pack_start(card, False, False, 0)
+            self._sources[key] = {"type": "partition", "source": str(part.get("mountpoint") or device)}
+        for bundle in data.get("bundles") or []:
+            if not isinstance(bundle, dict):
+                continue
+            found += 1
+            path = str(bundle.get("path") or found)
+            key = "bundle:%s" % path
+            title = _("Transfer folder from %s") % (bundle.get("computer") or "?")
+            desc = _("User %s · made %s") % (bundle.get("user") or "?", bundle.get("created") or "?")
+            card = Card(key, title, desc, icon_name="folder-download", icon_size=32, height=104)
+            self.group.add(card)
+            self.list_box.pack_start(card, False, False, 0)
+            self._sources[key] = {"type": "bundle", "source": path}
+        return found
+
+    def _select_current(self, ctx: Optional[PageContext]) -> None:
+        if ctx is None:
+            return
+        cur = ctx.selections.transfer or {}
+        want = self.SKIP_KEY
+        if cur.get("enabled") and cur.get("source"):
+            for key, info in self._sources.items():
+                if info.get("type") == cur.get("source_type") and info.get("source") == cur.get("source"):
+                    want = key
+                    break
+        self.group.select(want)
+
+    def _changed(self, key: str) -> None:
+        if self.ctx is None:
+            return
+        info = self._sources.get(key, {"type": "", "source": ""})
+        if key == self.SKIP_KEY or not info.get("type"):
+            self.ctx.selections.transfer = {"enabled": False, "source_type": "", "source": ""}
+        else:
+            self.ctx.selections.transfer = {
+                "enabled": True, "source_type": info["type"], "source": info["source"],
+            }
+
+    def _on_recheck(self, _btn: Gtk.Button) -> None:
+        if self._loading or self.ctx is None:
+            return
+        self._loaded = False
+        self._start_load(self.ctx)
+
+
+# ---------------------------------------------------------------------------
 # summary
 # ---------------------------------------------------------------------------
 class SummaryPage(Page):
@@ -977,11 +1136,31 @@ class DonePage(Page):
             ]
             if ctx.run_result is not None and (ctx.run_result.failed_ids or ctx.run_result.skipped_ids):
                 parts.append(_("Some installs are pending — see Lindos Settings › Apps."))
+            if (ctx.selections.transfer or {}).get("enabled"):
+                parts.append(_("Opening the Transfer tool for your Windows files…"))
             self.recap.set_text("   ·   ".join(parts))
         if self.settings_btn is not None:
             self.settings_btn.set_visible(core.which("lindos-settings") is not None or ctx.dry_run)
         if ctx.window is not None:
             ctx.window.set_next_sensitive(True)
+        self._maybe_launch_transfer(ctx)
+
+    def _maybe_launch_transfer(self, ctx: PageContext) -> None:
+        """Spawn ``lindos-transfer-gui`` once when the transfer page's choice was 'enabled'
+        (SPEC-WINDOWS §32: "the Done page launches lindos-transfer-gui when chosen"). Detached
+        and non-blocking; never copies anything itself."""
+        if ctx.transfer_launched:
+            return
+        transfer = ctx.selections.transfer or {}
+        if not transfer.get("enabled"):
+            return
+        ctx.transfer_launched = True
+        source = str(transfer.get("source") or "")
+        if ctx.dry_run:
+            ctx.log.info("dry-run: would launch lindos-transfer-gui --from %r", source)
+            return
+        if not core.launch_transfer_gui(source):
+            log.warning("lindos-transfer-gui could not be started")
 
     def _open_settings(self, _btn: Gtk.Button) -> None:
         if self.ctx is not None and self.ctx.window is not None:
@@ -991,11 +1170,11 @@ class DonePage(Page):
 def make_pages() -> List[Page]:
     """Instantiate all pages in SPEC order."""
     pages: List[Page] = [WelcomePage(), ModePage(), BrowserPage(), PersonalizePage(), AppsPage(),
-                         PrivacyPage(), SummaryPage(), ApplyPage(), DonePage()]
+                         PrivacyPage(), TransferPage(), SummaryPage(), ApplyPage(), DonePage()]
     assert [p.id for p in pages] == PAGE_ORDER
     return pages
 
 
 __all__ = ["PAGE_ORDER", "PageContext", "Page", "make_pages", "WelcomePage", "ModePage",
-           "BrowserPage", "PersonalizePage", "AppsPage", "PrivacyPage", "SummaryPage",
-           "ApplyPage", "DonePage"]
+           "BrowserPage", "PersonalizePage", "AppsPage", "PrivacyPage", "TransferPage",
+           "SummaryPage", "ApplyPage", "DonePage"]

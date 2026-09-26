@@ -1,0 +1,241 @@
+#!/usr/bin/python3
+"""lindos-dualboot — restart into your existing Windows install, honestly (SPEC-WINDOWS §27, §30.3).
+
+Some games and drivers need a real Windows kernel that no Linux kernel or VM can ever provide
+(kernel-mode anti-cheat, TPM/Secure-Boot hardware attestation). Lindos does not try to fake
+this — it never emulates, spoofs or hides from it. Instead this restarts your PC once into the
+Windows Boot Manager entry the firmware already has, using the firmware's own one-shot boot
+choice (UEFI ``BootNext``, or GRUB's ``grub-reboot`` where UEFI is unavailable); the next boot
+after that returns to Lindos on its own. Nothing here ever edits Windows, BCD, Secure Boot keys
+or firmware settings.
+
+  lindos-dualboot status [--json]
+      firmware type, Secure Boot / TPM state, and every Windows entry this PC can restart into
+  lindos-dualboot reboot-to-windows [--entry XXXX] [--yes] [--no-reboot]
+      restart once into Windows (the privileged helper re-validates the entry as root first)
+  lindos-dualboot firmware-setup [--yes]
+      restart into the UEFI firmware setup screen (to turn on Secure Boot / TPM for a game)
+  lindos-dualboot shortcut
+      write a desktop shortcut ("Restart into Windows") under Settings > Games / the app menu
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 no way to restart into Windows was found (see 'why').
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import dualboot as ldualboot
+    from lindos import helper as lhelper
+    from lindos import paths as lpaths
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-dualboot: the 'lindos' python package is missing ({exc}); install lindos-core\n")
+    sys.exit(1)
+
+PROG = "lindos-dualboot"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOTHING = 0, 1, 2, 3
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+#: the honesty checklist shown before ``firmware-setup`` (SPEC-WINDOWS §30.3): every point here
+#: is something that can silently go wrong if skipped, not a formality.
+FIRMWARE_SETUP_CHECKLIST = [
+    "Make sure the Lindos kernel (and any NVIDIA/DKMS modules) are MOK-signed, or pick a stock "
+    "signed kernel at the GRUB menu first — an unsigned kernel will not boot once Secure Boot is on.",
+    "If Windows uses BitLocker, suspend it from inside Windows first (Settings > BitLocker, or "
+    "'manage-bde -protectors -disable C:') — a Secure Boot or TPM change looks like tampering to "
+    "BitLocker and can demand the 48-digit recovery key at the next Windows boot.",
+    "The disk must already be UEFI + GPT for both systems. Never run Windows' 'mbr2gpt' on a disk "
+    "that also holds Lindos: it does not know about the Lindos partitions and will break the dual-boot.",
+]
+
+
+def _emit(data: Any, as_json: bool, text: str = "") -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        print(text)
+
+
+def _confirm(prompt: str, yes: bool) -> bool:
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{prompt} Re-run with --yes to proceed non-interactively.")
+        return False
+    try:
+        reply = input(f"{prompt} [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return reply.strip().lower() in ("y", "yes")
+
+
+# --- status -------------------------------------------------------------------------------------
+def cmd_status(ns: argparse.Namespace) -> int:
+    st = ldualboot.status()
+    if ns.json:
+        _emit(st, True)
+        return EXIT_OK
+    print(f"firmware:              {st['firmware']}")
+    print(f"secure boot:           {st['secure_boot']}")
+    print(f"tpm:                   {st['tpm'] if st['tpm'] is not None else 'not detected'}")
+    if st.get("lindos_kernel_signed") is not None:
+        print(f"lindos kernel signed:  {'yes' if st['lindos_kernel_signed'] else 'no'}")
+    rows = st.get("windows_entries") or []
+    if rows:
+        print("Windows Boot Manager entries (firmware):")
+        for r in rows:
+            disk = f"  (disk: {r['disk']})" if r.get("disk") else ""
+            print(f"  {r['num']}  {r['label']}{disk}")
+    grub_rows = st.get("grub_windows_entries") or []
+    if grub_rows:
+        print("Windows entries in the GRUB menu:")
+        for r in grub_rows:
+            print(f"  {r['id']}  {r['title']}")
+    if not rows and not grub_rows:
+        print("no Windows Boot Manager entry was found.")
+    print()
+    if st["can_reboot_to_windows"]:
+        print(f"can restart into Windows: yes (method: {st['method']})")
+    else:
+        print(f"can restart into Windows: no — {st['why']}")
+    if st.get("bitlocker_hint"):
+        print("note: the Windows partition looks BitLocker-protected — suspend BitLocker in "
+             "Windows before changing Secure Boot or TPM settings, or it may demand the "
+             "recovery key at the next Windows boot.")
+    return EXIT_OK
+
+
+# --- reboot-to-windows ----------------------------------------------------------------------------
+def _describe_target(st: Dict[str, Any], payload: Dict[str, Any]) -> str:
+    if payload["method"] == "bootnext":
+        rows = {r["num"]: r for r in st.get("windows_entries", [])}
+        row = rows.get(payload["entry"], {})
+        return f"boot entry {payload['entry']} ({row.get('label', 'Windows Boot Manager')})"
+    rows = {r["id"]: r for r in st.get("grub_windows_entries", [])}
+    row = rows.get(payload["menuentry"], {})
+    return f"the GRUB menu entry {row.get('title', payload['menuentry'])!r}"
+
+
+def cmd_reboot_to_windows(ns: argparse.Namespace) -> int:
+    st = ldualboot.status()
+    try:
+        payload = ldualboot.reboot_payload(st, entry=ns.entry)
+    except ValueError as exc:
+        sys.stderr.write(f"{PROG}: {exc}\n")
+        return EXIT_NOTHING
+    if ns.no_reboot:
+        payload["reboot"] = False
+    what = _describe_target(st, payload)
+    verb = "Restart now into" if payload.get("reboot", True) else "Set the one-shot boot choice to (without rebooting now)"
+    if not _confirm(f"{verb} {what}?", ns.yes):
+        print("cancelled.")
+        return EXIT_OK
+    result = lhelper.run_privileged("reboot-to-windows", payload, log=print)
+    if not result.ok:
+        sys.stderr.write(f"{PROG}: {result.message}\n")
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+# --- firmware-setup -------------------------------------------------------------------------------
+def cmd_firmware_setup(ns: argparse.Namespace) -> int:
+    st = ldualboot.status()
+    print("Before you change firmware (UEFI) settings such as Secure Boot or TPM:")
+    for i, item in enumerate(FIRMWARE_SETUP_CHECKLIST, 1):
+        print(f"  {i}. {item}")
+    if st.get("secure_boot") == "disabled":
+        print("  (Secure Boot is currently disabled on this PC.)")
+    if st.get("tpm") is None:
+        print("  (No TPM was detected from Linux — it may still exist and simply be disabled in firmware.)")
+    if not _confirm("Restart into the firmware setup screen now?", ns.yes):
+        print("cancelled.")
+        return EXIT_OK
+    result = lhelper.run_privileged("firmware-setup", {"confirm": True}, log=print)
+    if not result.ok:
+        sys.stderr.write(f"{PROG}: {result.message}\n")
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+# --- shortcut -------------------------------------------------------------------------------------
+def cmd_shortcut(ns: argparse.Namespace) -> int:
+    apps_dir = lpaths.resolve("~/.local/share/applications")
+    os.makedirs(apps_dir, exist_ok=True)
+    dest = os.path.join(apps_dir, ldualboot.DESKTOP_SHORTCUT_NAME)
+    content = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Restart into Windows\n"
+        "Comment=One-time restart into your existing Windows installation for games/apps that "
+        "need real Windows hardware — never edits Windows, BCD or firmware settings\n"
+        f"Exec={PROG} reboot-to-windows --yes\n"
+        "Icon=system-shutdown\n"
+        "Categories=System;\n"
+        "Terminal=false\n"
+    )
+    with open(dest, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(content)
+    print(f"wrote {dest}")
+    return EXIT_OK
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROG,
+        description="Restart into an existing Windows installation for games/drivers that need "
+                    "real Windows hardware. Kernel-mode anti-cheat cannot run under any Linux "
+                    "kernel or VM — this is the honest alternative, not an emulator or spoofer.")
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    sub = parser.add_subparsers(dest="command", metavar="command")
+
+    p = sub.add_parser("status", help="firmware / Secure Boot / TPM / Windows boot entries")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("reboot-to-windows", help="restart once into the existing Windows installation")
+    p.add_argument("--entry", metavar="ID", help="a specific boot entry number (efibootmgr, e.g. "
+                    "0001) or GRUB menu id, instead of the recommended one")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument("--no-reboot", action="store_true", help="set the one-shot boot choice but do "
+                    "not reboot now")
+    p.set_defaults(func=cmd_reboot_to_windows)
+
+    p = sub.add_parser("firmware-setup", help="restart into the UEFI firmware setup screen")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    p.set_defaults(func=cmd_firmware_setup)
+
+    p = sub.add_parser("shortcut", help="write a desktop shortcut for 'restart into Windows'")
+    p.set_defaults(func=cmd_shortcut)
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""lindos-transfer -- Windows Easy Transfer for Lindos (SPEC-WINDOWS §29).
+
+Thin launcher: the logic lives in the ``lindos_transfer`` package installed at
+/usr/lib/lindos-transfer (resolved relative to this file, so a checkout of the repository works
+too).  Exit codes: 0 ok, 1 error, 2 usage, 4 nothing to transfer.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+def _lib_dir() -> str:
+    """``/usr/bin/lindos-transfer`` -> ``/usr/lib/lindos-transfer`` (also valid inside the repo tree)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates = [
+        os.path.join(os.path.dirname(here), "lib", "lindos-transfer"),
+        "/usr/lib/lindos-transfer",
+        os.environ.get("LINDOS_TRANSFER_LIB", ""),
+    ]
+    for cand in candidates:
+        if cand and os.path.isdir(os.path.join(cand, "lindos_transfer")):
+            return cand
+    return "/usr/lib/lindos-transfer"
+
+
+_LIB = _lib_dir()
+if _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+try:
+    from lindos_transfer.cli import main  # noqa: E402
+except ImportError as exc:  # pragma: no cover - broken installation
+    sys.stderr.write(f"lindos-transfer: cannot load lindos_transfer from {_LIB}: {exc}\n"
+                     "Reinstall the package: apt install --reinstall lindos-transfer\n")
+    sys.exit(1)
+
+if __name__ == "__main__":
+    sys.exit(main())

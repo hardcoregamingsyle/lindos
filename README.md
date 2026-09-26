@@ -20,7 +20,10 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
 | Modes | **Everyday**, **Gaming**, **Work**, **Creator**, **Lite** — switchable any time with `lindos-mode set <id>` or in Lindos Settings. Each mode = taskbar pins, packages, services, sysctl, CPU governor, zram size, compositor. See [docs/MODES.md](docs/MODES.md). |
 | Settings | `lindos-settings`, a Windows-11-style settings centre (12 pages, Win+X power menu). Native pages for Home, Personalization, Windows apps, Gaming, Hardware, Mode and About; the rest delegate to the existing Mint/XFCE tools to keep RAM low. See [docs/SETTINGS.md](docs/SETTINGS.md). |
 | Windows programs | Double-click any `.exe`/`.msi`/`.bat`/`.lnk` → `lindos-run` picks Wine or Proton-GE (umu-launcher), creates a per-program `C:\` drive, installs, scans for new programs and puts them in the Start menu. Recipes for well-known programs (`lindos-compat recipes`), `lindos-compat doctor`. See [docs/WINDOWS-APPS.md](docs/WINDOWS-APPS.md). |
+| Every other Windows file type | `lindos-run` also opens MSIX/APPX packages and bundles (`.msix`/`.appx`/`.msixbundle`/`.appxbundle`/`.msixupload`, `.appinstaller`), `.msp` patches, `.reg` (with a preview of what it deletes), `.ps1`/`.vbs`, `.url`, `.scr`, `.cpl`, software `.inf`, `.cab`, disk images (`.iso`/`.img`, AutoPlay-style), ClickOnce, DOS programs (DOSBox-X) and 16-bit Windows programs — or explains plainly why a file can't run (ARM binaries, drivers, Store-encrypted/UWP packages). `./setup.exe` also works straight from a terminal via `binfmt_misc`. `lindos-compat winget install <id>` installs by package id, hash-verified against the publisher's own manifest over HTTPS, no override. See [docs/WINDOWS-FORMATS.md](docs/WINDOWS-FORMATS.md) and [docs/WINGET.md](docs/WINGET.md). |
+| Bring your stuff from Windows | `lindos-transfer`: a Windows-Easy-Transfer-style migration from the Windows partition on the same PC (strictly read-only, never written to) or from a "transfer folder" made by a double-click kit run on the old PC — Desktop/Documents/Pictures/etc., browser bookmarks, wallpaper, fonts, Wi-Fi networks (via your own `netsh` export, opt-in, sent to the root helper on stdin only), Steam library, and a list of your Windows programs with an honest way to get each back (apt/Flatpak, a Wine recipe, `winget`, a web-app shortcut, or "does not run on Linux" with the game route). Never touches account/security databases, DPAPI, credential/cookie stores or hibernation/page/swap files. See [docs/TRANSFER.md](docs/TRANSFER.md). |
 | Gaming | Steam (Valve repo) and Lutris on the ISO; Heroic, Prism Launcher (Minecraft), Sober (Roblox), Bottles installable in one click; GE-Proton manager (`lindos-proton`), driver installer (`lindos-drivers`), Feral GameMode + MangoHud pre-configured, gamescope wrapper, per-title profiles, controller udev rules, optional xpadneo/xone. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). |
+| Games that need Windows | For kernel-level anti-cheat that cannot run on any Linux (Valorant, League of Legends, Call of Duty, and more), `lindos-game route <title>` shows the honest way to actually play: an official cloud-streaming service where the publisher offers one (GeForce NOW, Xbox Cloud Gaming, Boosteroid, Amazon Luna), or a one-command, one-shot restart into the PC's own Windows installation (`lindos-dualboot` — a genuine UEFI/GRUB boot-once, never a VM trick and never a Windows/BCD/firmware edit). The Lindos VM is never offered for these titles. See [docs/DUALBOOT.md](docs/DUALBOOT.md) and [docs/ANTI-CHEAT.md](docs/ANTI-CHEAT.md). |
 | Kernel (optional) | `lindos-kernel`: a tuned kernel recipe with **ntsync** (Wine/Proton sync), **sched_ext** low-latency schedulers, 1000 Hz + full preempt, MGLRU and BBR, plus a runtime CLI to build, select and set its cmdline. Built on a Linux host (not Windows); the stock kernel stays as a fallback. See [docs/KERNEL.md](docs/KERNEL.md). |
 | Windows VM (optional) | `lindos-vm`: an **honest** KVM/QEMU + libvirt Windows VM (q35, OVMF/UEFI, virtio) with **optional GPU passthrough** — for the Windows software Wine/Proton cannot run. It ships **no** spoofing/hypervisor-hiding and does **not** defeat VM-blocking anti-cheat; you supply a licensed Windows. See [docs/VM.md](docs/VM.md). |
 | Windows apps over RDP (optional) | `lindos-winapps`: run individual Windows programs (Photoshop, Office) as **seamless windows** on the Lindos desktop, streamed over RDP from a Windows backend you supply. Lindos never enters your credentials or bypasses licensing. See [docs/WINAPPS.md](docs/WINAPPS.md). |
@@ -65,6 +68,19 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
   when online, otherwise falls back to Firefox and tells you how to install them later
   (Settings › Apps › Web browsers, or `lindos-browser install edge --set-default`).
 * No telemetry, no ads, no crash uploads (apport/whoopsie/kerneloops are disabled).
+* **No kernel-level anti-cheat circumvention, ever.** Lindos ships nothing that emulates, forges
+  or hides from Vanguard, Ricochet, EAC/BattlEye's kernel parts or any other kernel-mode
+  anti-cheat: no fake driver, no attestation/TPM/Secure-Boot/HVCI forger, no HWID/SMBIOS/CPUID
+  spoofing, no VM-hiding, no user-agent spoofing. None of that can produce the hardware-rooted
+  signature the anti-cheat server checks — it only gets the account **hardware-banned**. The
+  honest alternative is official cloud streaming or a one-shot restart into the PC's real Windows
+  installation (`lindos-game route`, `lindos-dualboot`) — see
+  [docs/ANTI-CHEAT.md](docs/ANTI-CHEAT.md) and [docs/DUALBOOT.md](docs/DUALBOOT.md).
+* **Transfer is read-only and never touches secrets.** `lindos-transfer` mounts a Windows volume
+  `ro` only, never writes to it, and refuses to open account/security hives, DPAPI/Credential
+  Manager/Vault data, browser password/cookie stores, or hibernation/page/swap files beyond a
+  4 KiB safety check. Wi-Fi passwords move only through your own Windows export, opt-in, over the
+  root helper's stdin — never a command line, a log, or a network call.
 
 ## Quickstart
 
@@ -87,6 +103,11 @@ lindos-compat doctor                # is Wine/Proton/Vulkan/32-bit ready?
 lindos-game install steam sober prism
 lindos-proton update                # latest GE-Proton for Steam + umu
 lindos-drivers status               # GPU driver status; 'install --nvidia-open' etc.
+lindos-run ~/Downloads/App.msix     # MSIX/APPX, .reg, .ps1, disk images and more (docs/WINDOWS-FORMATS.md)
+lindos-compat winget install 7zip.7zip   # install by winget package id, hash-verified
+lindos-transfer sources             # find a Windows partition or transfer-folder kit to migrate from
+lindos-game route valorant          # honest routes for a title that needs Windows' anti-cheat
+lindos-dualboot status              # can this PC one-shot restart into its existing Windows?
 ```
 
 ### Build it
@@ -120,25 +141,31 @@ build/               ISO remaster + .deb pipeline: build-iso.sh, mkdeb.sh, fetch
                      test-qemu.sh, docker-build.sh, Dockerfile, config.env, chroot/NN-*.sh hooks, overlay/
 packages/            one directory per .deb (DEBIAN/ + root/ + tests/):
   lindos-core        python3 module `lindos` (paths, config, modes, browsers, hardware, helper,
-                     theme, compat, ram) + polkit helper + CLIs lindos-mode/-browser/-config/-ram
+                     theme, compat, ram, dualboot, update) + polkit helper + CLIs
+                     lindos-mode/-browser/-config/-ram/-dualboot/-update
   lindos-desktop     panel, xfconf defaults, shortcuts, picom, wallpapers, plymouth, greeter,
                      branding, lindos-compositor, per-mode panel profiles
   lindos-setup       first-boot OOBE (lindos-setup)
   lindos-settings    settings centre (lindos-settings, --power-menu)
-  lindos-compat      lindos-run, lindos-compat, recipes, MIME/Thunar integration
-  lindos-gaming      lindos-proton, lindos-drivers, lindos-game, lindos-mangohud, gamemode/MangoHud
-                     configs, controller udev rules, compat-matrix.json
+  lindos-compat      lindos-run, lindos-compat, recipes, MIME/Thunar integration, the Windows
+                     format engine (MSIX/APPX, winget, DOSBox, disk images, binfmt_misc, …)
+  lindos-gaming      lindos-proton, lindos-drivers, lindos-game (incl. `route`/`play`/`cloud`),
+                     lindos-mangohud, gamemode/MangoHud configs, controller udev rules,
+                     compat-matrix.json (incl. cloud-provider/route data)
   lindos-tune        lindos-tune (status/apply/services/zram/governor/fan/power/sched/report), presets,
                      sysctl, earlyoom, journald, ananicy rules, sched_ext, ram-budget.json
   lindos-kernel      tuned kernel recipe + kconfig fragment + grub cmdline drop-in + lindos-kernel CLI
                      (compiled .deb is a build artifact, not committed); Recommended by lindos-meta
-  lindos-meta        depends on all of the above (Recommends lindos-kernel)
+  lindos-transfer    lindos-transfer / lindos-transfer-gui: Windows Easy Transfer-style migration
+                     (read-only), Windows-side kit under root/usr/share/lindos/transfer/windows/
+  lindos-meta        depends on all of the above, incl. lindos-transfer (Recommends lindos-kernel)
   lindos-vm          honest KVM/VFIO Windows VM (no spoofing) + optional GPU passthrough; lindos-vm CLI
   lindos-winapps     seamless Windows apps (Adobe/Office) over RDP; lindos-winapps CLI
 build/kernel/        build-kernel.sh (Linux host only) + config/ + patches/ — builds out/kernel/*.deb
-docs/                BUILDING · ARCHITECTURE · MODES · SETTINGS · WINDOWS-APPS · GAMING · COMPATIBILITY
-                     (generated) · KERNEL · VM · WINAPPS · DRIVERS · ANTI-CHEAT · RAM-BUDGET ·
-                     HARDWARE-CONTROL · KEYBOARD-SHORTCUTS · FAQ
+docs/                BUILDING · ARCHITECTURE · MODES · SETTINGS · UPDATES · WINDOWS-APPS ·
+                     WINDOWS-FORMATS · WINGET · TRANSFER · DUALBOOT · GAMING ·
+                     COMPATIBILITY (generated) · KERNEL · VM · WINAPPS · DRIVERS · ANTI-CHEAT ·
+                     RAM-BUDGET · HARDWARE-CONTROL · KEYBOARD-SHORTCUTS · FAQ
 tests/               run.sh (lint everything), pytest config + gi stub, gen-compat-doc.py
 out/                 build products (git-ignored)
 ```
@@ -151,8 +178,13 @@ out/                 build products (git-ignored)
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | packages, the `lindos` Python module, the polkit helper and its actions, paths, config, cross-component call map |
 | [docs/MODES.md](docs/MODES.md) | the five modes: what each one changes, `lindos-mode`, mode.json format |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | Lindos Settings pages, what is native and what delegates, the power menu |
+| [docs/UPDATES.md](docs/UPDATES.md) | `lindos-update`: the two update channels, checking vs. applying, sideloading `lindos-*.deb` files with no apt repo, self-hosting a real one |
 | [docs/WINDOWS-APPS.md](docs/WINDOWS-APPS.md) | `lindos-run`, prefixes ("C:\ drives"), runners, recipes table, `lindos-compat` |
-| [docs/GAMING.md](docs/GAMING.md) | launchers, `lindos-game`, `lindos-proton`, `lindos-drivers`, GameMode, MangoHud, gamescope, per-title profiles, controllers |
+| [docs/WINDOWS-FORMATS.md](docs/WINDOWS-FORMATS.md) | every other Windows file type `lindos-run` opens: MSIX/APPX + bundles/uploads, `.appinstaller`, `.msp`/`.reg`/`.ps1`/`.vbs`/`.url`/`.scr`/`.cpl`/`.inf`/`.cab`, disk images, ClickOnce, DOS/16-bit programs, `./setup.exe` via `binfmt_misc`, casefold, doctor checks |
+| [docs/WINGET.md](docs/WINGET.md) | `lindos-compat winget search\|show\|install`: the index/manifest hash chain, installer selection, the honest refusal list |
+| [docs/TRANSFER.md](docs/TRANSFER.md) | `lindos-transfer`: sources (partition / transfer-folder kit), what moves and what never does, the Windows-side kit, `lindos-transfer-gui` |
+| [docs/DUALBOOT.md](docs/DUALBOOT.md) | `lindos-dualboot`: one-shot restart into Windows (UEFI `BootNext` / GRUB `grub-reboot`), Secure-Boot/TPM/BitLocker checklist, per-title requirements |
+| [docs/GAMING.md](docs/GAMING.md) | launchers, `lindos-game` (incl. `route`/`play`/`cloud install`), `lindos-proton`, `lindos-drivers`, GameMode, MangoHud, gamescope, per-title profiles, controllers |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | **generated** game compatibility matrix (do not edit by hand) |
 | [docs/ANTI-CHEAT.md](docs/ANTI-CHEAT.md) | why kernel-level anti-cheat cannot run on Linux, why Lindos ships no spoofer, and what does work |
 | [docs/KERNEL.md](docs/KERNEL.md) | the tuned `lindos-kernel` (ntsync, sched_ext, 1000 Hz, MGLRU, BBR): build, install, cmdline, schedulers |

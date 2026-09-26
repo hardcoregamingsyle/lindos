@@ -1,50 +1,142 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Lindos: friendlier names and extra globs for Windows program files, so the file
-  manager says "Windows program" instead of "DOS/Windows executable" (SPEC §9).
-  Installed to /usr/share/mime/packages/, compiled by update-mime-database in postinst.
+  Lindos: MIME types for Windows files that shared-mime-info 2.4 (Ubuntu 24.04) does not know
+  (SPEC-WINDOWS §28.9).  Installed to /usr/share/mime/packages/, compiled by
+  update-mime-database in the lindos-compat postinst.
+
+  Types that already exist in shared-mime-info 2.4 are REUSED, never redefined here:
+    application/x-msdownload (alias application/x-ms-dos-executable), application/x-dosexec,
+    application/vnd.microsoft.portable-executable, application/x-ms-ne-executable  .exe .dll .scr
+    application/x-msi  .msi                  application/x-ms-shortcut  .lnk
+    application/x-bat  .bat                  application/appx / application/msix  .appx .msix
+    application/appxbundle / application/msixbundle, application/appinstaller
+    text/x-ms-regedit  .reg                  application/x-mswinurl  .url
+    application/x-powershell  .ps1           text/vbscript / text/vbscript.encode  .vbs .vbe
+    application/vnd.ms-cab-compressed  .cab (and .msu, which is a cabinet)
+    application/vnd.efi.iso (aliases application/x-cd-image, application/x-iso9660-image)  .iso
+    application/vnd.efi.img (alias application/x-raw-disk-image)  .img
+  The only addition to an existing type is the missing *.cmd glob on application/x-bat.
+  Every new type is named application/x-lindos-*; a sub-class-of line lets the file-name type
+  win over the generic content type (e.g. *.msp over "OLE2 compound document").
 -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
-  <mime-type type="application/x-ms-dos-executable">
-    <comment>Windows program</comment>
-    <comment xml:lang="de">Windows-Programm</comment>
-    <comment xml:lang="es">Programa de Windows</comment>
-    <comment xml:lang="fr">Programme Windows</comment>
-    <sub-class-of type="application/x-executable"/>
-    <generic-icon name="application-x-executable"/>
-    <glob pattern="*.exe"/>
-    <glob pattern="*.com" weight="40"/>
-    <glob pattern="*.scr" weight="40"/>
-  </mime-type>
-  <mime-type type="application/x-msi">
-    <comment>Windows program installer (MSI)</comment>
-    <comment xml:lang="de">Windows-Installationspaket (MSI)</comment>
-    <comment xml:lang="es">Instalador de programa de Windows (MSI)</comment>
-    <comment xml:lang="fr">Installateur de programme Windows (MSI)</comment>
-    <sub-class-of type="application/x-ole-storage"/>
-    <generic-icon name="package-x-generic"/>
-    <glob pattern="*.msi"/>
-    <glob pattern="*.msp" weight="40"/>
-  </mime-type>
   <mime-type type="application/x-bat">
-    <comment>Windows batch script</comment>
-    <comment xml:lang="de">Windows-Stapelverarbeitungsskript</comment>
-    <comment xml:lang="es">Script por lotes de Windows</comment>
-    <comment xml:lang="fr">Script batch Windows</comment>
-    <sub-class-of type="text/plain"/>
-    <generic-icon name="text-x-script"/>
-    <glob pattern="*.bat"/>
     <glob pattern="*.cmd"/>
   </mime-type>
-  <mime-type type="application/x-ms-shortcut">
-    <comment>Windows shortcut</comment>
-    <comment xml:lang="de">Windows-Verknüpfung</comment>
-    <comment xml:lang="es">Acceso directo de Windows</comment>
-    <comment xml:lang="fr">Raccourci Windows</comment>
-    <generic-icon name="emblem-symbolic-link"/>
-    <glob pattern="*.lnk"/>
-    <magic priority="50">
-      <match type="string" offset="0" value="L\000\000\000\001\024\002\000"/>
+
+  <mime-type type="application/x-lindos-msp">
+    <comment>Windows Installer patch (MSP)</comment>
+    <comment xml:lang="de">Windows-Installer-Patch (MSP)</comment>
+    <comment xml:lang="es">Parche de Windows Installer (MSP)</comment>
+    <comment xml:lang="fr">Correctif Windows Installer (MSP)</comment>
+    <sub-class-of type="application/x-ole-storage"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.msp"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-mst">
+    <comment>Windows Installer transform (MST)</comment>
+    <comment xml:lang="de">Windows-Installer-Transformation (MST)</comment>
+    <comment xml:lang="es">Transformación de Windows Installer (MST)</comment>
+    <comment xml:lang="fr">Transformation Windows Installer (MST)</comment>
+    <sub-class-of type="application/x-ole-storage"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.mst"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-msix-encrypted">
+    <comment>Encrypted Microsoft Store app package</comment>
+    <comment xml:lang="de">Verschlüsseltes Microsoft-Store-App-Paket</comment>
+    <comment xml:lang="es">Paquete de aplicación cifrado de Microsoft Store</comment>
+    <comment xml:lang="fr">Paquet d’application Microsoft Store chiffré</comment>
+    <generic-icon name="package-x-generic"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="EXPH"/>
+      <match type="string" offset="0" value="EXBH"/>
+      <match type="string" offset="0" value="EXSH"/>
     </magic>
+    <glob pattern="*.emsix"/>
+    <glob pattern="*.eappx"/>
+    <glob pattern="*.emsixbundle"/>
+    <glob pattern="*.eappxbundle"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-msix-upload">
+    <comment>Microsoft Store upload package (MSIX/APPX upload)</comment>
+    <comment xml:lang="de">Microsoft-Store-Upload-Paket</comment>
+    <comment xml:lang="es">Paquete de carga de Microsoft Store</comment>
+    <comment xml:lang="fr">Paquet de téléversement Microsoft Store</comment>
+    <sub-class-of type="application/zip"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.msixupload"/>
+    <glob pattern="*.appxupload"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-msixvc">
+    <comment>Xbox game package (MSIXVC)</comment>
+    <comment xml:lang="de">Xbox-Spielpaket (MSIXVC)</comment>
+    <comment xml:lang="es">Paquete de juego de Xbox (MSIXVC)</comment>
+    <comment xml:lang="fr">Paquet de jeu Xbox (MSIXVC)</comment>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.msixvc"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-cpl">
+    <comment>Windows Control Panel item</comment>
+    <comment xml:lang="de">Windows-Systemsteuerungselement</comment>
+    <comment xml:lang="es">Elemento del Panel de control de Windows</comment>
+    <comment xml:lang="fr">Élément du Panneau de configuration Windows</comment>
+    <sub-class-of type="application/x-msdownload"/>
+    <generic-icon name="application-x-executable"/>
+    <glob pattern="*.cpl" weight="60"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-clickonce">
+    <comment>ClickOnce application (Windows)</comment>
+    <comment xml:lang="de">ClickOnce-Anwendung (Windows)</comment>
+    <comment xml:lang="es">Aplicación ClickOnce (Windows)</comment>
+    <comment xml:lang="fr">Application ClickOnce (Windows)</comment>
+    <sub-class-of type="application/xml"/>
+    <generic-icon name="application-x-executable"/>
+    <glob pattern="*.application"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-appref-ms">
+    <comment>ClickOnce application shortcut (Windows)</comment>
+    <comment xml:lang="de">ClickOnce-Anwendungsverknüpfung (Windows)</comment>
+    <comment xml:lang="es">Acceso directo de aplicación ClickOnce (Windows)</comment>
+    <comment xml:lang="fr">Raccourci d’application ClickOnce (Windows)</comment>
+    <generic-icon name="application-x-executable"/>
+    <glob pattern="*.appref-ms"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-wsf">
+    <comment>Windows Script File (WSF)</comment>
+    <comment xml:lang="de">Windows-Skriptdatei (WSF)</comment>
+    <comment xml:lang="es">Archivo de Windows Script (WSF)</comment>
+    <comment xml:lang="fr">Fichier Windows Script (WSF)</comment>
+    <sub-class-of type="application/xml"/>
+    <generic-icon name="text-x-script"/>
+    <glob pattern="*.wsf"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-dos-program">
+    <comment>DOS program</comment>
+    <comment xml:lang="de">DOS-Programm</comment>
+    <comment xml:lang="es">Programa de DOS</comment>
+    <comment xml:lang="fr">Programme DOS</comment>
+    <generic-icon name="application-x-executable"/>
+    <glob pattern="*.com" weight="40"/>
+    <glob pattern="*.pif" weight="40"/>
+  </mime-type>
+
+  <mime-type type="application/x-lindos-inf">
+    <comment>Windows setup information (INF)</comment>
+    <comment xml:lang="de">Windows-Setup-Informationen (INF)</comment>
+    <comment xml:lang="es">Información de instalación de Windows (INF)</comment>
+    <comment xml:lang="fr">Informations d’installation Windows (INF)</comment>
+    <sub-class-of type="text/plain"/>
+    <generic-icon name="text-x-generic"/>
+    <glob pattern="*.inf"/>
   </mime-type>
 </mime-info>

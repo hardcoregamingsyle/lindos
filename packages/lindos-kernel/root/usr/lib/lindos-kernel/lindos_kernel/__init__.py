@@ -28,6 +28,9 @@ KERNEL_SHARE_DIR = "/usr/share/lindos/kernel"
 MANIFEST_PATH = "/usr/share/lindos/kernel/manifest.json"
 CONFIG_PATH = "/usr/share/lindos/kernel/lindos.config"
 GRUB_DROPIN = "/etc/default/grub.d/50-lindos.cfg"
+#: Secure-Boot-aware default-kernel selector (SPEC-WINDOWS §31.3) -- a *separate* drop-in from
+#: ``GRUB_DROPIN`` above (which only manages the cmdline), sorted after it by name.
+KERNEL_SELECT_DROPIN = "/etc/default/grub.d/51-lindos-kernel-select.cfg"
 
 
 def root() -> str:
@@ -74,6 +77,11 @@ def grub_dropin_path() -> str:
     return resolve(GRUB_DROPIN)
 
 
+def kernel_select_dropin_path() -> str:
+    """Resolved path of the marker-fenced GRUB default-kernel-selection drop-in."""
+    return resolve(KERNEL_SELECT_DROPIN)
+
+
 def is_linux() -> bool:
     """True on a real Linux host (build/probe actions only run there)."""
     return os.name == "posix" and _uname_sysname() == "Linux"
@@ -91,6 +99,7 @@ def _uname_sysname() -> str:
 
 __all__ = [
     "__version__", "ROOT_ENV", "HOME_ENV", "SHARE_DIR", "KERNEL_SHARE_DIR",
-    "MANIFEST_PATH", "CONFIG_PATH", "GRUB_DROPIN",
-    "root", "home", "resolve", "manifest_path", "config_path", "grub_dropin_path", "is_linux",
+    "MANIFEST_PATH", "CONFIG_PATH", "GRUB_DROPIN", "KERNEL_SELECT_DROPIN",
+    "root", "home", "resolve", "manifest_path", "config_path", "grub_dropin_path",
+    "kernel_select_dropin_path", "is_linux",
 ]

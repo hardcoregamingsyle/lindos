@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Update Notifier
+Comment=Checks for Lindos component updates (read-only, no root) and shows a toast when any are available
+Exec=/usr/libexec/lindos/lindos-update-notify.sh
+TryExec=/usr/libexec/lindos/lindos-update-notify.sh
+Icon=software-update-available
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Phase=Applications
+X-GNOME-Autostart-Delay=10
+StartupNotify=false
+X-Lindos-Component=desktop

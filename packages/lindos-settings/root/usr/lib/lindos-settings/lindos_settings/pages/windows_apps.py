@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from .. import model
-from ..widgets import HAVE_GTK, Card, InfoCard, OutputDialog, PageBase, add_class, badge, box, button, choose_file, confirm, label, run_async
+from ..widgets import HAVE_GTK, Card, InfoCard, OutputDialog, PageBase, SwitchCard, add_class, badge, box, button, choose_file, confirm, label, run_async
 
 if HAVE_GTK:  # pragma: no cover
     from gi.repository import Gtk  # type: ignore
@@ -51,6 +51,39 @@ class WindowsAppsPage(PageBase):
         self.list.add(self.empty_card)
         self.app_cards: list[Card] = []
         self.refresh()
+
+        # -- file types Lindos opens (SPEC-WINDOWS §28.2/§32)
+        fsec = self.add_section("File types Lindos opens")
+        self.formats_card = Card("Windows file types", "Checking…", ("format-justify-fill", "text-x-generic"), ("formats", "file types", "exe", "msi", "msix", "reg"))
+        self.formats_card.set_control(button("Open", "view-list-details", (), self._open_formats))
+        fsec.add(self.formats_card)
+        self._refresh_formats()
+
+        # -- run .exe from the terminal (binfmt_misc)
+        bsec = self.add_section("Run .exe from the terminal")
+        self.binfmt_card = SwitchCard("Run .exe from the terminal", "Checking…", ("utilities-terminal",), ("binfmt", "terminal", "./setup.exe"), on_toggle=self._toggle_binfmt)
+        bsec.add(self.binfmt_card)
+        self._refresh_binfmt()
+
+        # -- winget
+        wsec = self.add_section("Get apps with winget")
+        search_card = Card("Get apps with winget", "Search Microsoft's winget catalogue — every download is verified against its publisher's SHA-256 before it runs", ("system-search", "system-software-install"), ("winget", "search", "install"))
+        self.winget_entry = Gtk.SearchEntry()
+        self.winget_entry.set_placeholder_text("Search winget, e.g. 7-Zip, VS Code, Notepad++…")
+        self.winget_entry.connect("activate", lambda *_: self._winget_search())
+        self.winget_search_btn = button("Search", "edit-find", (), self._winget_search)
+        search_card.set_control(self.winget_search_btn)
+        search_card.add_body(self.winget_entry)
+        wsec.add(search_card)
+        self.winget_results = self.add_section("")
+        self.winget_placeholder = Card("Type something above and press Search", "", ("system-search",), ())
+        self.winget_results.add(self.winget_placeholder)
+
+        # -- transfer from Windows
+        tsec = self.add_section("Bring your stuff from Windows")
+        self.transfer_card = Card("Transfer from Windows…", "Copy documents, browser bookmarks, wallpaper and more from a Windows drive or a transfer folder", ("lindos-transfer", "drive-harddisk"), ("transfer", "migrate", "easy transfer"))
+        self.transfer_card.set_control(button("Open", "document-open", ("suggested-action",), self._open_transfer))
+        tsec.add(self.transfer_card)
 
     # ------------------------------------------------------------------ list
     def refresh(self) -> None:
@@ -183,6 +216,160 @@ class WindowsAppsPage(PageBase):
     def _recipes(self) -> None:
         RecipesDialog(self.app, self.backend)
 
+    # ------------------------------------------------------------------ file types (SPEC-WINDOWS §28.2/§32)
+    def _refresh_formats(self) -> None:
+        def _done(rows: Any, exc: Optional[BaseException]) -> None:
+            rows = rows or []
+            if exc:
+                self.formats_card.set_subtitle("Could not read the file-type list — is lindos-compat installed?")
+                return
+            works = sum(1 for r in rows if r["status"] == "works")
+            partial = sum(1 for r in rows if r["status"] == "partial")
+            unsupported = sum(1 for r in rows if r["status"] == "unsupported")
+            if not rows:
+                self.formats_card.set_subtitle("lindos-compat is not installed — file types open with the text editor")
+            else:
+                self.formats_card.set_subtitle(f"{len(rows)} types: {works} work, {partial} partly, {unsupported} not possible")
+            self._formats_cache = rows
+
+        self._formats_cache: list[dict[str, Any]] = []
+        run_async(self.backend.formats, _done, name="formats")
+
+    def _open_formats(self) -> None:
+        FormatsDialog(self.app, self.backend, self._formats_cache)
+
+    # ------------------------------------------------------------------ terminal .exe (binfmt_misc)
+    def _refresh_binfmt(self) -> None:
+        def _done(st: Any, exc: Optional[BaseException]) -> None:
+            st = st if isinstance(st, dict) else model.normalize_binfmt_status({})
+            self.binfmt_card.set_active_silent(bool(st.get("registered") and st.get("enabled")))
+            self.binfmt_card.set_subtitle(model.binfmt_summary(st))
+            self._binfmt_status = st
+
+        self._binfmt_status: dict[str, Any] = {}
+        run_async(self.backend.binfmt_status, _done, name="binfmt-status")
+
+    def _toggle_binfmt(self, value: bool) -> None:
+        self.binfmt_card.set_subtitle("Working… this may ask for the administrator password")
+
+        def _done(res: Any, exc: Optional[BaseException]) -> None:
+            ok = res is not None and getattr(res, "ok", False) and not exc
+            if not ok:
+                err = (getattr(res, "err", "") or getattr(res, "out", "") or str(exc or "")).strip()
+                self.toast(f"Could not {'turn on' if value else 'turn off'}: {err[:140] or 'see log'}")
+            self._refresh_binfmt()
+
+        run_async(lambda: self.backend.set_binfmt(value), _done, name="set-binfmt")
+
+    # ------------------------------------------------------------------ winget (SPEC-WINDOWS §28.10/§32)
+    def _winget_search(self) -> None:
+        query = self.winget_entry.get_text().strip()
+        self.winget_results.clear()
+        if not query:
+            self.winget_results.add(self.winget_placeholder)
+            self.winget_results.show_all()
+            return
+        if not self.backend.which("lindos-compat"):
+            self.winget_results.add(Card("lindos-compat is not installed", "Install the 'lindos-compat' package to search and install with winget.", ("dialog-warning",), ()))
+            self.winget_results.show_all()
+            return
+        self.winget_search_btn.set_sensitive(False)
+        self.winget_results.add(Card("Searching…", "", ("system-search",), ()))
+        self.winget_results.show_all()
+
+        def _done(rows: Any, exc: Optional[BaseException]) -> None:
+            self.winget_search_btn.set_sensitive(True)
+            self.winget_results.clear()
+            rows = rows or []
+            if exc:
+                self.winget_results.add(Card("Search failed", str(exc), ("dialog-error",), ()))
+            elif not rows:
+                self.winget_results.add(Card("No matches", f"Nothing in the winget catalogue matches '{query}'.", ("edit-find",), ()))
+            else:
+                for r in rows[:30]:
+                    sub = " · ".join(p for p in (r["id"], r["version"]) if p)
+                    card = Card(r["name"], sub, ("system-software-install",), (r["id"], r["name"]))
+                    card.set_control(button("Install", "document-save", (), lambda pkg=r: self._winget_install(pkg)))
+                    self.winget_results.add(card)
+            self.winget_results.show_all()
+
+        run_async(lambda: self.backend.winget_search(query), _done, name="winget-search")
+
+    def _winget_install(self, pkg: dict[str, str]) -> None:
+        if not confirm(self.app.window, f"Install {pkg['name']}?",
+                       f"Downloads '{pkg['id']}' from Microsoft's winget catalogue into a C:\\ drive. The download's "
+                       "SHA-256 is checked before anything runs; Lindos refuses if it does not match. You will see "
+                       "the package's licence in the output below.", "Install"):
+            return
+        dlg = OutputDialog(self.app.window, f"Installing {pkg['name']} (winget)", self.backend)
+        dlg.run_argv(self.backend.winget_install_argv(pkg["id"]), on_finished=lambda code: (self.refresh(), self.toast(f"{pkg['name']} installed" if code == 0 else f"{pkg['name']}: winget reported an error")))
+
+    # ------------------------------------------------------------------ transfer from Windows
+    def _open_transfer(self) -> None:
+        if not self.backend.transfer_gui_available():
+            self.toast("lindos-transfer-gui is not installed (package lindos-transfer)")
+            return
+        if self.backend.launch_transfer_gui():
+            self.toast("Opening the Transfer tool…")
+        else:
+            self.toast("Could not start the Transfer tool")
+
+    def on_show(self) -> None:
+        # binfmt state (and a conflicting registration) can change outside Lindos Settings
+        self._refresh_binfmt()
+
+
+class FormatsDialog:
+    """Lists every Windows file type ``lindos-run`` opens (or honestly explains why not),
+    from ``lindos-compat formats --json`` (SPEC-WINDOWS §28.2)."""
+
+    def __init__(self, app: Any, backend: Any, rows: List[Dict[str, Any]]):
+        self.dialog = Gtk.Dialog(title="File types Lindos opens", transient_for=app.window, modal=False)
+        self.dialog.set_default_size(760, 560)
+        add_class(self.dialog, "formats-dialog")
+        area = self.dialog.get_content_area()
+        area.set_spacing(6)
+        area.set_margin_top(10)
+        area.set_margin_start(12)
+        area.set_margin_end(12)
+        area.pack_start(label("Status is honest: 'Works' runs well, 'Partial' has known limits, 'Not possible' is explained "
+                              "(a driver, a Store-DRM package, an ARM build …) rather than tried and silently failing.",
+                              ("dim-label",), wrap=True), False, False, 0)
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Filter file types…")
+        area.pack_start(search, False, False, 0)
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.listbox = Gtk.ListBox()
+        self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        add_class(self.listbox, "settings-cards")
+        sw.add(self.listbox)
+        area.pack_start(sw, True, True, 0)
+        self.dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.dialog.connect("response", lambda d, *_: d.destroy())
+        self.rows: list[tuple[Any, str]] = []
+        if not rows:
+            self.listbox.add(Card("No file-type data", "lindos-compat is not installed, or has not reported yet.", ("dialog-warning",)).row)
+        for r in rows:
+            row = self._row(r)
+            self.listbox.add(row)
+            self.rows.append((row, " ".join([r["label"], r["status"], r["note"], *r["suffixes"]]).lower()))
+        search.connect("search-changed", self._filter)
+        self.dialog.show_all()
+
+    def _row(self, r: Dict[str, Any]) -> Any:
+        suffixes = " ".join(r["suffixes"])
+        card = Card(r["label"], f"{suffixes}  —  {r['note']}" if suffixes else r["note"], ("application-x-executable",), (r["status"],))
+        card.add_control(badge(r["status"]))
+        return card.row
+
+    def _filter(self, entry: Any) -> None:
+        q = model.normalize_query(entry.get_text())
+        for row, text in self.rows:
+            ok = model.text_matches(text, q)
+            row.set_no_show_all(not ok)
+            row.set_visible(ok)
+
 
 class RecipesDialog:
     """Lists /usr/share/lindos/recipes/*.json with status badges; Apply → lindos-compat recipes apply."""
@@ -238,4 +425,4 @@ class RecipesDialog:
         out.run_argv(["lindos-compat", "recipes", "apply", rec["id"]])
 
 
-__all__ = ["WindowsAppsPage", "RecipesDialog"]
+__all__ = ["WindowsAppsPage", "RecipesDialog", "FormatsDialog"]

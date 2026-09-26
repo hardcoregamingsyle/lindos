@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Disk Image AutoPlay (Lindos)
+GenericName=Disk image opener
+Comment=Open a disk image (.iso, .img) like a DVD drive - read-only - and offer to run its setup program, like Windows AutoPlay
+Exec=lindos-run %f
+TryExec=lindos-run
+Icon=media-optical
+Terminal=false
+NoDisplay=true
+StartupNotify=true
+MimeType=application/vnd.efi.iso;application/x-cd-image;application/x-iso9660-image;application/vnd.efi.img;application/x-raw-disk-image;
+Categories=Utility;X-Lindos;
+Keywords=ISO;IMG;disk image;DVD;mount;AutoPlay;setup;
+X-Lindos-Component=compat

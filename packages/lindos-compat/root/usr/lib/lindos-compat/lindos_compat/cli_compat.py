@@ -15,30 +15,48 @@ Sub-commands::
     lindos-compat install-dxvk  <slug> [--tag T] [--arch win64|win32] [--uninstall] [--no-verify] [--dry-run] [--json]
     lindos-compat install-vkd3d <slug> [--tag T] [--arch win64|win32] [--uninstall] [--no-verify] [--dry-run] [--json]
     lindos-compat proton list|update|remove ...      (delegates to lindos-proton)
+    lindos-compat formats [--json]                              (SPEC-WINDOWS §28.3)
+    lindos-compat binfmt status|enable|disable [--json]         (§28.7; enable/disable via the helper)
+    lindos-compat winget search <query> [--json] [--limit N]    (§28.10)
+    lindos-compat winget show <PackageIdentifier> [--version V] [--json]
+    lindos-compat winget install <PackageIdentifier> [--version V] [--arch x64|x86] [--prefix NAME]
+                                 [--interactive] [--accept-package-agreements] [--dry-run] [--json]
+    lindos-compat winget list [--json]
+    lindos-compat winget update-index [--json]
 
-Exit codes: 0 ok · 1 error · 2 usage.
+Exit codes: 0 ok · 1 error · 2 usage · 3 unsupported, explained (a Store id, a web app, an http://
+download; or the helper cannot change terminal .exe support on this system).
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import shlex
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Sequence
+from types import ModuleType
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from . import __version__, get_logger
 from .doctor import format_report, run_doctor
 from .installers import UMU_VERSION, install_bottles, install_dxvk, install_umu, install_vkd3d
 from .prefix import list_prefixes, open_prefix, prefix_path, remove_prefix, run_winecfg
 from .recipes import STATUSES, STATUS_LABEL, STATUS_MARK, apply_recipe, format_recipe, get_recipe, load_recipes
+from . import winget
 
-__all__ = ["EXIT_OK", "EXIT_ERROR", "EXIT_USAGE", "build_parser", "main"]
+__all__ = ["EXIT_OK", "EXIT_ERROR", "EXIT_USAGE", "EXIT_UNSUPPORTED", "build_parser", "main", "helper_command",
+           "winget_show_data"]
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+EXIT_UNSUPPORTED = 3
+
+#: Canonical path of the privileged helper, as printed in "run this yourself" hints.
+HELPER_PATH = "/usr/libexec/lindos/lindos-helper"
 
 log = get_logger("lindos-compat")
 
@@ -135,6 +153,45 @@ def build_parser() -> argparse.ArgumentParser:
     pt = sub.add_parser("proton", help="Proton-GE builds: list | update | remove <tag> (via lindos-proton)",
                         add_help=False)
     pt.add_argument("proton_args", nargs=argparse.REMAINDER)
+
+    fm = sub.add_parser("formats", help="the Windows file types Lindos opens, and how well each works")
+    fm.add_argument("--json", action="store_true")
+
+    bf = sub.add_parser("binfmt", help="run .exe files straight from a terminal (./setup.exe): "
+                                       "status | enable | disable")
+    bfs = bf.add_subparsers(dest="sub", metavar="ACTION")
+    for action, text in (("status", "is ./program.exe in a terminal handled by Lindos?"),
+                         ("enable", "turn it on (asks for your password)"),
+                         ("disable", "turn it off (asks for your password)")):
+        a = bfs.add_parser(action, help=text)
+        a.add_argument("--json", action="store_true")
+
+    wg = sub.add_parser("winget", help="find and install Windows programs from Microsoft's winget catalogue "
+                                       "(every download is checked against its SHA-256)")
+    wgs = wg.add_subparsers(dest="sub", metavar="ACTION")
+    a = wgs.add_parser("search", help="search the catalogue by name, id, command or tag")
+    a.add_argument("query", nargs="+")
+    a.add_argument("--limit", type=int, default=20, metavar="N", help="at most N results (default 20)")
+    a.add_argument("--json", action="store_true")
+    a = wgs.add_parser("show", help="details of one package (licence, installers, which one Lindos would use)")
+    a.add_argument("id", metavar="PackageIdentifier")
+    a.add_argument("--version", dest="pkg_version", metavar="V", help="a specific version (default: newest)")
+    a.add_argument("--json", action="store_true")
+    a = wgs.add_parser("install", help="download (hash-checked) and install a package into a C:\\ drive")
+    a.add_argument("id", metavar="PackageIdentifier")
+    a.add_argument("--version", dest="pkg_version", metavar="V", help="a specific version (default: newest)")
+    a.add_argument("--arch", choices=("x64", "x86"), help="installer architecture (default: the best available)")
+    a.add_argument("--prefix", metavar="NAME", help="the C:\\ drive to install into (default: the program's own)")
+    a.add_argument("--interactive", action="store_true",
+                   help="show the installer's own windows instead of installing silently")
+    a.add_argument("--accept-package-agreements", action="store_true",
+                   help="agree to the package's licence terms without being asked")
+    a.add_argument("--dry-run", action="store_true", help="show what would happen; download and run nothing")
+    a.add_argument("--json", action="store_true")
+    a = wgs.add_parser("list", help="packages installed with 'lindos-compat winget install'")
+    a.add_argument("--json", action="store_true")
+    a = wgs.add_parser("update-index", help="refresh the catalogue index now")
+    a.add_argument("--json", action="store_true")
     return p
 
 
@@ -318,6 +375,372 @@ def cmd_proton(ns: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# formats / binfmt (SPEC-WINDOWS §28.3, §28.7)
+# ---------------------------------------------------------------------------
+
+_FORMAT_MARKS = {"works": OK_MARK, "partial": "~", "unsupported": BAD_MARK}
+_FORMAT_ORDER = ("works", "partial", "unsupported")
+
+
+def _sibling(name: str) -> ModuleType:
+    """Import ``lindos_compat.<name>`` lazily (a missing optional module only breaks its own command)."""
+    return importlib.import_module(f".{name}", __package__)
+
+
+def _suffix_text(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(v) for v in value)
+    return str(value or "")
+
+
+def cmd_formats(ns: argparse.Namespace) -> int:
+    try:
+        rows = [dict(r) for r in _sibling("formats").formats_table()]
+    except ImportError as exc:
+        log.error("The Windows file-type table is not available (%s). Reinstall lindos-compat.", exc)
+        return EXIT_ERROR
+    if ns.json:
+        _print_json(rows)
+        return EXIT_OK
+    print(f"Windows file types Lindos opens ({OK_MARK} works, ~ partly, {BAD_MARK} not possible - with the reason):")
+    width = max([len(str(r.get("label", r.get("id", "")))) for r in rows] + [10])
+    ext_width = min(max([len(_suffix_text(r.get("suffixes"))) for r in rows] + [10]), 32)
+
+    def rank(row: Dict[str, object]) -> int:
+        status = str(row.get("status", ""))
+        return _FORMAT_ORDER.index(status) if status in _FORMAT_ORDER else len(_FORMAT_ORDER)
+
+    for row in sorted(rows, key=rank):
+        mark = _FORMAT_MARKS.get(str(row.get("status", "")), "?")
+        label = str(row.get("label", row.get("id", "")))
+        exts = _suffix_text(row.get("suffixes"))
+        print(f" {mark} {label:<{width}}  {exts:<{ext_width}}  {row.get('note', '')}")
+    return EXIT_OK
+
+
+def helper_command(action: str, payload: Dict[str, object]) -> str:
+    """The exact command a user can run themselves when the helper cannot be reached."""
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return f"pkexec {HELPER_PATH} {action} {shlex.quote(body)}"
+
+
+def _format_binfmt(st: Dict[str, object]) -> str:
+    registered = bool(st.get("registered"))
+    enabled = bool(st.get("enabled"))
+    if registered and enabled:
+        state = "on - ./program.exe in a terminal opens through Lindos"
+    elif st.get("masked"):
+        state = "off (turned off with 'lindos-compat binfmt disable')"
+    elif registered:
+        state = "off (registered but disabled)"
+    else:
+        state = "off"
+    lines = [f"Run .exe files from a terminal: {state}"]
+    if st.get("interpreter"):
+        lines.append(f"  handler: {st['interpreter']}")
+    conflicts = st.get("conflicts")
+    for item in conflicts if isinstance(conflicts, list) else []:
+        if isinstance(item, dict):
+            lines.append(f"  also registered for Windows programs: {item.get('name', '?')} -> "
+                         f"{item.get('interpreter', '?')} (Lindos does not change it)")
+    if st.get("note"):
+        lines.append(f"  {st['note']}")
+    lines.append("  Turn on: lindos-compat binfmt enable    Turn off: lindos-compat binfmt disable")
+    return "\n".join(lines)
+
+
+def _set_binfmt(enabled: bool) -> Dict[str, object]:
+    """Ask the privileged helper (action ``set-binfmt``) to turn terminal .exe support on or off."""
+    payload: Dict[str, object] = {"enabled": enabled}
+    command = helper_command("set-binfmt", payload)
+    unavailable: Dict[str, object] = {
+        "ok": False, "code": 127, "command": command,
+        "message": "The Lindos helper cannot do this on this system. Run this command yourself:\n  " + command,
+    }
+    try:
+        helper = importlib.import_module("lindos.helper")
+    except ImportError:
+        return unavailable
+    if "set-binfmt" not in list(getattr(helper, "ACTIONS", [])):
+        return unavailable
+    try:
+        res = helper.run_privileged("set-binfmt", payload)
+    except Exception as exc:  # noqa: BLE001 - report, never crash the CLI
+        out = dict(unavailable)
+        out["message"] = f"The Lindos helper failed ({exc}). Run this command yourself:\n  {command}"
+        return out
+    code = int(getattr(res, "code", 1))
+    if getattr(res, "ok", False):
+        return {"ok": True, "code": 0, "message": "Turned on." if enabled else "Turned off."}
+    if code == 127:
+        return unavailable
+    if code == 126:
+        return {"ok": False, "code": 126, "message": "Cancelled - the administrator password was not given."}
+    detail = getattr(res, "message", "") or f"exit code {code}"
+    return {"ok": False, "code": code, "command": command, "message": f"The change failed: {detail}"}
+
+
+def cmd_binfmt(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if ns.sub not in ("status", "enable", "disable"):
+        parser.parse_args(["binfmt", "--help"])
+        return EXIT_USAGE
+    try:
+        binfmt = _sibling("binfmt")
+    except ImportError as exc:
+        log.error("Terminal .exe support is not available (%s). Reinstall lindos-compat.", exc)
+        return EXIT_ERROR
+    if ns.sub == "status":
+        st = dict(binfmt.status())
+        if ns.json:
+            _print_json(st)
+        else:
+            print(_format_binfmt(st))
+        return EXIT_OK
+    res = _set_binfmt(ns.sub == "enable")
+    res["action"] = ns.sub
+    try:
+        res["status"] = dict(binfmt.status())
+    except Exception as exc:  # noqa: BLE001 - the status is informative only
+        log.debug("binfmt status failed: %s", exc)
+    if ns.json:
+        _print_json(res)
+    else:
+        print(res["message"])
+        status = res.get("status")
+        if isinstance(status, dict):
+            print(_format_binfmt(status))
+    if res.get("ok"):
+        return EXIT_OK
+    return EXIT_UNSUPPORTED if res.get("code") == 127 else EXIT_ERROR
+
+
+# ---------------------------------------------------------------------------
+# winget (SPEC-WINDOWS §28.10)
+# ---------------------------------------------------------------------------
+
+
+def _ask(question: str, default: bool = False) -> bool:
+    """Yes/no question on the terminal (False when there is no terminal)."""
+    if not sys.stdin.isatty():
+        return False
+    suffix = " [Y/n] " if default else " [y/N] "
+    try:
+        answer = input(question + suffix)
+    except EOFError:
+        return False
+    answer = answer.strip().lower()
+    if not answer:
+        return default
+    return answer in ("y", "yes")
+
+
+def _stderr_target() -> Any:
+    try:
+        return sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):
+        return subprocess.DEVNULL
+
+
+def _run_lindos_quiet(argv: List[str], env: Dict[str, str]) -> int:
+    """lindos-run with its output on stderr (keeps ``--json`` output on stdout clean)."""
+    try:
+        return subprocess.run(argv, env=env, stdout=_stderr_target(), check=False).returncode
+    except OSError as exc:
+        log.error("cannot start %s: %s", argv[0], exc)
+        return 127
+
+
+def _same_installer(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    keys = ("InstallerUrl", "Architecture", "BaseInstallerType", "Scope", "InstallerLocale")
+    return all(a.get(k) == b.get(k) for k in keys)
+
+
+def winget_show_data(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """What ``winget show --json`` prints: summary, every effective installer, Lindos' choice."""
+    installers = winget.effective_installers(manifest)
+    agreements = manifest.get("Agreements")
+    data: Dict[str, Any] = {
+        "id": manifest.get("PackageIdentifier", ""),
+        "version": manifest.get("PackageVersion", ""),
+        "name": manifest.get("PackageName", ""),
+        "publisher": manifest.get("Publisher", ""),
+        "description": manifest.get("ShortDescription") or manifest.get("Description") or "",
+        "homepage": manifest.get("PackageUrl") or manifest.get("PublisherUrl") or "",
+        "license": manifest.get("License", ""),
+        "license_url": manifest.get("LicenseUrl", ""),
+        "agreements": agreements if isinstance(agreements, list) else [],
+        "source": manifest.get("LindosSource", {}),
+        "installers": installers,
+        "selected": None,
+        "selection_error": "",
+        "notes": [],
+        "manifest": manifest,
+    }
+    try:
+        chosen = winget.select_installer(manifest)
+    except winget.WingetError as exc:
+        data["selection_error"] = str(exc)
+        return data
+    data["selected"] = next((i for i, inst in enumerate(installers) if _same_installer(inst, chosen)), None)
+    data["notes"] = winget.installer_notes(manifest, chosen)
+    return data
+
+
+def _print_winget_show(data: Dict[str, Any]) -> None:
+    print(f"{data['name'] or data['id']} {data['version']}  ({data['id']})")
+    for label, key in (("Publisher", "publisher"), ("About", "description"), ("Homepage", "homepage")):
+        text = str(data.get(key) or "").strip()
+        if text:
+            print(f"  {label + ':':<11}{text.splitlines()[0]}")
+    lic = " - ".join(str(x) for x in (data.get("license"), data.get("license_url")) if x)
+    if lic:
+        print(f"  {'Licence:':<11}{lic}")
+    for item in data.get("agreements") or []:
+        if isinstance(item, dict):
+            label = str(item.get("AgreementLabel") or "Agreement") + ":"
+            print(f"  {label:<11}{item.get('AgreementUrl') or str(item.get('Agreement', ''))[:200]}")
+    source = data.get("source")
+    if isinstance(source, dict) and source.get("channel"):
+        where = "Microsoft's winget CDN" if source["channel"] == "cdn" else "GitHub (microsoft/winget-pkgs)"
+        print(f"  {'Source:':<11}{where}, checked by hash ({source.get('chain', '')})")
+    print("  Installers:")
+    for i, inst in enumerate(data["installers"]):
+        mark = "->" if data["selected"] == i else "  "
+        kind = str(inst.get("EffectiveInstallerType", ""))
+        if inst.get("BaseInstallerType") == "zip":
+            kind = f"zip/{kind}"
+        print(f"   {mark} {str(inst.get('Architecture', '?')):<8}{kind:<17}{str(inst.get('Scope') or '-'):<9}"
+              f"{str(inst.get('InstallerLocale') or ''):<7}{inst.get('InstallerUrl', '')}")
+    if data["selected"] is not None:
+        print("   (-> is the one Lindos would use)")
+    if data["selection_error"]:
+        print(data["selection_error"])
+    for note in data["notes"]:
+        print(f"  Note: {note}")
+    if data["selected"] is not None:
+        print(f"\nInstall it:  lindos-compat winget install {data['id']}")
+
+
+def _print_install_result(res: Dict[str, Any]) -> None:
+    if res.get("status") == "dry-run":
+        print(winget.format_plan(res))
+        if res.get("argv"):
+            print("Would run:  " + " ".join(shlex.quote(str(a)) for a in res["argv"]))
+        print(res.get("message", ""))
+        return
+    print(res.get("message", ""))
+    for dep in res.get("dependency_results") or []:
+        if isinstance(dep, dict):
+            print(f"  dependency {dep.get('id', '')}: {dep.get('status', '')}")
+    if res.get("apps"):
+        print("Added to the Start Menu / Lindos Settings > Windows apps: " + ", ".join(res["apps"]))
+
+
+def _winget_search(ns: argparse.Namespace) -> int:
+    if ns.limit < 1 or ns.limit > 1000:
+        log.error("--limit must be between 1 and 1000")
+        return EXIT_USAGE
+    query = " ".join(ns.query)
+    results = winget.search(query, limit=ns.limit)
+    if ns.json:
+        _print_json(results)
+        return EXIT_OK
+    if not results:
+        print(f"No package matches '{query}'.")
+        return EXIT_OK
+    nw = min(max(len(r["name"]) for r in results), 40)
+    iw = min(max(len(r["id"]) for r in results), 45)
+    print(f"{'Name':<{nw}}  {'Id':<{iw}}  {'Version':<16} Match")
+    for r in results:
+        print(f"{r['name'][:nw]:<{nw}}  {r['id']:<{iw}}  {r['version'][:16]:<16} {r['match']}")
+    print("\nDetails: lindos-compat winget show <Id>   |   Install: lindos-compat winget install <Id>")
+    return EXIT_OK
+
+
+def _winget_install(ns: argparse.Namespace) -> int:
+    say: Callable[[str], None] = (lambda text: print(text, file=sys.stderr)) if ns.json else print
+    kwargs: Dict[str, Any] = {
+        "version": ns.pkg_version, "arch": ns.arch, "prefix": ns.prefix, "interactive": ns.interactive,
+        "accept_package_agreements": ns.accept_package_agreements, "dry_run": ns.dry_run, "out": say,
+    }
+    if sys.stdin.isatty() and not ns.json:
+        kwargs["confirm"] = _ask
+    if ns.json:
+        kwargs["run_lindos"] = _run_lindos_quiet
+    res = winget.install(ns.id, **kwargs)
+    if ns.json:
+        _print_json(res)
+    else:
+        _print_install_result(res)
+    if res.get("ok"):
+        return EXIT_OK
+    return EXIT_UNSUPPORTED if res.get("status") == "unsupported" else EXIT_ERROR
+
+
+def _winget_list(ns: argparse.Namespace) -> int:
+    items = winget.list_installed()
+    if ns.json:
+        _print_json(items)
+        return EXIT_OK
+    if not items:
+        print("Nothing installed with 'lindos-compat winget install' yet.")
+        return EXIT_OK
+    for it in items:
+        newer = f"   (newer version: {it['latest']})" if it.get("update_available") else ""
+        print(f" {it['name'] or it['id']} {it['version']}  [{it['id']}]  C:\\ drive: {it['prefix']}{newer}")
+    return EXIT_OK
+
+
+def _winget_update_index(ns: argparse.Namespace) -> int:
+    con = winget.load_index(max_age_s=0)
+    try:
+        info = winget.index_info(con)
+    finally:
+        con.close()
+    if ns.json:
+        _print_json(info)
+    else:
+        published = f" (published {info['last_modified']})" if info.get("last_modified") else ""
+        print(f"The winget catalogue index is up to date: {info['packages']} packages{published}.")
+    return EXIT_OK
+
+
+def _winget_show(ns: argparse.Namespace) -> int:
+    data = winget_show_data(winget.load_manifest(ns.id, ns.pkg_version))
+    if ns.json:
+        _print_json(data)
+    else:
+        _print_winget_show(data)
+    return EXIT_OK
+
+
+def cmd_winget(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    handlers: Dict[str, Callable[[argparse.Namespace], int]] = {
+        "search": _winget_search,
+        "show": _winget_show,
+        "install": _winget_install,
+        "list": _winget_list,
+        "update-index": _winget_update_index,
+    }
+    handler = handlers.get(str(ns.sub))
+    if handler is None:
+        parser.parse_args(["winget", "--help"])
+        return EXIT_USAGE
+    try:
+        return handler(ns)
+    except winget.WingetError as exc:
+        status = "unsupported" if isinstance(exc, winget.WingetUnsupported) else "error"
+        if getattr(ns, "json", False):
+            _print_json({"ok": False, "status": status, "error": str(exc)})
+        else:
+            log.error("%s", exc)
+        return int(getattr(exc, "exit_code", EXIT_ERROR))
+    except OSError as exc:
+        log.error("%s", exc)
+        return EXIT_ERROR
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -347,6 +770,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return cmd_install_component(ns, "vkd3d")
         if ns.cmd == "proton":
             return cmd_proton(ns)
+        if ns.cmd == "formats":
+            return cmd_formats(ns)
+        if ns.cmd == "binfmt":
+            return cmd_binfmt(ns, parser)
+        if ns.cmd == "winget":
+            return cmd_winget(ns, parser)
     except KeyboardInterrupt:
         log.error("interrupted")
         return EXIT_ERROR

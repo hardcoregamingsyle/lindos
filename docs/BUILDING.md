@@ -2,9 +2,10 @@
 
 Two products come out of this repository:
 
-1. **eleven `.deb` packages** (`out/debs/lindos-*_1.0.0_all.deb`) — installable on any Linux
-   Mint 22.x XFCE / Ubuntu 24.04 system (the eight core packages, `lindos-kernel`, and the opt-in
-   `lindos-vm` / `lindos-winapps` from Addendum V);
+1. **twelve `.deb` packages** (`out/debs/lindos-*_1.0.0_all.deb`) — installable on any Linux
+   Mint 22.x XFCE / Ubuntu 24.04 system (the nine packages `lindos-meta` Depends on, including
+   `lindos-transfer` from Addendum W, plus `lindos-kernel`, and the opt-in `lindos-vm` /
+   `lindos-winapps` from Addendum V);
 2. **the ISO** (`out/lindos-1.0.0-xfce-64bit.iso`) — Linux Mint 22.2 XFCE remastered with those
    packages, the Lindos theme assets, the base tune, Wine and Steam pre-installed.
 
@@ -141,7 +142,7 @@ eltorito-report.txt,mkisofs-opts.txt}`.
 | `DEBLOAT_PURGE` | `hexchat rhythmbox hypnotix onboard gnome-calendar` | 10-debloat.sh purge list (absent packages skipped) |
 | `DEBLOAT_DISABLE_SERVICES` | `bluetooth.service ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service speech-dispatcher.service NetworkManager-wait-online.service` | 10-debloat.sh: disabled, never purged |
 | `EXTRA_PACKAGES` | *(empty)* | appended to 20-base.sh's required list |
-| `LINDOS_DEB_ORDER` | `lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-setup lindos-settings lindos-meta` | 30-lindos-debs.sh |
+| `LINDOS_DEB_ORDER` | `lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-meta` | 30-lindos-debs.sh (`lindos-transfer` installs before `lindos-setup` so the OOBE's transfer page can call it, SPEC-WINDOWS §33) |
 | `INSTALL_MODE_PACKAGES` | `1` | 30-lindos-debs.sh: also apt-install `modes/${TUNE_MODE}/mode.json` packages (best effort) |
 | `PLYMOUTH_THEME` | `lindos` | 40-theme.sh |
 | `TUNE_MODE` | `everyday` | 50-tune.sh: `lindos-tune apply --mode ${TUNE_MODE} --system --offline` |

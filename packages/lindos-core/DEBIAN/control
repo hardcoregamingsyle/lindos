@@ -5,17 +5,33 @@ Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
 Depends: python3 (>= 3.10), policykit-1 | polkitd, pkexec, xdg-utils, ca-certificates, curl | wget, gpg
-Recommends: xfconf, flatpak, procps, systemd, lindos-tune
+Recommends: xfconf, flatpak, procps, systemd, lindos-tune, efibootmgr, mokutil, libnotify-bin
 Suggests: lindos-desktop, lindos-settings, lindos-setup
 Homepage: https://lindos.dev
 Description: Lindos core library, privileged helper and command-line tools
  Lindos is a remaster of Linux Mint XFCE with a Windows-11-style desktop.
  This package ships the pure-Python 'lindos' module (paths, config, modes,
- browsers, hardware, helper client, theme, compat, ram), the polkit-guarded
- helper /usr/libexec/lindos/lindos-helper, the vendor browser installer
- (Edge/Chrome are downloaded from Microsoft's/Google's apt repositories at
- setup time — their licences forbid shipping them on the ISO; Firefox is
- Mint's .deb), the five mode definitions under /usr/share/lindos/modes and
- the CLIs lindos-mode, lindos-browser, lindos-config and lindos-ram.
+ browsers, hardware, helper client, theme, compat, ram, dualboot, update), the
+ polkit-guarded helper /usr/libexec/lindos/lindos-helper, the vendor browser
+ installer (Edge/Chrome are downloaded from Microsoft's/Google's apt
+ repositories at setup time — their licences forbid shipping them on the ISO;
+ Firefox is Mint's .deb), the five mode definitions under
+ /usr/share/lindos/modes and the CLIs lindos-mode, lindos-browser,
+ lindos-config, lindos-ram, lindos-dualboot and lindos-update, plus the
+ read-only lindos-update-notify.sh (login/6-hourly systemd --user timer
+ toast when a Lindos component update is available; lindos-desktop ships
+ the autostart entry that starts it on login).
+ .
+ lindos-dualboot restarts the PC once into an existing Windows installation
+ (UEFI one-shot boot, or GRUB's one-shot boot on BIOS systems) for games and
+ drivers that need a real Windows kernel — never an emulator, spoofer or VM
+ trick, and it never edits Windows, BCD or firmware settings.
+ .
+ lindos-update checks for and applies updates to Lindos's own lindos-*
+ packages: from a real signed apt repository once one is configured
+ (LINDOS_APT_REPO_URL), or by sideloading local .deb files today. It never
+ touches the base system, which Mint's own Update Manager already updates.
+ apt/dpkg are always present on a Debian/Ubuntu system (Priority: required/
+ important), so no extra Depends are needed for this.
  .
  No GTK dependency: the graphical parts live in lindos-setup / lindos-settings.

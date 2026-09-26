@@ -11,14 +11,33 @@ Usage:
                                                      /usr/libexec/lindos/install-gaming.sh as root.
   lindos-game launch  <id>                           start a launcher (offers to install it when missing)
 
+  lindos-game route <title|exe|appid> [--json] [--region CC]
+                                                     honest routes for a game Lindos/Linux may not run
+                                                     (SPEC-WINDOWS §30): official cloud streaming, a
+                                                     one-click restart into Windows — never the Lindos VM
+                                                     for anti-cheat-blocked titles, and never a spoofer.
+  lindos-game play <title> [--route cloud|windows|proton|native] [--provider ID] [--region CC] [--yes]
+                                                     play through the best (or chosen) route
+  lindos-game shortcut <title> --route cloud|windows [--provider ID] [--region CC]
+                                                     write ~/.local/share/applications/lindos-play-<id>-<route>.desktop
+  lindos-game cloud install geforce-now [--system] [--print] [--json]
+                                                     install NVIDIA's official Linux Flatpak (own remote,
+                                                     not Flathub) via the lindos helper when it can, else
+                                                     print the exact flatpak commands
+
 Ids: steam lutris heroic prism sober vinegar mcpelauncher bottles all
 The launcher catalogue lives in /usr/share/lindos/gaming/launchers.json and is
-shared with Lindos Settings → Gaming.
+shared with Lindos Settings → Gaming. The play-anywhere routes live in
+/usr/share/lindos/compat-matrix.json ("cloud_providers" + per-entry "routes").
 
 Honesty notes shipped in the catalogue: Roblox runs through Sober (a community
 Linux client, not Roblox's Windows client); Minecraft Bedrock through the
 unofficial mcpelauncher; Steam games depend on the developer enabling anti-cheat
-for Proton (see areweanticheatyet.com / protondb.com).
+for Proton (see areweanticheatyet.com / protondb.com). Cloud routes point only at
+providers' official apps/pages; "restart into Windows" only ever boots a Windows
+Boot Manager entry the firmware already has (via lindos-dualboot); the Lindos VM
+is never offered for an anti-cheat-blocked title (VAN 9100, EOS "no VMs", Bungie's
+VM ban, EA Javelin) — see docs/ANTI-CHEAT.md.
 
 Exit codes: 0 ok · 1 error · 2 usage · 3 offline (from the installer).
 """
@@ -28,11 +47,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 LOG = logging.getLogger("lindos-game")
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_OFFLINE = 0, 1, 2, 3
@@ -40,6 +60,8 @@ EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_OFFLINE = 0, 1, 2, 3
 CATALOGUE_REL = "usr/share/lindos/gaming/launchers.json"
 INSTALLER_REL = "usr/libexec/lindos/install-gaming.sh"
 GAMESCOPE_REL = "usr/bin/lindos-gamescope"
+MATRIX_REL = "usr/share/lindos/compat-matrix.json"
+PROFILES_REL = "usr/share/lindos/gaming/profiles"
 
 
 def system_root() -> Path:
@@ -78,6 +100,66 @@ def gamescope_path() -> Path:
         return p
     sibling = Path(__file__).resolve().parent / "lindos-gamescope"
     return sibling if sibling.exists() else p
+
+
+def matrix_path() -> Path:
+    """/usr/share/lindos/compat-matrix.json (LINDOS_ROOT-aware, repo-relative fallback for dev)."""
+    p = system_root() / MATRIX_REL
+    if p.exists():
+        return p
+    here = Path(__file__).resolve()
+    for base in (here.parent.parent, here.parent.parent.parent):   # …/usr/bin → …/usr ; …/root
+        cand = base / "share" / "lindos" / "compat-matrix.json"
+        if cand.exists():
+            return cand
+        cand = base / MATRIX_REL
+        if cand.exists():
+            return cand
+    return p
+
+
+def profiles_dir() -> Path:
+    """/usr/share/lindos/gaming/profiles (LINDOS_ROOT-aware, repo-relative fallback for dev)."""
+    p = system_root() / PROFILES_REL
+    if p.is_dir():
+        return p
+    here = Path(__file__).resolve()
+    for base in (here.parent.parent, here.parent.parent.parent):
+        cand = base / "share" / "lindos" / "gaming" / "profiles"
+        if cand.is_dir():
+            return cand
+        cand = base / PROFILES_REL
+        if cand.is_dir():
+            return cand
+    return p
+
+
+def load_matrix(path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load compat-matrix.json (SPEC-WINDOWS §30.1: 'entries' + 'cloud_providers')."""
+    path = path or matrix_path()
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise ValueError(f"{path}: expected an object with an 'entries' list")
+    data.setdefault("cloud_providers", {})
+    return data
+
+
+def load_profiles(path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load every per-title profile JSON (best-effort; a broken profile is skipped, not fatal)."""
+    d = path or profiles_dir()
+    out: List[Dict[str, Any]] = []
+    if not d.is_dir():
+        return out
+    for f in sorted(d.glob("*.json")):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.append(data)
+    return out
 
 
 def wrap_gamescope(cmd: list[str], spec: Optional[str]) -> list[str]:
@@ -375,6 +457,658 @@ def cmd_launch(args: argparse.Namespace, launchers: list[dict]) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# play-anywhere: honest routes for games Linux cannot run (SPEC-WINDOWS §30)
+# --------------------------------------------------------------------------- #
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(title: str) -> str:
+    return _SLUG_RE.sub("-", title.strip().lower()).strip("-") or "game"
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").strip().casefold().split())
+
+
+def find_matrix_entry(entries: list[dict], query: str) -> Optional[dict]:
+    """Exact title match, else word-boundary containment (never a substring inside another word)."""
+    q = _norm(query)
+    if not q:
+        return None
+    for e in entries:
+        if _norm(e["game"]) == q:
+            return e
+    pat = re.compile(r"(?<![a-z0-9])" + re.escape(q) + r"(?![a-z0-9])")
+    for e in entries:
+        if pat.search(_norm(e["game"])):
+            return e
+    return None
+
+
+def find_profile_by_query(profiles: list[dict], query: str) -> Optional[dict]:
+    """Match a profile by exe name (with/without .exe) or Steam AppID."""
+    q = query.strip()
+    qlow = _norm(q)
+    for prof in profiles:
+        match = prof.get("match") or {}
+        exes = {_norm(x) for x in match.get("exe", [])}
+        if qlow in exes or f"{qlow}.exe" in exes:
+            return prof
+    if q.isdigit():
+        appid = int(q)
+        for prof in profiles:
+            if appid in (prof.get("match") or {}).get("steam_appid", []):
+                return prof
+    return None
+
+
+def resolve_title(matrix: Dict[str, Any], profiles: list[dict], query: str) -> Optional[dict]:
+    """Resolve <title|exe|appid> to a compat-matrix entry (SPEC-WINDOWS §30.2)."""
+    entry = find_matrix_entry(matrix["entries"], query)
+    if entry is not None:
+        return entry
+    prof = find_profile_by_query(profiles, query)
+    if prof is not None:
+        return find_matrix_entry(matrix["entries"], prof.get("title", ""))
+    return None
+
+
+# --- region (locale / timezone / config / --region — never IP geolocation) --------------- #
+_LOCALE_RE = re.compile(r"^[a-zA-Z]{2,3}[_-]([A-Za-z]{2})\b")
+
+#: best-effort IANA timezone -> ISO-3166 country; deliberately not exhaustive — an
+#: unmapped timezone (or an unmapped locale/config) leaves the region "unknown" rather
+#: than guessing, and a provider with an unknown region is reported unavailable with why.
+TIMEZONE_COUNTRY: Dict[str, str] = {
+    "Asia/Kolkata": "IN", "Asia/Calcutta": "IN",
+    "America/New_York": "US", "America/Chicago": "US", "America/Denver": "US",
+    "America/Los_Angeles": "US", "America/Anchorage": "US", "Pacific/Honolulu": "US",
+    "America/Toronto": "CA", "America/Vancouver": "CA", "America/Winnipeg": "CA", "America/Edmonton": "CA",
+    "America/Sao_Paulo": "BR", "America/Mexico_City": "MX",
+    "Europe/London": "GB", "Europe/Berlin": "DE", "Europe/Paris": "FR", "Europe/Madrid": "ES",
+    "Europe/Rome": "IT", "Europe/Amsterdam": "NL", "Europe/Warsaw": "PL", "Europe/Stockholm": "SE",
+    "Europe/Oslo": "NO", "Europe/Copenhagen": "DK", "Europe/Helsinki": "FI", "Europe/Prague": "CZ",
+    "Europe/Vienna": "AT", "Europe/Brussels": "BE", "Europe/Zurich": "CH", "Europe/Dublin": "IE",
+    "Europe/Lisbon": "PT", "Europe/Bucharest": "RO", "Europe/Budapest": "HU", "Europe/Bratislava": "SK",
+    "Australia/Sydney": "AU", "Australia/Melbourne": "AU", "Asia/Tokyo": "JP", "Asia/Seoul": "KR",
+}
+
+
+def region_from_locale(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    env = os.environ if env is None else env
+    for key in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        raw = str(env.get(key, "") or "").split(":", 1)[0].split(".", 1)[0]
+        m = _LOCALE_RE.match(raw)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def region_from_timezone(root: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    env = os.environ if env is None else env
+    tz = str(env.get("TZ", "") or "").strip()
+    if not tz:
+        base = Path(root) if root is not None else system_root()
+        try:
+            tz = (base / "etc" / "timezone").read_text(encoding="utf-8").strip()
+        except OSError:
+            tz = ""
+    return TIMEZONE_COUNTRY.get(tz)
+
+
+def _lindos_paths_mod():
+    try:
+        from lindos import paths as lp  # type: ignore[import-not-found]
+
+        return lp
+    except Exception:  # noqa: BLE001 - lindos-core not importable (dev box / no LINDOS_ROOT install)
+        return None
+
+
+def user_conf_path() -> Path:
+    lp = _lindos_paths_mod()
+    if lp is not None:
+        return Path(lp.user_conf())
+    home = os.environ.get("LINDOS_HOME") or os.path.expanduser("~")
+    return Path(home) / ".config" / "lindos" / "config.json"
+
+
+def applications_dir() -> Path:
+    lp = _lindos_paths_mod()
+    if lp is not None:
+        return Path(lp.resolve("~/.local/share/applications"))
+    home = os.environ.get("LINDOS_HOME") or os.path.expanduser("~")
+    return Path(home) / ".local" / "share" / "applications"
+
+
+def load_user_config() -> Dict[str, Any]:
+    try:
+        with open(user_conf_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def region_from_config(config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    cfg = load_user_config() if config is None else config
+    val = cfg.get("region") if isinstance(cfg, dict) else None
+    return str(val).strip().upper() if val else None
+
+
+def detect_region(explicit: Optional[str] = None, *, config: Optional[Dict[str, Any]] = None,
+                   env: Optional[Dict[str, str]] = None, root: Optional[Path] = None) -> Optional[str]:
+    """SPEC-WINDOWS §30.2: ``--region`` > ``~/.config/lindos/config.json`` "region" > locale > timezone.
+
+    Never IP geolocation. Returns an upper-case ISO-3166-ish country code, or ``None`` when nothing
+    resolves it (callers then report cloud availability as "region unknown" rather than guessing).
+    """
+    if explicit and explicit.strip():
+        return explicit.strip().upper()
+    region = region_from_config(config)
+    if region:
+        return region
+    region = region_from_locale(env)
+    if region:
+        return region
+    return region_from_timezone(root=root, env=env)
+
+
+# --- cloud-provider availability ----------------------------------------------------------- #
+#: Boosteroid's own region grouping ("EU"/"NA"/"BR") is not an ISO code; these are the
+#: country codes we treat each group as covering (SPEC-WINDOWS §30.1, verified 2026-09-26).
+_EU_COUNTRIES = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT",
+    "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "GB", "CH", "NO", "IS",
+})
+_NA_COUNTRIES = frozenset({"US", "CA", "MX"})
+
+#: browser binaries lindos-game will look for, keyed by the provider's own "browsers_official"
+#: id — Firefox is never in this table, so a provider that (mistakenly) listed it would still
+#: never be launched with a spoofed/unsupported browser (SPEC-WINDOWS §27.1/§27.5).
+BROWSER_BINARIES: Dict[str, Tuple[str, ...]] = {
+    "edge": ("microsoft-edge-stable", "microsoft-edge", "microsoft-edge-beta", "microsoft-edge-dev"),
+    "chrome": ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium"),
+}
+
+
+def _which(name: str) -> Optional[str]:
+    return shutil.which(name)
+
+
+def pick_browser(browsers_official: list, which=_which) -> Tuple[Optional[str], Optional[str]]:
+    """Return (path, id) for the first of *browsers_official* actually installed, else (None, None)."""
+    for bid in browsers_official or []:
+        for binary in BROWSER_BINARIES.get(str(bid), ()):
+            path = which(binary)
+            if path:
+                return path, str(bid)
+    return None, None
+
+
+def _region_in_group(region: str, group: str) -> bool:
+    group = group.upper()
+    if group == "EU":
+        return region in _EU_COUNTRIES
+    if group == "NA":
+        return region in _NA_COUNTRIES
+    return region == group
+
+
+def provider_region_available(provider: Dict[str, Any], region: Optional[str]) -> Optional[bool]:
+    """True/False, or ``None`` when *region* is unknown and cannot be checked."""
+    if region is None:
+        return None
+    if "regions" in provider:                        # allowlist (e.g. boosteroid: EU/NA/BR)
+        return any(_region_in_group(region, g) for g in provider["regions"])
+    excluded = {str(r).upper() for r in (provider.get("regions_excluded") or [])}
+    return region not in excluded
+
+
+def provider_client_ready(provider: Dict[str, Any], *, flatpak_ids: Optional[set] = None,
+                          which=_which) -> Tuple[bool, str]:
+    """Is the provider's official Linux client available right now?
+
+    Returns ``(ready, detail)``: for a browser-based provider *detail* is the resolved browser
+    **path** (usable directly as an argv[0]) when ready, empty otherwise; for a flatpak/deb
+    client it is a short description (never a spoofed/guessed path).
+    """
+    client = provider.get("client") or {}
+    ctype = client.get("type")
+    if ctype == "flatpak":
+        ids = flatpak_apps() if flatpak_ids is None else flatpak_ids
+        ok = client.get("id") in ids
+        return ok, f"flatpak:{client.get('id')}"
+    if ctype == "deb-download":
+        path = which("boosteroid")
+        return path is not None, (path or "deb-download")
+    browsers = provider.get("browsers_official") or []
+    if browsers:
+        path, _bid = pick_browser(browsers, which=which)
+        return path is not None, (path or "")
+    return True, ""
+
+
+# --- dual-boot ("restart into Windows") ---------------------------------------------------- #
+FIRMWARE_CHECKLIST = (
+    "before turning on Secure Boot: make sure the Lindos kernel and any DKMS/NVIDIA modules are "
+    "MOK-signed (or keep the stock kernel selected), suspend BitLocker in Windows first (a "
+    "Secure-Boot/TPM change can trigger BitLocker recovery), and make sure the disk is UEFI+GPT — "
+    "run 'lindos-dualboot firmware-setup' for the guided checklist"
+)
+
+
+def _dualboot_unknown(why: str) -> Dict[str, Any]:
+    return {"can_reboot_to_windows": False, "secure_boot": "unknown", "tpm": None,
+            "firmware": "unknown", "windows_entries": [], "method": None, "why": why}
+
+
+def dualboot_status() -> Dict[str, Any]:
+    """Best-effort ``lindos-dualboot status --json`` (SPEC-WINDOWS §30.3). Never raises."""
+    binpath = _which("lindos-dualboot")
+    if not binpath:
+        return _dualboot_unknown("lindos-dualboot not found (install lindos-core)")
+    rc, out = run([binpath, "status", "--json"], timeout=15.0)
+    if rc != 0 or not out.strip():
+        return _dualboot_unknown(f"lindos-dualboot status failed (exit {rc})")
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return _dualboot_unknown("lindos-dualboot status returned invalid JSON")
+    if not isinstance(data, dict):
+        return _dualboot_unknown("lindos-dualboot status returned unexpected JSON")
+    data.setdefault("why", None)
+    return data
+
+
+# --- route computation ---------------------------------------------------------------------- #
+def build_routes(entry: Dict[str, Any], matrix: Dict[str, Any], region: Optional[str],
+                 dualboot: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Compute the honest route list for *entry* (SPEC-WINDOWS §30.2 ``route --json`` schema)."""
+    status = entry.get("status")
+    if status != "not_possible":
+        kind = "native" if status == "native" else ("proton" if status in ("works", "partial") else "unknown")
+        return [{
+            "type": kind, "provider": None, "label": entry.get("how") or entry["game"],
+            "available": True, "why": entry.get("reason", ""), "requires": [], "action": None,
+        }]
+
+    routes: List[Dict[str, Any]] = []
+    route_data = entry.get("routes") or {}
+    providers = matrix.get("cloud_providers") or {}
+
+    for c in route_data.get("cloud", []):
+        pid = c.get("provider")
+        provider = providers.get(pid)
+        if provider is None:
+            continue
+        region_ok = provider_region_available(provider, region)
+        client_ok, client_via = provider_client_ready(provider)
+        action: Optional[Dict[str, Any]] = None
+        if region_ok is False:
+            available, why = False, f"{provider['name']} is not offered in your region ({region})."
+        elif region_ok is None:
+            available, why = False, (f"{provider['name']}: region unknown — pass --region CC or set "
+                                     '"region" in ~/.config/lindos/config.json')
+        elif not client_ok:
+            available = False
+            if pid == "geforce-now":
+                why = f"{provider['name']}'s official Linux app is not installed yet."
+                action = {"cmd": ["lindos-game", "cloud", "install", "geforce-now"]}
+            elif provider.get("client", {}).get("type") == "deb-download":
+                why = f"{provider['name']}'s official Linux client is not installed yet."
+                action = {"open_url": provider["url"]}
+            else:
+                why = f"no supported browser (Chrome/Edge) found for {provider['name']}."
+        else:
+            available = True
+            why = f"{provider['name']}" + (f" — {c['note']}" if c.get("note") else "")
+            if pid == "geforce-now":
+                action = {"cmd": ["flatpak", "run", provider["client"]["id"]]}
+            elif provider.get("client", {}).get("type") == "deb-download":
+                action = {"cmd": ["boosteroid"]}
+            else:
+                action = {"open_url": c.get("url") or provider["url"], "browser_path": client_via}
+        routes.append({
+            "type": "cloud", "provider": pid, "label": provider["name"], "available": available,
+            "why": why, "requires": [], "action": action, "tier": c.get("tier"),
+        })
+
+    windows_requires = list(route_data.get("windows_requires") or [])
+    db = dualboot if dualboot is not None else dualboot_status()
+    can_reboot = bool(db.get("can_reboot_to_windows"))
+    missing = []
+    if "secure-boot" in windows_requires and db.get("secure_boot") != "enabled":
+        missing.append("Secure Boot is off")
+    if "tpm2" in windows_requires and db.get("tpm") != 2:
+        missing.append("no TPM 2.0 detected")
+    if can_reboot:
+        if missing:
+            why = (f"Restart into Windows works, but {', '.join(missing)} — {entry['game']} needs "
+                   f"{', '.join(windows_requires)} there ({FIRMWARE_CHECKLIST}).")
+        else:
+            why = "Windows is installed and can be booted with one command (lindos-dualboot)."
+    else:
+        why = db.get("why") or "no bootable Windows entry found"
+    routes.append({
+        "type": "windows", "provider": None, "label": "Restart into Windows", "available": can_reboot,
+        "why": why, "requires": windows_requires,
+        "action": {"cmd": ["lindos-dualboot", "reboot-to-windows"]} if can_reboot else None,
+    })
+
+    routes.append({
+        "type": "vm", "provider": None, "label": "Lindos Windows VM", "available": False,
+        "why": (f"{entry.get('anticheat', 'this anti-cheat')} blocks virtual machines; running it in "
+               "lindos-vm would only get the account hardware-banned, never make the game work. "
+               "Lindos never offers this route for a not_possible title."),
+        "requires": [], "action": None,
+    })
+    return routes
+
+
+def _recommend(routes: List[Dict[str, Any]]) -> int:
+    for i, r in enumerate(routes):
+        if r["type"] == "cloud" and r["available"]:
+            return i
+    for i, r in enumerate(routes):
+        if r["type"] == "windows" and r["available"]:
+            return i
+    return 0
+
+
+def _select_route(routes: List[Dict[str, Any]], route_type: Optional[str],
+                  provider: Optional[str]) -> Optional[Dict[str, Any]]:
+    candidates = [r for r in routes if route_type is None or r["type"] == route_type]
+    if provider:
+        by_provider = [r for r in candidates if r.get("provider") == provider]
+        if by_provider:
+            candidates = by_provider
+    return candidates[0] if candidates else None
+
+
+def cmd_route(args: argparse.Namespace, matrix: Dict[str, Any], profiles: list) -> int:
+    entry = resolve_title(matrix, profiles, args.query)
+    if entry is None:
+        LOG.error("unknown game: %r (try the exact title as shown in Lindos Settings → Gaming → "
+                  "Compatibility)", args.query)
+        return EXIT_USAGE
+    region = detect_region(explicit=getattr(args, "region", None))
+    routes = build_routes(entry, matrix, region)
+    recommended = _recommend(routes)
+    result = {
+        "title": entry["game"], "id": _slug(entry["game"]), "status": entry["status"],
+        "anticheat": entry.get("anticheat", ""), "region": region or "unknown",
+        "routes": routes, "recommended": recommended, "notes": [entry.get("reason", "")],
+    }
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return EXIT_OK
+    print(f"{entry['game']} — status: {entry['status']}  anticheat: {entry.get('anticheat') or '—'}  "
+         f"region: {region or 'unknown'}")
+    for i, r in enumerate(routes):
+        mark = "*" if i == recommended else " "
+        label = r["label"] if not r.get("provider") else f"{r['label']} ({r['provider']})"
+        print(f" {mark} [{'OK' if r['available'] else '--'}] {r['type']:<7} {label} — {r['why']}")
+    return EXIT_OK
+
+
+def _play_cloud(route: Dict[str, Any], matrix: Dict[str, Any]) -> int:
+    provider = matrix["cloud_providers"][route["provider"]]
+    action = route.get("action") or {}
+    cmd = action.get("cmd")
+    if cmd:
+        LOG.info("launching: %s", " ".join(cmd))
+        try:
+            if os.name == "posix":
+                os.execvp(cmd[0], cmd)
+            return subprocess.run(cmd, check=False).returncode
+        except OSError as exc:
+            LOG.error("could not start %s: %s", cmd[0], exc)
+            return EXIT_ERROR
+    url = action.get("open_url")
+    browser_path = action.get("browser_path")
+    if browser_path:
+        LOG.info("opening %s in %s", url, os.path.basename(browser_path))
+        try:
+            subprocess.run([browser_path, url], check=False)
+            return EXIT_OK
+        except OSError as exc:
+            LOG.error("could not start %s: %s", browser_path, exc)
+            return EXIT_ERROR
+    if provider.get("client", {}).get("type") == "deb-download":
+        print(f"{provider['name']}'s client is not installed. Download it from {provider['url']} "
+             "(the official .deb/.rpm/installer script), install it, then try again.")
+        return EXIT_OK
+    print(f"Open this in Chrome or Edge — never Firefox, {provider['name']} does not support it on "
+         f"Linux: {url or provider['url']}")
+    return EXIT_OK
+
+
+def _play_windows(entry: Dict[str, Any], route: Dict[str, Any], args: argparse.Namespace) -> int:
+    if not args.yes:
+        prompt = f"Restart into Windows now to play {entry['game']}?\n\n{route['why']}"
+        if have("zenity") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            rc, _ = run(["zenity", "--question", "--title=Lindos", "--icon=input-gaming",
+                        f"--text={prompt}", "--ok-label=Restart", "--cancel-label=Cancel"], timeout=600)
+            if rc != 0:
+                return EXIT_OK
+        else:
+            print(prompt)
+            try:
+                ans = input("Restart into Windows now? [y/N] ")
+            except EOFError:
+                ans = ""
+            if ans.strip().lower() not in ("y", "yes"):
+                return EXIT_OK
+    lb = _which("lindos-dualboot")
+    if not lb:
+        LOG.error("lindos-dualboot not found (install lindos-core)")
+        return EXIT_ERROR
+    cmd = [lb, "reboot-to-windows", "--yes"]
+    LOG.info("running: %s", " ".join(cmd))
+    rc, out = run(cmd, timeout=60.0)
+    if out:
+        print(out, end="" if out.endswith("\n") else "\n")
+    return EXIT_OK if rc == 0 else EXIT_ERROR
+
+
+def cmd_play(args: argparse.Namespace, matrix: Dict[str, Any], profiles: list) -> int:
+    entry = resolve_title(matrix, profiles, args.query)
+    if entry is None:
+        LOG.error("unknown game: %r", args.query)
+        return EXIT_USAGE
+    if args.route == "vm":
+        LOG.error("Lindos never offers its Windows VM for %s: %s", entry["game"], entry.get("anticheat", ""))
+        return EXIT_USAGE
+    region = detect_region(explicit=getattr(args, "region", None))
+    routes = build_routes(entry, matrix, region)
+    route_type = args.route
+    if route_type is None:
+        if any(r["type"] == "cloud" and r["available"] for r in routes):
+            route_type = "cloud"
+        elif any(r["type"] == "windows" and r["available"] for r in routes):
+            route_type = "windows"
+        elif routes:
+            route_type = routes[0]["type"]           # native/proton: only route offered
+    chosen = _select_route(routes, route_type, getattr(args, "provider", None)) if route_type else None
+    if chosen is None:
+        LOG.error("no available route for %s — run 'lindos-game route %s' to see why", entry["game"], args.query)
+        return EXIT_ERROR
+    if not chosen["available"]:
+        LOG.error("%s route not available for %s: %s", chosen["type"], entry["game"], chosen["why"])
+        return EXIT_ERROR
+    if chosen["type"] == "cloud":
+        return _play_cloud(chosen, matrix)
+    if chosen["type"] == "windows":
+        return _play_windows(entry, chosen, args)
+    print(f"{entry['game']} already runs on Lindos via {chosen['label']}. Use "
+         "'lindos-game launch <id>' or Steam/Heroic/Lutris directly.")
+    return EXIT_OK
+
+
+_DESKTOP_QUOTE_RE = re.compile(r'[\s"\'`$\\><~|&;()#*?\[\]!{}]')
+
+
+def _desktop_quote(arg: str) -> str:
+    if not _DESKTOP_QUOTE_RE.search(arg):
+        return arg
+    escaped = arg.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
+
+
+def _desktop_exec_line(argv: list) -> str:
+    return " ".join(_desktop_quote(a) for a in argv)
+
+
+def _shortcut_label(entry: Dict[str, Any], route: Dict[str, Any]) -> str:
+    if route["type"] == "windows":
+        return f"{entry['game']} — restarts into Windows"
+    provider = route.get("label") or route.get("provider") or "cloud"
+    return f"{entry['game']} — {provider}"
+
+
+def cmd_shortcut(args: argparse.Namespace, matrix: Dict[str, Any], profiles: list) -> int:
+    entry = resolve_title(matrix, profiles, args.query)
+    if entry is None:
+        LOG.error("unknown game: %r", args.query)
+        return EXIT_USAGE
+    region = detect_region(explicit=getattr(args, "region", None))
+    routes = build_routes(entry, matrix, region)
+    chosen = _select_route(routes, args.route, getattr(args, "provider", None))
+    if chosen is None:
+        LOG.error("no %s route known for %s", args.route, entry["game"])
+        return EXIT_USAGE
+    gid = _slug(entry["game"])
+    exec_argv = ["lindos-game", "play", entry["game"], "--route", args.route, "--yes"]
+    if chosen.get("provider"):
+        exec_argv += ["--provider", chosen["provider"]]
+    label = _shortcut_label(entry, chosen)
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        f"Name={label}",
+        f"Comment={chosen['why']}",
+        f"Exec={_desktop_exec_line(exec_argv)}",
+        "Icon=input-gaming",
+        "Categories=Game;",
+        "Terminal=false",
+    ]
+    apps_dir = applications_dir()
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    dest = apps_dir / f"lindos-play-{gid}-{args.route}.desktop"
+    dest.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    print(f"wrote {dest}")
+    return EXIT_OK
+
+
+# --- GeForce NOW's own Flatpak remote (not Flathub) ------------------------------------------ #
+GFN_REMOTE_NAME = "GeForceNOW"
+GFN_REMOTE_URL = "https://international.download.nvidia.com/GFNLinux/flatpak/geforcenow.flatpakrepo"
+GFN_APP_ID = "com.nvidia.geforcenow"
+
+CLOUD_PROVIDER_HELP_URLS = {
+    "geforce-now": "https://www.nvidia.com/en-us/geforce-now/download/",
+    "xbox-cloud": "https://www.xbox.com/play",
+    "boosteroid": "https://boosteroid.com/downloads/",
+    "amazon-luna": "https://luna.amazon.com/",
+}
+
+
+def geforce_now_flatpak_commands(scope: str = "user") -> List[List[str]]:
+    """The exact commands NVIDIA documents for its own (non-Flathub) Linux Flatpak remote.
+
+    ``--system`` normally goes through ``lindos.helper.install_flatpaks(ids, remote=...)`` (SPEC-
+    WINDOWS §33.1/§30.4: ``install-flatpaks`` accepts an optional non-Flathub ``remote``) — these
+    exact argv are only run/printed directly as its fallback (helper unavailable/failed) or for
+    ``--user``, which needs no root/helper at all.
+    """
+    flag = f"--{scope}"
+    return [
+        ["flatpak", "remote-add", flag, "--if-not-exists", GFN_REMOTE_NAME, GFN_REMOTE_URL],
+        ["flatpak", "install", flag, "-y", "--noninteractive", GFN_REMOTE_NAME, GFN_APP_ID],
+    ]
+
+
+def _try_helper_install_flatpaks(ids: List[str], remote: Dict[str, str]):
+    """Best-effort ``lindos.helper.install_flatpaks(ids, remote=remote)`` (SPEC-WINDOWS §33.1 call
+    map: ``cloud install geforce-now`` -> helper ``install-flatpaks`` (NVIDIA remote)).
+
+    Returns the ``HelperResult`` (``.ok``/``.message``), or ``None`` when ``lindos.helper`` is not
+    importable here (dev box without lindos-core) — never raises.
+    """
+    try:
+        from lindos.helper import install_flatpaks as _hif  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 - lindos-core not installed/importable
+        return None
+    return _hif(ids, remote=remote)
+
+
+def cmd_cloud_install(args: argparse.Namespace) -> int:
+    provider = (args.provider or "").strip().lower()
+    if provider != "geforce-now":
+        url = CLOUD_PROVIDER_HELP_URLS.get(provider)
+        if url is None:
+            LOG.error("unknown cloud provider: %r (scripted install: geforce-now; others have no "
+                      "installer here — see 'lindos-game route <title>')", args.provider)
+            return EXIT_USAGE
+        print(f"{args.provider} has no scripted Linux installer here. Open {url} and follow the "
+             "official instructions (Boosteroid ships an official .deb/.rpm/install script; Xbox "
+             "Cloud Gaming and Amazon Luna run in Chrome or Edge — never Firefox).")
+        return EXIT_OK
+    scope = "system" if getattr(args, "system", False) else "user"
+    remote = {"name": GFN_REMOTE_NAME, "url": GFN_REMOTE_URL}
+    cmds = geforce_now_flatpak_commands(scope)
+    if getattr(args, "json", False):
+        print(json.dumps({"provider": "geforce-now", "scope": scope,
+                          "commands": [" ".join(c) for c in cmds],
+                          "remote": remote, "app_id": GFN_APP_ID,
+                          "helper_action": "install-flatpaks" if scope == "system" else None}, indent=2))
+        return EXIT_OK
+    if getattr(args, "print_only", False):
+        for c in cmds:
+            print(" ".join(c))
+        return EXIT_OK
+    if scope == "system":
+        # SPEC-WINDOWS §33.1: cloud install geforce-now -> helper install-flatpaks (NVIDIA remote).
+        LOG.info("installing the official GeForce NOW Linux app system-wide via the lindos helper "
+                "(install-flatpaks, NVIDIA's own remote)")
+        res = _try_helper_install_flatpaks([GFN_APP_ID], remote)
+        if res is not None:
+            if res.ok:
+                print(f"GeForce NOW installed system-wide. Start it with: flatpak run {GFN_APP_ID}")
+                return EXIT_OK
+            LOG.error("helper install-flatpaks failed: %s", res.message)
+            print("Run these yourself as root for a system-wide install:")
+            for c in cmds:
+                print("  " + " ".join(c))
+            return EXIT_ERROR
+        LOG.warning("lindos-core's lindos.helper is not importable here — falling back to a "
+                   "--user install (no root needed); run the commands below yourself as root "
+                   "for a system-wide install")
+        for c in cmds:
+            print("  " + " ".join(c))
+        scope = "user"
+        cmds = geforce_now_flatpak_commands(scope)
+    if not have("flatpak"):
+        for c in cmds:
+            print(" ".join(c))
+        LOG.error("flatpak is not installed; install it, then run the commands above")
+        return EXIT_ERROR
+    LOG.info("installing the official GeForce NOW Linux app from NVIDIA's own Flatpak remote (%s)", scope)
+    for c in cmds:
+        LOG.debug("+ %s", " ".join(c))
+        rc, out = run(c, timeout=600.0)
+        if rc != 0:
+            LOG.error("%s failed (exit %s)%s", " ".join(c), rc, f": {out.strip()}" if out.strip() else "")
+            print("Run it yourself:")
+            for cc in cmds:
+                print("  " + " ".join(cc))
+            return EXIT_ERROR
+    print(f"GeForce NOW installed. Start it with: flatpak run {GFN_APP_ID}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
@@ -400,6 +1134,35 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--install", action="store_true", help="install without asking when missing")
     pr.add_argument("--gamescope", nargs="?", const="", metavar="WxH",
                     help="run the launcher inside gamescope (optionally at WxH, e.g. --gamescope 1920x1080)")
+
+    prt = sub.add_parser("route", help="honest routes for a game Lindos/Linux may not run (SPEC-WINDOWS §30)")
+    prt.add_argument("query", metavar="TITLE|EXE|APPID")
+    prt.add_argument("--json", action="store_true")
+    prt.add_argument("--region", metavar="CC", help="ISO country code override (never IP geolocation)")
+
+    ppl = sub.add_parser("play", help="play a title through its best (or chosen) honest route")
+    ppl.add_argument("query", metavar="TITLE|EXE|APPID")
+    ppl.add_argument("--route", choices=["cloud", "windows", "proton", "native", "vm"], default=None)
+    ppl.add_argument("--provider", metavar="ID", help="cloud provider id, e.g. geforce-now")
+    ppl.add_argument("--region", metavar="CC", help="ISO country code override (never IP geolocation)")
+    ppl.add_argument("--yes", action="store_true", help="do not ask before restarting into Windows")
+
+    psh = sub.add_parser("shortcut", help="write a .desktop launcher for one route")
+    psh.add_argument("query", metavar="TITLE|EXE|APPID")
+    psh.add_argument("--route", choices=["cloud", "windows"], required=True)
+    psh.add_argument("--provider", metavar="ID")
+    psh.add_argument("--region", metavar="CC", help="ISO country code override (never IP geolocation)")
+
+    pcl = sub.add_parser("cloud", help="cloud-provider client management")
+    clsub = pcl.add_subparsers(dest="cloud_cmd", metavar="SUBCOMMAND")
+    pci = clsub.add_parser("install", help="install a cloud provider's official Linux client")
+    pci.add_argument("provider", metavar="ID", help="geforce-now (others: prints the official page)")
+    pci.add_argument("--system", action="store_true",
+                     help="system-wide flatpak install (needs root; falls back to --user with a "
+                          "printed command until W-G1's helper can add a non-Flathub remote)")
+    pci.add_argument("--print", dest="print_only", action="store_true",
+                     help="print the exact flatpak commands instead of running them")
+    pci.add_argument("--json", action="store_true")
     return p
 
 
@@ -430,6 +1193,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         return cmd_install(args, launchers)
     if args.cmd == "launch":
         return cmd_launch(args, launchers)
+    if args.cmd in ("route", "play", "shortcut"):
+        try:
+            matrix = load_matrix()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.error("cannot read compat matrix: %s", exc)
+            return EXIT_ERROR
+        profiles = load_profiles()
+        if args.cmd == "route":
+            return cmd_route(args, matrix, profiles)
+        if args.cmd == "play":
+            return cmd_play(args, matrix, profiles)
+        return cmd_shortcut(args, matrix, profiles)
+    if args.cmd == "cloud":
+        if args.cloud_cmd == "install":
+            return cmd_cloud_install(args)
+        LOG.error("usage: lindos-game cloud install <provider>")
+        return EXIT_USAGE
     parser.print_help()
     return EXIT_USAGE
 

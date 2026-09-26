@@ -1,0 +1,58 @@
+#!/bin/bash
+# lindos-binfmt — binfmt_misc interpreter for Windows programs (SPEC-WINDOWS §28.7).
+#
+# Registered by /usr/lib/binfmt.d/lindos-pe.conf as
+#     :lindos-pe:M::MZ::/usr/libexec/lindos/lindos-binfmt:
+# so that "./setup.exe" typed in a terminal starts the program through lindos-run (Wine or
+# Proton, the program's own C:\ drive).  The kernel calls:
+#     lindos-binfmt <path as given to execve()> [program arguments...]
+# The path may be relative ("./setup.exe", "bin/tool.exe") or /dev/fd/N/<name> (execveat), so
+# it is resolved against $PWD first.  Every executable file that starts with "MZ" arrives here
+# - also DLLs, drivers, EFI files and Control Panel items (NTFS and USB disks mark every file
+# executable) - so the file is re-checked with lindos-compat's own classifier
+# ("python3 -m lindos_compat.binfmt check FILE") and anything that is not a program is refused
+# with an explanation.
+#
+# Exit codes: 126 = not a program Lindos starts from a terminal (explained on stderr),
+# 127 = file or lindos-run not found, 2 = usage; otherwise lindos-run's exit code.
+# Environment (tests / unusual installs): LINDOS_RUN, LINDOS_COMPAT_LIB, LINDOS_PYTHON.
+set -Eeuo pipefail
+
+PROG="lindos-binfmt"
+LINDOS_RUN="${LINDOS_RUN:-/usr/bin/lindos-run}"
+COMPAT_LIB="${LINDOS_COMPAT_LIB:-/usr/lib/lindos-compat}"
+PYTHON="${LINDOS_PYTHON:-python3}"
+
+log() { printf '%s: %s\n' "${PROG}" "$*" >&2; }
+die() { log "$1"; exit "${2:-1}"; }
+
+[ "$#" -ge 1 ] || die "usage: ${PROG} <program.exe> [arguments...]  (normally called by the kernel)" 2
+
+prog="$1"
+shift
+
+case "${prog}" in
+    /*) abs="${prog}" ;;
+    *)  abs="${PWD%/}/${prog}" ;;
+esac
+# canonical path: follows symlinks and /dev/fd/N/... so lindos-run sees the real file
+if resolved="$(readlink -e -- "${abs}" 2>/dev/null)" && [ -n "${resolved}" ]; then
+    abs="${resolved}"
+fi
+[ -e "${abs}" ] || die "cannot find '${prog}'" 127
+[ -f "${abs}" ] || die "'${prog}' is not a file" 126
+[ -r "${abs}" ] || die "cannot read '${prog}' (no permission)" 126
+
+# Is it a program?  0 = yes; 3 = no (the explanation is already on stderr); anything else means
+# the check itself could not run - lindos-run classifies the file again and explains it anyway.
+check_rc=0
+PYTHONPATH="${COMPAT_LIB}${PYTHONPATH:+:${PYTHONPATH}}" "${PYTHON}" -m lindos_compat.binfmt check "${abs}" \
+    || check_rc=$?
+case "${check_rc}" in
+    0) ;;
+    3) exit 126 ;;
+    *) log "could not check '${prog}' (exit code ${check_rc}); lindos-run decides" ;;
+esac
+
+[ -x "${LINDOS_RUN}" ] || die "lindos-run is missing (${LINDOS_RUN}); reinstall the lindos-compat package" 127
+exec "${LINDOS_RUN}" -- "${abs}" "$@"

@@ -9,6 +9,8 @@
   lindos-kernel cmdline  reset                   restore the conservative default
   lindos-kernel cmdline  --preset {default,gaming}
   lindos-kernel build    [--kdir DIR] [--jobs N] [--menuconfig] [--out DIR] [--version X.Y.Z]
+  lindos-kernel secureboot status         [--json]   Secure Boot / MOK / kernel-signing state
+  lindos-kernel secureboot apply-selection [--json]  recompute which kernel GRUB boots by default
   lindos-kernel --version
 
 Reading never needs root.  Mutating actions (cmdline set/reset/preset) print the exact
@@ -38,6 +40,7 @@ try:
     from lindos_kernel import features as kfeatures
     from lindos_kernel import grub as kgrub
     from lindos_kernel import manifest as kmanifest
+    from lindos_kernel import secureboot as ksecureboot
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write(f"lindos-kernel: the 'lindos_kernel' package is missing ({exc}); install lindos-kernel\n")
     sys.exit(1)
@@ -216,10 +219,87 @@ def cmd_cmdline(ns: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+# --- secureboot ----------------------------------------------------------------------------
+def _fmt_tri(value: Optional[bool]) -> str:
+    return {True: "yes", False: "no", None: "unknown"}[value]
+
+
+def _version_sort_key(version: str) -> List[Any]:
+    """Numeric-aware sort key so '6.11.0-9-generic' sorts after '6.8.0-40-generic' (a plain
+    string sort puts it before, since '1' < '8' at the first differing character)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", version)]
+
+
+def _newest_kernel_version(images: List[Dict[str, str]], *, lindos: bool) -> Optional[str]:
+    matches = [img["version"] for img in images if img.get("lindos") == lindos]
+    return max(matches, key=_version_sort_key) if matches else None
+
+
+def _print_secureboot_status(data: Dict[str, Any]) -> None:
+    print(f"Firmware      : {data['firmware']}")
+    print(f"Secure Boot   : {_fmt_tri(data['secure_boot'])}")
+    mok = data["mok"]
+    print(f"MOK present   : {'yes' if mok['present'] else 'no'} ({mok['priv']})")
+    print(f"MOK enrolled  : {_fmt_tri(mok['enrolled'])}")
+    tools = data["tools"]
+    print(f"Tools         : sbsign={'yes' if tools['sbsign'] else 'no '} "
+          f"sbverify={'yes' if tools['sbverify'] else 'no '} "
+          f"mokutil={'yes' if tools['mokutil'] else 'no '}")
+    kernels = data["kernels"]
+    if not kernels:
+        print("Lindos kernels: none installed")
+    else:
+        print("Lindos kernels:")
+        for k in kernels:
+            print(f"  {k['path']}  signed={_fmt_tri(k['signed'])}")
+    allow = kgrub.may_boot_lindos_by_default(data["secure_boot"], data["any_lindos_kernel_signed"])
+    if allow:
+        print("\nGRUB may boot the Lindos kernel by default (Secure Boot is off, or it is signed).")
+    else:
+        print("\nSecure Boot is on and no installed Lindos kernel is signed: GRUB will NOT boot")
+        print("the Lindos kernel by default, so the machine still boots (the stock kernel).")
+        print("To let Lindos boot by default here, either:")
+        print("  1. Enrol a Machine Owner Key so the postinst hook can sign it:")
+        print("       sudo update-secureboot-policy --new-key")
+        print("       sudo update-secureboot-policy --enroll-key")
+        print("       (confirm the enrolment in MokManager at the next reboot, then")
+        print("        reinstall the Lindos kernel package so it gets signed)")
+        print("  2. Or turn Secure Boot off in firmware setup (not needed by Lindos itself).")
+
+
+def cmd_secureboot(ns: argparse.Namespace) -> int:
+    action = ns.secureboot_action or "status"
+    if action == "status":
+        data = ksecureboot.status()
+        if ns.json:
+            _emit(data)
+            return EXIT_OK
+        _print_secureboot_status(data)
+        return EXIT_OK
+    if action == "apply-selection":
+        data = ksecureboot.status()
+        images = _dpkg_images()
+        fallback_version = _newest_kernel_version(images, lindos=False)
+        lindos_version = _newest_kernel_version(images, lindos=True) or kfeatures.running_release()
+        value = kgrub.apply_kernel_selection(
+            data["secure_boot"], data["any_lindos_kernel_signed"],
+            lindos_version=lindos_version or None, fallback_version=fallback_version,
+        )
+        result = {"grub_default": value, "secureboot": data}
+        if ns.json:
+            _emit(result)
+            return EXIT_OK
+        print(f"GRUB_DEFAULT set to: {value!r}")
+        _print_followup()
+        return EXIT_OK
+    sys.stderr.write(f"{PROG}: unknown secureboot action {action!r}\n")
+    return EXIT_USAGE
+
+
 # --- build --------------------------------------------------------------------------------
 def cmd_build(ns: argparse.Namespace) -> int:
     plan = kbuild.make_plan(version=ns.version, jobs=ns.jobs, out=ns.out, kdir=ns.kdir,
-                            menuconfig=ns.menuconfig)
+                            menuconfig=ns.menuconfig, base_config=ns.base_config)
     rc = kbuild.run(plan, log=print)
     return rc if rc in (0, 2) else EXIT_ERROR
 
@@ -253,12 +333,25 @@ def build_parser() -> argparse.ArgumentParser:
     csub.add_parser("reset", help="restore the conservative default")
     p.set_defaults(func=cmd_cmdline, assignments=[])
 
+    p = sub.add_parser("secureboot", help="Secure Boot / MOK / kernel-signing status")
+    p.add_argument("--json", action="store_true")
+    sbsub = p.add_subparsers(dest="secureboot_action", metavar="action")
+    sbstatus = sbsub.add_parser("status", help="show Secure Boot / MOK / installed-kernel-signing status")
+    sbstatus.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    sbapply = sbsub.add_parser("apply-selection",
+                               help="recompute GRUB_DEFAULT from the current Secure Boot / signing state")
+    sbapply.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_secureboot)
+
     p = sub.add_parser("build", help="build the kernel via build/kernel/build-kernel.sh (Linux only)")
     p.add_argument("--kdir", help="use an existing kernel source tree (implies --skip-fetch)")
     p.add_argument("--jobs", type=int, help="parallel make jobs (default nproc)")
     p.add_argument("--menuconfig", action="store_true", help="run menuconfig after merging the fragment")
     p.add_argument("--out", default="out/kernel", help="output directory for the .deb artifacts")
     p.add_argument("--version", dest="version", help="kernel version X.Y.Z (default: manifest series)")
+    p.add_argument("--base-config", dest="base_config", default="ubuntu",
+                   metavar="ubuntu|defconfig|PATH",
+                   help="base .config to start from (default: ubuntu, SPEC-WINDOWS §31.2)")
     p.set_defaults(func=cmd_build)
     return parser
 

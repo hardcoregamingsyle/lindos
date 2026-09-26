@@ -107,6 +107,11 @@ is_exec_path() {
         *.sh) return 0 ;;
         DEBIAN/preinst|DEBIAN/postinst|DEBIAN/prerm|DEBIAN/postrm|DEBIAN/config) return 0 ;;
         etc/gamemode.d/*|etc/lindos/hooks.d/*) return 0 ;;
+        # Debian kernel-hook convention (kernel-package/run-parts): scripts under
+        # /etc/kernel/{preinst,postinst,prerm,postrm}.d/ must be executable or
+        # run-parts silently skips them, e.g. packages/lindos-kernel's
+        # etc/kernel/postinst.d/zz-lindos-sbsign Secure-Boot signing hook.
+        etc/kernel/*.d/*) return 0 ;;
     esac
     return 1
 }

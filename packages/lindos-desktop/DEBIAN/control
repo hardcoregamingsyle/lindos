@@ -17,8 +17,10 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  Selawik UI font), picom compositor profile with the lindos-compositor
  helper, GTK CSS overlay, five original SVG wallpapers, Plymouth boot
  theme, LightDM/slick-greeter branding, per-mode panel layouts for the
- five Lindos Modes (Everyday, Gaming, Work, Creator, Lite) and the
- File Explorer / Settings / Store / Terminal launcher shims.
+ five Lindos Modes (Everyday, Gaming, Work, Creator, Lite), the
+ File Explorer / Settings / Store / Terminal launcher shims, and the
+ autostart entry that starts lindos-core's read-only update-notifier on
+ login (lindos-update-notify.sh; SPEC-UPDATE.md §37).
  .
  The GTK/icon/cursor themes themselves (built from Fluent by
  build/fetch-assets.sh) and the Selawik/Inter fonts are installed by the

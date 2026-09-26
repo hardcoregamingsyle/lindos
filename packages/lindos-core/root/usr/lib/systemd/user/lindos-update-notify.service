@@ -1,0 +1,10 @@
+[Unit]
+Description=Lindos: check for lindos-* component updates and notify (read-only, unprivileged)
+Documentation=man:lindos-update(1)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lindos/lindos-update-notify.sh
+# read-only (SPEC-UPDATE.md §35/§37): never installs, never elevates, never runs as root.
+Nice=15
+IOSchedulingClass=idle

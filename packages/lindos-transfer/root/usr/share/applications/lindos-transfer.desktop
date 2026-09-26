@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Transfer from Windows
+GenericName=Bring your files from Windows
+Comment=Bring your files, bookmarks, wallpaper, fonts, Wi-Fi networks and app list from Windows
+Exec=lindos-transfer-gui
+TryExec=lindos-transfer-gui
+Icon=lindos-transfer
+Terminal=false
+StartupNotify=true
+StartupWMClass=lindos-transfer-gui
+Categories=System;Utility;X-Lindos;
+Keywords=transfer;migrate;easy transfer;windows;import;bookmarks;wifi;apps;onedrive;firefox;steam;
+X-Lindos-Component=transfer

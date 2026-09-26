@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 import lindos
-from lindos import browsers, config as lconfig, hardware, helper as lhelper, paths, ram, theme
+from lindos import browsers, config as lconfig, dualboot as ldualboot, hardware, helper as lhelper, paths, ram, theme
 
 # paths of the package under test (computed here, not imported from conftest: under
 # --import-mode=importlib "conftest" resolves to the repository-level tests/conftest.py)
@@ -34,7 +34,7 @@ def bash_available():
 # --- package / paths ------------------------------------------------------------------------
 def test_package_metadata() -> None:
     assert lindos.__version__ == "1.0.0" and lindos.__codename__ == "Aurora"
-    for name in ("paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram"):
+    for name in ("paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram", "dualboot"):
         __import__(f"lindos.{name}")
 
 
@@ -111,7 +111,9 @@ def test_helper_actions_match_spec() -> None:
     assert lhelper.ACTIONS == ["apply-mode", "install-browser", "install-packages", "install-flatpaks", "set-governor",
                                "set-services", "apply-sysctl", "apply-tune", "set-zram", "install-compat",
                                "install-gaming", "install-drivers", "set-fan-profile", "set-sched",
-                               "write-system-config", "enable-earlyoom"]
+                               "write-system-config", "enable-earlyoom",
+                               "reboot-to-windows", "firmware-setup", "import-wifi", "set-binfmt",
+                               "apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs"]
     assert lhelper.POLKIT_ACTION_ID == "org.lindos.helper"
 
 
@@ -132,6 +134,24 @@ def test_helper_actions_match_spec() -> None:
     ("set-sched", {"profile": "none"}),
     ("write-system-config", {"mode": "gaming", "oem": True}),
     ("enable-earlyoom", {"enable": False}),
+    ("install-flatpaks", {"flatpaks": ["com.nvidia.geforcenow"],
+                          "remote": {"name": "GeForceNOW",
+                                     "url": "https://international.download.nvidia.com/GFNLinux/flatpak/geforcenow.flatpakrepo"}}),
+    # a well-formed, contained apply_system path must still validate (sec-core:F1 regression
+    # guard: the tightened containment check must not reject legitimate paths).
+    ("apply-mode", {"mode": "gaming", "apply_system": "/usr/share/lindos/modes/gaming/apply-system.sh"}),
+    ("reboot-to-windows", {"method": "bootnext", "entry": "0001"}),
+    ("reboot-to-windows", {"method": "bootnext", "entry": "00AB", "reboot": False}),
+    ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "osprober-efi-ABCD-1234"}),
+    ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "osprober-chain-hd0,gpt2"}),
+    ("firmware-setup", {"confirm": True}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "open"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "correcthorsebattery"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "p@ssw0rd's finest!"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "a" * 64}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "sae", "agent_owned": True, "hidden": True}]}),
+    ("set-binfmt", {"enabled": True}),
+    ("set-binfmt", {"enabled": False}),
 ])
 def test_validate_payload_accepts(action: str, payload: dict) -> None:
     out = lhelper.validate_payload(action, payload)
@@ -144,7 +164,13 @@ def test_validate_payload_accepts(action: str, payload: dict) -> None:
     ("install-packages", {"packages": ["gimp; rm -rf /"]}),
     ("install-packages", {"packages": []}),
     ("install-packages", {"packages": "gimp lutris"}),
+    # sec-core:F2 -- a "package"/"flatpak id" starting with '-' must never slip through as an
+    # apt-get/flatpak command-line option (e.g. disabling GPG verification, changing scope).
+    ("install-packages", {"packages": ["--allow-unauthenticated"]}),
+    ("install-packages", {"packages": ["-y"]}),
+    ("install-packages", {"packages": ["gimp", "--reinstall"]}),
     ("install-flatpaks", {"flatpaks": ["org.bad/app"]}),
+    ("install-flatpaks", {"flatpaks": ["--user"]}),
     ("set-governor", {"governor": "ludicrous"}),
     ("set-services", {"disable": ["ssh"]}),
     ("set-services", {}),
@@ -156,11 +182,51 @@ def test_validate_payload_accepts(action: str, payload: dict) -> None:
     ("install-drivers", {"args": ["--rm-rf"]}),
     ("write-system-config", {}),
     ("apply-mode", {"mode": "gaming", "apply_system": "/tmp/evil.sh"}),
+    # sec-core:F1 -- a naive string-prefix check on 'apply_system' is bypassable with '..': the
+    # unnormalized string passes basename()/startswith() while resolving (once bash/os.path.isfile
+    # touch the real filesystem path) to a script outside the modes directory, which the root
+    # helper then bashes as root.
+    ("apply-mode", {"mode": "gaming",
+                    "apply_system": "/usr/share/lindos/modes/../../../../tmp/evil/apply-system.sh"}),
+    ("apply-mode", {"mode": "gaming",
+                    "apply_system": "/usr/share/lindos/modes/gaming/../../../../tmp/evil/apply-system.sh"}),
+    ("apply-mode", {"mode": "gaming",
+                    "apply_system": r"\usr\share\lindos\modes\..\..\..\..\tmp\evil\apply-system.sh"}),
+    ("apply-mode", {"mode": "gaming",
+                    "apply_system": "/usr/share/lindos/modes/./apply-system.sh"}),
     ("apply-mode", {"mode": "nope"}),
     ("enable-earlyoom", {"enable": "yes"}),
     ("set-fan-profile", {"profile": "a" * 100}),
     ("set-sched", {"profile": "scx_evil"}),
     ("set-sched", {}),
+    ("install-flatpaks", {"flatpaks": ["com.nvidia.geforcenow"],
+                          "remote": {"name": "flathub", "url": "https://dl.flathub.org/repo/flathub.flatpakrepo"}}),
+    ("install-flatpaks", {"flatpaks": ["x"], "remote": {"name": "evil; rm -rf /", "url": "https://example.com/x"}}),
+    ("install-flatpaks", {"flatpaks": ["x"], "remote": {"name": "GeForceNOW", "url": "http://example.com/x"}}),
+    ("install-flatpaks", {"flatpaks": ["x"], "remote": {"name": "GeForceNOW", "url": "https://example.com/x; rm -rf /"}}),
+    ("reboot-to-windows", {"method": "bootnext", "entry": "0001; rm -rf /"}),
+    ("reboot-to-windows", {"method": "bootnext", "entry": "not-hex"}),
+    ("reboot-to-windows", {"method": "bootnext", "entry": "00001"}),
+    ("reboot-to-windows", {"method": "bootnext"}),
+    ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "osprober-efi-'; reboot; #"}),
+    ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "gnulinux-simple"}),
+    ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "osprober-efi-$(reboot)"}),
+    ("reboot-to-windows", {"method": "bad-method", "entry": "0001"}),
+    ("firmware-setup", {}),
+    ("firmware-setup", {"confirm": False}),
+    ("import-wifi", {"networks": []}),
+    ("import-wifi", {"networks": [{"ssid": "x" * 33, "security": "open"}]}),
+    ("import-wifi", {"networks": [{"ssid": "", "security": "open"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "short1"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "g" * 64}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "wpa-psk", "psk": "line1\nkey-mgmt=none"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet", "security": "open", "psk": "shouldnotbehere"}]}),
+    ("import-wifi", {"networks": [{"ssid": "evil\n[wifi-security]\nkey-mgmt=none", "security": "open"}]}),
+    ("import-wifi", {"networks": [{"ssid": "HomeNet\x00hidden", "security": "open"}]}),
+    ("import-wifi", {"networks": "not-a-list"}),
+    ("set-binfmt", {}),
+    ("set-binfmt", {"enabled": "yes"}),
 ])
 def test_validate_payload_rejects(action: str, payload) -> None:
     with pytest.raises(lhelper.PayloadError):
@@ -220,7 +286,7 @@ def test_helper_dry_run_apply_mode(core_env, run_cli) -> None:
     assert proc.returncode == 0, proc.stderr
     out = _unquoted(proc.stdout)
     assert "[dry-run] would run: apt-get install" in out and "gamemode" in out
-    assert "flatpak install -y --noninteractive --system flathub org.prismlauncher.PrismLauncher" in out
+    assert "flatpak install -y --noninteractive --system -- flathub org.prismlauncher.PrismLauncher" in out
     assert "lindos-tune apply --mode gaming --system" in out
     assert "system.json" in out
     log_file = core_env["root"] / "var" / "log" / "lindos" / "helper.log"
@@ -252,8 +318,8 @@ def test_helper_dry_run_offline_skips_installs(core_env, run_cli) -> None:
 
 @pytest.mark.parametrize("action, payload, expect", [
     ("install-browser", {"browser": "chrome"}, "install-browser.sh chrome"),
-    ("install-packages", {"packages": ["gimp"]}, "apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold gimp"),
-    ("install-flatpaks", {"flatpaks": ["org.vinegarhq.Sober"]}, "flathub org.vinegarhq.Sober"),
+    ("install-packages", {"packages": ["gimp"]}, "apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -- gimp"),
+    ("install-flatpaks", {"flatpaks": ["org.vinegarhq.Sober"]}, "-- flathub org.vinegarhq.Sober"),
     ("set-governor", {"governor": "powersave"}, "scaling_governor"),
     ("set-services", {"disable": ["bluetooth"], "mask": ["apport"]}, "lindos-tune services disable bluetooth"),
     ("set-services", {"disable": ["bluetooth"], "mask": ["apport"]}, "systemctl mask --now -- apport.service"),

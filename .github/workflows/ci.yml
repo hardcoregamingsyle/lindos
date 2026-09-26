@@ -10,6 +10,12 @@
 #               every packages/<name>/ with a DEBIAN/control, so the SPEC-VM
 #               packages lindos-vm and lindos-winapps are built the moment they
 #               exist — no change to this job is needed for them.
+#   publish-repo  workflow_dispatch only (SPEC-UPDATE.md §36.5-§36.6): builds the
+#               flat-format signed apt repo (build/publish-apt-repo.sh) from the
+#               'debs' job's .deb artifact (+ the kernel's, if that job also ran),
+#               uploads out/apt-repo/** always, and additionally deploys it to
+#               GitHub Pages only when the repo variable LINDOS_PAGES_ENABLED is
+#               'true' (unset by default — never enabled by CI on its own).
 #   kernel      workflow_dispatch input build_kernel, and on tags (SPEC-VM §25):
 #               the real Linux work this Windows dev host cannot do — compile
 #               the Lindos-tuned kernel .debs on the Ubuntu runner.  Slow and
@@ -48,6 +54,10 @@ on:
         description: "INCLUDE_STEAM (1 = Steam/Lutris/Heroic on the ISO)"
         type: string
         default: "1"
+      boot_test:
+        description: "Boot-test the built ISO under QEMU/KVM (needs build_iso)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -116,6 +126,79 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  publish-repo:
+    name: publish Lindos apt repo (manual)
+    # manual only: this never runs on a plain push/PR, and it never deploys anything on its
+    # own (see the Pages steps below) -- SPEC-UPDATE.md §35/§36.6.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    needs: debs
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download lindos-debs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lindos-debs
+          path: out/debs
+
+      # Optional: the tuned kernel's .debs, when the 'kernel' job also produced an artifact
+      # in this same workflow run. Harmless (the kernel is simply left out of the repo) when
+      # it did not -- build/publish-apt-repo.sh's --kernel-in is best-effort by design.
+      - name: Download lindos-kernel-debs artifact (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: lindos-kernel-debs
+          path: out/kernel
+
+      - name: Install apt-ftparchive + gpg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+
+      - name: build/publish-apt-repo.sh
+        run: |
+          # No persistent signing key is configured for this repository yet
+          # (SPEC-UPDATE.md §35/§36.5) -- '--gen-key' produces an honestly-labelled
+          # ephemeral CI key (README-CI-KEY.txt) instead of silently failing or
+          # shipping something unsigned. Wiring in a real, persistent key later is
+          # a matter of importing it into $GNUPGHOME in an earlier step (e.g. from
+          # a repository secret) and passing --key-id instead of --gen-key here.
+          bash build/publish-apt-repo.sh --in out/debs --kernel-in out/kernel --out out/apt-repo --gen-key
+
+      - name: List repository contents
+        run: ls -l out/apt-repo/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindos-apt-repo
+          path: out/apt-repo/**
+          if-no-files-found: error
+          retention-days: 14
+
+      # GitHub Pages deployment is a one-time, explicit choice for whoever owns this
+      # repository (documented in docs/UPDATES.md), never something CI enables by itself:
+      # every step below is a no-op unless the repository variable LINDOS_PAGES_ENABLED is
+      # set to 'true' (it is unset by default).
+      - name: Configure Pages
+        if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out/apt-repo
+
+      - name: Deploy to GitHub Pages
+        if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
+        uses: actions/deploy-pages@v4
+
   kernel:
     name: build Lindos kernel (manual / tags)
     if: >-
@@ -132,7 +215,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dpkg-dev build-essential \
-            libncurses-dev rsync cpio kmod xz-utils
+            libncurses-dev rsync cpio kmod xz-utils dwarves
 
       - name: Resolve kernel version from the manifest
         id: ver
@@ -158,7 +241,8 @@ jobs:
         run: |
           bash build/kernel/build-kernel.sh \
             --version "${{ steps.ver.outputs.series }}" \
-            --jobs "$(nproc)"
+            --jobs "$(nproc)" \
+            --base-config ubuntu
 
       - name: List kernel artifacts
         run: ls -l out/kernel/
@@ -240,3 +324,72 @@ jobs:
             out/build.log
           if-no-files-found: error
           retention-days: 7
+
+  boot-test:
+    name: boot-test the ISO (QEMU/KVM)
+    # Actually boots the built ISO — CONTINUATION.md item 2/6: "nothing here has ever been
+    # booted yet". Runs the live kernel/initrd directly under QEMU (bypassing GRUB), with the
+    # ISO attached as a virtual CD-ROM so casper finds the squashfs exactly as on real hardware.
+    # `systemd.run=` on the kernel command line runs
+    # packages/lindos-core/.../usr/libexec/lindos/qa/ci-boot-smoke-test.sh alongside the normal
+    # boot (see build/qa/boot_test.py's docstring) — it never delays or replaces the real
+    # desktop. GitHub's ubuntu-24.04 hosted runners have nested KVM; boot_test.py falls back to
+    # TCG automatically (slower, but never hard-fails just because /dev/kvm is absent).
+    if: >-
+      ${{ always()
+          && needs.iso.result == 'success'
+          && github.event_name == 'workflow_dispatch'
+          && inputs.build_iso
+          && inputs.boot_test }}
+    runs-on: ubuntu-24.04
+    needs: iso
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU + xorriso + Pillow
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso
+          python3 -m pip install --quiet --user pillow
+
+      - name: Check for KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            ls -la /dev/kvm
+            echo "KVM available — boot test will be fast."
+          else
+            echo "::warning::no /dev/kvm on this runner — falling back to TCG (much slower); see build/qa/boot_test.py"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lindos-iso
+          path: out
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h /
+
+      - name: Boot the ISO and run the smoke test
+        id: boot
+        run: |
+          extra=()
+          if [ "${{ inputs.build_kernel }}" = "true" ]; then
+            extra+=(--require-kernel-suffix -lindos)
+          fi
+          python3 build/qa/boot_test.py --iso 'out/lindos-*.iso' --out-dir out/qemu-boot-test \
+            --timeout 600 --grace 90 "${extra[@]}"
+
+      - name: Upload boot-test artifacts (serial log + screenshot)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lindos-boot-test
+          path: |
+            out/qemu-boot-test/serial.log
+            out/qemu-boot-test/desktop.png
+            out/qemu-boot-test/desktop.ppm
+          if-no-files-found: warn
+          retention-days: 14

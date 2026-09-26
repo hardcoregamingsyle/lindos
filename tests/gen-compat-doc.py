@@ -40,7 +40,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 LOG = logging.getLogger("gen-compat-doc")
 
@@ -186,6 +186,7 @@ def load_matrix(path: str) -> List[Dict[str, Any]]:
             problems.append(f"entry #{idx} ({game}): duplicate of entry #{seen[key]}")
             continue
         seen[key] = idx
+        routes = entry.get("routes")
         clean.append(
             {
                 "game": game,
@@ -195,6 +196,9 @@ def load_matrix(path: str) -> List[Dict[str, Any]]:
                 "anticheat": str(entry.get("anticheat") or entry.get("anti_cheat") or "").strip(),
                 "reason": str(entry.get("reason") or entry.get("notes") or "").strip(),
                 "link": str(entry.get("link") or entry.get("url") or "").strip(),
+                # SPEC-WINDOWS §30.1 "routes" (cloud/windows/vm/verified) — optional, only
+                # present on some (typically not-possible) entries; None when absent/malformed.
+                "routes": routes if isinstance(routes, dict) else None,
             }
         )
     if problems:
@@ -204,6 +208,23 @@ def load_matrix(path: str) -> List[Dict[str, Any]]:
     if not clean:
         raise MatrixError(f"compat matrix {path} contains no entries")
     return clean
+
+
+def load_cloud_providers(path: str) -> Dict[str, Any]:
+    """Best-effort read of the top-level ``cloud_providers`` object (SPEC-WINDOWS §30.1).
+
+    Never raises: a missing/invalid file or an absent/malformed key just means no "Other ways
+    to play" provider table is rendered (the per-title route bullets still are, from
+    :func:`load_matrix`'s ``routes`` field).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("cloud_providers"), dict):
+        return data["cloud_providers"]
+    return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +260,104 @@ def _group(entries: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]
     return groups
 
 
-def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL) -> str:
+_PROVIDER_LINUX_LABELS: Dict[str, str] = {
+    "official-app": "Official Linux app/client",
+    "browser-unofficial": "Chrome/Edge in a browser — Linux not officially listed",
+}
+
+
+def _provider_availability(p: Dict[str, Any]) -> str:
+    if isinstance(p.get("regions"), list) and p["regions"]:
+        return "Only " + ", ".join(str(r) for r in p["regions"])
+    excluded = p.get("regions_excluded")
+    if isinstance(excluded, list) and excluded:
+        return "Everywhere except " + ", ".join(str(r) for r in excluded)
+    return "No region restriction recorded"
+
+
+def _render_cloud_providers_table(providers: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    add = lines.append
+    add("**Cloud providers Lindos knows about** (official apps/pages only; a provider's own real "
+        "Linux support is shown as-is, never oversold):")
+    add("")
+    add("| Provider | Linux support | Availability | Subscription |")
+    add("|---|---|---|---|")
+    for pid in sorted(providers):
+        p = providers[pid]
+        if not isinstance(p, dict):
+            continue
+        linux = _PROVIDER_LINUX_LABELS.get(str(p.get("linux", "")), str(p.get("linux", "—")))
+        add(
+            "| "
+            + " | ".join(
+                (
+                    f"[{_cell(p.get('name', pid))}]({p.get('url', '')})",
+                    _cell(linux),
+                    _cell(_provider_availability(p)),
+                    _cell(p.get("subscription", "")),
+                )
+            )
+            + " |"
+        )
+    add("")
+    return lines
+
+
+def _render_other_ways_to_play(entries: List[Dict[str, Any]], providers: Dict[str, Any]) -> List[str]:
+    """SPEC-WINDOWS §30.1: an "Other ways to play" section with ``routes.verified`` shown."""
+    routed = [e for e in entries if e["status"] == "not-possible" and e.get("routes")]
+    if not routed:
+        return []
+    lines: List[str] = []
+    add = lines.append
+    add("## Other ways to play")
+    add("")
+    add(
+        "Every **Not possible** title above still has the honest routes Lindos knows about: "
+        "official cloud streaming — only where the provider actually carries that title and only "
+        "when it is offered in your region — and a one-click restart into a Windows install "
+        "already on the machine. **Never** a spoofer, and **never** the Lindos VM: every anti-cheat "
+        "below also blocks virtual machines, so a VM would not make the game work, only risk a "
+        "hardware ban (see [ANTI-CHEAT.md](ANTI-CHEAT.md)). Region comes from your locale, "
+        "timezone or `~/.config/lindos/config.json`, or an explicit `--region` — **never** IP "
+        "geolocation. Run `lindos-game route <title>` for a live check against your own machine "
+        "(installed clients, dual-boot / Secure-Boot / TPM status)."
+    )
+    add("")
+    if providers:
+        lines.extend(_render_cloud_providers_table(providers))
+    routed = sorted(routed, key=lambda e: (e["game"].casefold(), e["game"]))
+    for e in routed:
+        routes = e["routes"]
+        add(f"### {e['game']}")
+        add("")
+        requires = routes.get("windows_requires") or []
+        req_txt = f" — needs {', '.join(str(r) for r in requires)} enabled in Windows" if requires else ""
+        add(f"- **Restart into Windows**{req_txt}. Boots only a Windows Boot Manager entry the "
+            "firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys "
+            "or firmware settings.")
+        cloud = routes.get("cloud") or []
+        if cloud:
+            for c in cloud:
+                pid = c.get("provider")
+                pname = providers.get(pid, {}).get("name", pid) if isinstance(providers.get(pid), dict) else pid
+                tier = f" ({c['tier']})" if c.get("tier") else ""
+                note = f" — {c['note']}" if c.get("note") else ""
+                url = c.get("url", "")
+                add(f"- **{pname}**{tier}: [{_cell(url.replace('https://', '').replace('http://', ''))}]({url}){note}")
+        else:
+            add("- No cloud-streaming route known for this title.")
+        add(f"- The Lindos Windows VM is never offered here (`vm: {str(bool(routes.get('vm'))).lower()}`).")
+        verified = routes.get("verified")
+        if verified:
+            add(f"- _Routes verified {verified}._")
+        add("")
+    return lines
+
+
+def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL,
+          providers: Optional[Dict[str, Any]] = None) -> str:
     """Render the Markdown document (deterministic; LF newlines)."""
     groups = _group(entries)
     total = len(entries)
@@ -304,6 +422,8 @@ def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL) -> str:
                 + " |"
             )
         add("")
+
+    lines.extend(_render_other_ways_to_play(entries, providers or {}))
 
     add("## How to read a status that is not listed here")
     add("")
@@ -392,6 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except MatrixError as exc:
         LOG.error("%s", exc)
         return 2
+    providers = load_cloud_providers(args.source)
 
     if args.source_label:
         source_rel = args.source_label
@@ -402,7 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_rel = args.source
         if source_rel.startswith(".."):
             source_rel = args.source
-    rendered = render(entries, source_rel=source_rel)
+    rendered = render(entries, source_rel=source_rel, providers=providers)
     LOG.debug("rendered %d entries from %s", len(entries), args.source)
 
     if args.stdout:

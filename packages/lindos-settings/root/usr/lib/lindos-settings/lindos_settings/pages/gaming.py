@@ -1,11 +1,12 @@
 """Gaming page: Game Mode auto, MangoHud, Proton-GE (lindos-proton), launcher grid
-(helper install-gaming), controller status, refresh rate per monitor, anti-cheat reality and
-the compatibility list (compat-matrix.json)."""
+(helper install-gaming), controller status, refresh rate per monitor, anti-cheat reality, the
+compatibility list (compat-matrix.json) and honest play-anywhere routes for titles that need
+Windows (cloud streaming or a one-shot restart into Windows; never a VM or a spoof)."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from .. import model
 from ..widgets import HAVE_GTK, Card, ComboCard, InfoCard, OutputDialog, PageBase, SwitchCard, add_class, badge, box, button, confirm, icon_image, label, run_async
@@ -82,6 +83,17 @@ class GamingPage(PageBase):
         compat = Card("Compatibility list", "Which popular games work on Lindos, which are partial and which are impossible", ("view-list-details",), ("compatibility", "matrix", "games", "list"))
         compat.set_control(button("Open compatibility list", on_click=self._open_compat))
         hsec.add(compat)
+
+        # -- games that need Windows (SPEC-WINDOWS §30, §32)
+        nwsec = self.add_section("Games that need Windows")
+        self.region_card = ComboCard(
+            "Region for cloud gaming", "Which cloud-gaming providers and Game Pass tiers are offered where you are — taken from the system locale/timezone, or set it here",
+            ("preferences-desktop-locale", "network-workgroup"), ("region", "geforce now", "xbox cloud", "cloud gaming", "boosteroid", "luna"),
+            options=list(model.REGION_CHOICES), on_change=self._set_region, active_id=model.region_combo_id(b.region()))
+        nwsec.add(self.region_card)
+        self.needs_windows_section = self.add_section("")
+        self.needs_windows_section.add(Card("Checking…", "", ("dialog-information",), ()))
+        self._refresh_needs_windows()
 
     # ------------------------------------------------------------------ toggles
     def _set_cfg(self, key: str, value: bool, title: str) -> None:
@@ -248,13 +260,45 @@ class GamingPage(PageBase):
     def _open_compat(self) -> None:
         CompatDialog(self.app, self.backend)
 
+    # ------------------------------------------------------------------ games that need Windows
+    def _set_region(self, region_id: str) -> None:
+        value = model.region_config_value(region_id)
+        run_async(lambda: self.backend.set_region(value),
+                 lambda ok, exc: None if ok and not exc else self.toast("Could not save the region"),
+                 name="set-region")
+
+    def _refresh_needs_windows(self) -> None:
+        def _done(games: Any, exc: Optional[BaseException]) -> None:
+            self.needs_windows_section.clear()
+            games = games or []
+            if exc:
+                self.needs_windows_section.add(Card("Could not read the compatibility list", str(exc), ("dialog-error",), ()))
+            elif not games:
+                self.needs_windows_section.add(Card("Nothing needs Windows right now", "Every title Lindos knows about runs here.", ("emblem-ok-symbolic", "applications-games"), ()))
+            else:
+                for g in games:
+                    name = str(g.get("name") or "")
+                    if not name:
+                        continue
+                    card = Card(name, g.get("reason") or "", ("dialog-warning", "applications-games"), (name.lower(), "windows", "restart into windows", "cloud"))
+                    card.set_control(button("Routes…", on_click=lambda n=name: self._open_routes(n)))
+                    self.needs_windows_section.add(card)
+            self.needs_windows_section.show_all()
+
+        run_async(self.backend.not_possible_games, _done, name="not-possible-games")
+
+    def _open_routes(self, title: str) -> None:
+        RoutesDialog(self.app, self.backend, title)
+
     def on_show(self) -> None:
         b = self.backend
         self.gamemode_card.set_active_silent(bool(b.config_get("gamemode_auto", True)))
         self.mango_card.set_active_silent(bool(b.config_get("mangohud", False)))
+        self.region_card.set_active_id_silent(model.region_combo_id(b.region()))
         self._refresh_launchers()
         self._refresh_controllers()
         self._build_rate_cards()
+        self._refresh_needs_windows()
 
 
 class CompatDialog:
@@ -310,4 +354,150 @@ class CompatDialog:
             row.set_visible(ok)
 
 
-__all__ = ["GamingPage", "CompatDialog"]
+_ROUTE_ICONS: dict[str, tuple] = {
+    "cloud": ("network-server", "applications-internet"),
+    "windows": ("computer", "system-reboot"),
+    "vm": ("computer-symbolic",),
+    "proton": ("wine",),
+    "native": ("applications-games",),
+}
+
+
+class RoutesDialog:
+    """Per-title honest routes (SPEC-WINDOWS §30.2): official cloud streaming
+    (``lindos-game cloud install geforce-now``) or a one-shot restart into Windows
+    (``lindos-dualboot reboot-to-windows``, re-validated as root before it does anything). The
+    VM route is shown as information only — Lindos never offers it for a blocked title."""
+
+    def __init__(self, app: Any, backend: Any, title: str):
+        self.app = app
+        self.backend = backend
+        self.title = title
+        self.dialog = Gtk.Dialog(title=f"{title} — how to play it", transient_for=app.window, modal=False)
+        self.dialog.set_default_size(680, 500)
+        add_class(self.dialog, "routes-dialog")
+        area = self.dialog.get_content_area()
+        area.set_spacing(8)
+        area.set_margin_top(10)
+        area.set_margin_start(12)
+        area.set_margin_end(12)
+        self.status_label = label("Looking up routes…", ("dim-label",), wrap=True)
+        area.pack_start(self.status_label, False, False, 0)
+        self.boot_label = label("", ("dim-label",), wrap=True)
+        area.pack_start(self.boot_label, False, False, 0)
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.listbox = Gtk.ListBox()
+        self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        add_class(self.listbox, "settings-cards")
+        sw.add(self.listbox)
+        area.pack_start(sw, True, True, 0)
+        self.dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.dialog.connect("response", lambda d, *_: d.destroy())
+        self.dialog.show_all()
+        self._route: Optional[Dict[str, Any]] = None
+        self._boot: Optional[Dict[str, Any]] = None
+        run_async(lambda: backend.game_route(title), self._route_loaded, name="game-route")
+        run_async(backend.dualboot_status, self._boot_loaded, name="dualboot-status")
+
+    def _route_loaded(self, data: Any, exc: Optional[BaseException]) -> None:
+        self._route = data if isinstance(data, dict) else {}
+        if exc:
+            self.status_label.set_text(f"Could not look up routes: {exc}")
+        self._render()
+
+    def _boot_loaded(self, data: Any, exc: Optional[BaseException]) -> None:
+        self._boot = data if isinstance(data, dict) else {}
+        self._render()
+
+    def _render(self) -> None:
+        if self._route is None:
+            return
+        for child in list(self.listbox.get_children()):
+            self.listbox.remove(child)
+        route = self._route
+        boot = self._boot or {}
+        routes = route.get("routes") or []
+        anticheat = route.get("anticheat") or "—"
+        region = route.get("region") or "unknown"
+        self.status_label.set_text(f"Anti-cheat: {anticheat}   ·   Region used: {region}")
+        self.boot_label.set_text("Dual boot: " + (model.dualboot_summary(boot) if self._boot is not None else "checking…"))
+        if not routes:
+            notes = [n for n in (route.get("notes") or []) if n]
+            self.listbox.add(Card("No routes available", "; ".join(notes) or "Lindos has nothing more to suggest for this title.", ("dialog-warning",)).row)
+        else:
+            for note in route.get("notes") or []:
+                if note:
+                    self.listbox.add(InfoCard("Why", note, ("dialog-information",)).row)
+            for r in routes:
+                self.listbox.add(self._route_row(r, boot))
+        self.listbox.show_all()
+
+    def _route_row(self, route: Dict[str, Any], boot: Dict[str, Any]) -> Any:
+        rtype = str(route.get("type") or "")
+        provider = route.get("provider")
+        title_text = str(route.get("label") or rtype) + (f" ({provider})" if provider else "")
+        card = Card(title_text, str(route.get("why") or ""), _ROUTE_ICONS.get(rtype, ("applications-games",)), (rtype, provider or ""))
+        card.add_control(badge("works" if route.get("available") else "not-possible"))
+        requires = route.get("requires") or []
+        if requires:
+            card.add_body(label("Needs: " + ", ".join(requires), ("dim-label",), wrap=True))
+        if rtype == "cloud" and provider == "geforce-now" and not route.get("available"):
+            card.set_control(button("Install GeForce NOW", classes=("suggested-action",), on_click=self._install_geforce_now))
+        elif rtype == "windows":
+            boot_ready = self._boot is not None
+            can_reboot = bool(route.get("available")) and boot_ready and bool(boot.get("can_reboot_to_windows"))
+            btn = button("Restart into Windows", classes=("suggested-action",) if can_reboot else (), on_click=self._restart_to_windows)
+            btn.set_sensitive(can_reboot)
+            if not can_reboot:
+                reason = ("Checking whether Lindos can restart into Windows…" if not boot_ready else
+                         str(route.get("why") or boot.get("why") or "Not available on this PC"))
+                btn.set_tooltip_text(reason)
+            card.set_control(btn)
+        return card.row
+
+    def _install_geforce_now(self) -> None:
+        if not self.backend.which("lindos-game"):
+            self.app.toast("lindos-game (lindos-gaming) is not installed")
+            return
+        if not confirm(self.dialog, "Install GeForce NOW?",
+                       "Installs NVIDIA's official Flatpak (Flathub remote GeForceNOW) through the Lindos helper. "
+                       "Needs an internet connection and the administrator password.", "Install"):
+            return
+        self.app.toast("Installing GeForce NOW…")
+
+        def _done(res: Any, exc: Optional[BaseException]) -> None:
+            ok = res is not None and getattr(res, "ok", False) and not exc
+            if ok:
+                self.app.toast("GeForce NOW installed")
+            else:
+                err = (getattr(res, "err", "") or getattr(res, "out", "") or str(exc or "")).strip()
+                self.app.toast(f"Install failed: {err[:140] or 'see helper log'}")
+                if err:
+                    dlg = OutputDialog(self.dialog, "Install GeForce NOW — output", self.backend)
+                    dlg.set_text((getattr(res, "out", "") or "") + "\n" + (getattr(res, "err", "") or ""))
+                    dlg.set_status("Failed", False)
+
+        run_async(self.backend.install_geforce_now, _done, name="install-geforce-now")
+
+    def _restart_to_windows(self) -> None:
+        if not self.backend.which("lindos-dualboot"):
+            self.app.toast("lindos-dualboot (lindos-core) is not installed")
+            return
+        if not confirm(self.dialog, "Restart into Windows?",
+                       f"This restarts the PC once into Windows so you can play {self.title}. Lindos boots "
+                       "normally again next time — nothing about your boot order is changed permanently. "
+                       "Save your work first.", "Restart", destructive=True):
+            return
+        self.app.toast("Restarting into Windows…")
+
+        def _done(res: Any, exc: Optional[BaseException]) -> None:
+            ok = res is not None and getattr(res, "ok", False) and not exc
+            if not ok:
+                err = (getattr(res, "err", "") or getattr(res, "out", "") or str(exc or "")).strip()
+                self.app.toast(f"Could not restart into Windows: {err[:160] or 'see log'}")
+
+        run_async(self.backend.reboot_to_windows, _done, name="reboot-to-windows")
+
+
+__all__ = ["GamingPage", "CompatDialog", "RoutesDialog"]

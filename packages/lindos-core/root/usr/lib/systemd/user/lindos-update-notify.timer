@@ -1,0 +1,11 @@
+[Unit]
+Description=Lindos: re-check for lindos-* component updates every 6 hours (SPEC-UPDATE.md §37)
+
+[Timer]
+OnStartupSec=15min
+OnUnitActiveSec=6h
+AccuracySec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

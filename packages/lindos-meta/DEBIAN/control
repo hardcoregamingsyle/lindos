@@ -4,7 +4,7 @@ Section: metapackages
 Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
-Depends: lindos-core (= 1.0.0), lindos-desktop (= 1.0.0), lindos-setup (= 1.0.0), lindos-settings (= 1.0.0), lindos-compat (= 1.0.0), lindos-gaming (= 1.0.0), lindos-tune (= 1.0.0)
+Depends: lindos-core (= 1.0.0), lindos-desktop (= 1.0.0), lindos-setup (= 1.0.0), lindos-settings (= 1.0.0), lindos-compat (= 1.0.0), lindos-gaming (= 1.0.0), lindos-tune (= 1.0.0), lindos-transfer (= 1.0.0)
 Recommends: lindos-kernel, lindos-vm, lindos-winapps, firefox, steam-launcher | steam-installer, wine-staging | wine, winetricks, gamemode, mangohud, gamescope, flatpak, xfce4-panel-profiles, xfce4-docklike-plugin, picom, earlyoom, power-profiles-daemon
 Suggests: lutris, heroic, umu-launcher, corectrl, openrgb, nbfc-linux, scx
 Homepage: https://lindos.dev
@@ -13,7 +13,22 @@ Description: Lindos 1.0 (Aurora) — complete Windows-11-style desktop remaster 
  helper (lindos-core), the theme/panel/branding (lindos-desktop), the
  first-boot OOBE wizard (lindos-setup), the Settings centre (lindos-settings),
  Windows-app support through Wine/Proton (lindos-compat), gaming launchers and
- drivers (lindos-gaming) and the RAM/performance tuning (lindos-tune).
+ drivers (lindos-gaming), the RAM/performance tuning (lindos-tune) and a
+ Windows Easy Transfer-style migration tool (lindos-transfer).
+ .
+ lindos-compat also opens every other common Windows file type (MSIX/APPX
+ packages and bundles, .msp patches, .reg, .ps1, .vbs, .url, .scr, .cpl, .inf,
+ .cab, disk images, DOS and 16-bit programs, "./setup.exe" from a terminal)
+ and can install packages by id with 'lindos-compat winget install' — hash-
+ verified straight from each publisher's own manifest, HTTPS only, no
+ override. For games whose kernel-level anti-cheat cannot run on any Linux
+ (Valorant, League of Legends, Call of Duty, and the like), lindos-game route
+ shows the honest way to actually play them: an official cloud-streaming
+ service where one exists, or a one-command restart into the PC's own
+ Windows installation (lindos-dualboot, a genuine UEFI/GRUB one-shot boot,
+ never a VM trick and never a Windows edit) — never an emulator or spoofer,
+ because none can produce the hardware-rooted signature those anti-cheats
+ verify.
  .
  The Lindos-tuned kernel (lindos-kernel: ntsync, sched_ext, 1000 Hz preempt,
  MGLRU) is Recommended, not required — the stock Mint/Ubuntu kernel stays

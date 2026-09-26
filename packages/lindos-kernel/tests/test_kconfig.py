@@ -39,6 +39,55 @@ def test_shipped_fragment_no_duplicates(shipped_config: Path) -> None:
     assert cfg.conflicts() == {}
 
 
+# --- Addendum W (SPEC-WINDOWS §31.1): Windows-format keys ----------------------------------
+def test_addendum_w_keys_are_required() -> None:
+    # every Addendum-W key must be part of the general required-keys set
+    for key in k.REQUIRED_KEYS_ADDENDUM_W:
+        assert key in k.REQUIRED_KEYS, key
+
+
+def test_addendum_w_keys_do_not_conflict_with_existing_keys() -> None:
+    # the new §31.1 keys must not collide with any pre-existing (perf/Wine) required key
+    pre_existing = set(k.REQUIRED_KEYS) - set(k.REQUIRED_KEYS_ADDENDUM_W)
+    assert pre_existing.isdisjoint(k.REQUIRED_KEYS_ADDENDUM_W)
+
+
+def test_shipped_fragment_has_every_addendum_w_key(shipped_config: Path) -> None:
+    cfg = k.parse_file(str(shipped_config))
+    present = set(cfg.keys())
+    for key in k.REQUIRED_KEYS_ADDENDUM_W:
+        assert key in present, key
+
+
+def test_shipped_fragment_addendum_w_values(shipped_config: Path) -> None:
+    cfg = k.parse_file(str(shipped_config))
+    # module (built as a loadable driver, not built-in) for the heavier filesystem drivers
+    assert cfg.get("CONFIG_NTFS3_FS") == "m"
+    assert cfg.get("CONFIG_EXFAT_FS") == "m"
+    assert cfg.get("CONFIG_DM_CRYPT") == "m"
+    assert cfg.get("CONFIG_CRYPTO_USER_API_SKCIPHER") == "m"
+    assert cfg.get("CONFIG_ISO9660_FS") == "m"
+    assert cfg.get("CONFIG_UDF_FS") == "m"
+    # built-in for the small always-needed bits
+    assert cfg.get("CONFIG_NTFS3_LZX_XPRESS") == "y"
+    assert cfg.get("CONFIG_NTFS3_FS_POSIX_ACL") == "y"
+    assert cfg.get("CONFIG_UNICODE") == "y"
+    assert cfg.get("CONFIG_BINFMT_MISC") == "y"
+    assert cfg.get("CONFIG_EFIVAR_FS") == "y"
+    assert cfg.get("CONFIG_BLK_DEV_LOOP") == "y"
+    assert cfg.get("CONFIG_JOLIET") == "y"
+    assert cfg.get("CONFIG_FUSE_FS") == "y"
+    assert cfg.get("CONFIG_LDM_PARTITION") == "y"
+
+
+def test_missing_addendum_w_key_is_reported_missing() -> None:
+    base = {key: "y" for key in k.REQUIRED_KEYS if key != "CONFIG_NTFS3_FS"}
+    base["CONFIG_HZ"] = "1000"
+    text = "\n".join(f"{key}={val}" for key, val in base.items()) + "\nCONFIG_IOSCHED_BFQ=y\n"
+    cfg = k.parse(text)
+    assert "CONFIG_NTFS3_FS" in cfg.missing_required()
+
+
 def test_load_default_path_uses_lindos_root(fake_root) -> None:
     cfg = k.parse_file()  # resolved through LINDOS_ROOT
     assert cfg.get("CONFIG_NTSYNC") == "y"

@@ -1019,6 +1019,206 @@ class Backend:
             "lindos_run": bool(self.which("lindos-run")),
         }
 
+    # ------------------------------------------------------------------ Windows file types / terminal .exe / winget
+    def formats(self) -> list[dict[str, Any]]:
+        """``lindos-compat formats --json`` (SPEC-WINDOWS §28.2): every call is defensive — a
+        missing binary, non-zero exit or bad JSON all degrade to an empty list, never an
+        exception, so the page can show a friendly "not available" message instead."""
+        if not self.which("lindos-compat"):
+            return []
+        r = self.run(["lindos-compat", "formats", "--json"], timeout=20)
+        if not r.ok or not r.out.strip():
+            return []
+        try:
+            return model.parse_formats_table(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("lindos-compat formats --json: bad output (%s)", exc)
+            return []
+
+    def binfmt_status(self) -> dict[str, Any]:
+        """``lindos-compat binfmt status --json`` (SPEC-WINDOWS §28.7)."""
+        if not self.which("lindos-compat"):
+            return model.normalize_binfmt_status({"note": "lindos-compat is not installed"})
+        r = self.run(["lindos-compat", "binfmt", "status", "--json"], timeout=15)
+        if not r.ok or not r.out.strip():
+            return model.normalize_binfmt_status({"note": (r.err or r.out).strip() or "could not read the status"})
+        try:
+            return model.normalize_binfmt_status(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("lindos-compat binfmt status --json: bad output (%s)", exc)
+            return model.normalize_binfmt_status({"note": "lindos-compat returned data Settings could not read"})
+
+    def set_binfmt(self, enabled: bool) -> HelperResult:
+        """``lindos-compat binfmt enable|disable --json`` -- the CLI itself talks to the
+        privileged helper (action ``set-binfmt``) and may show its own polkit prompt; conflicts
+        with any other registered handler are reported honestly, never silently overridden."""
+        if not self.which("lindos-compat"):
+            return HelperResult(False, "", "lindos-compat is not installed", 127)
+        action = "enable" if enabled else "disable"
+        r = self.run(["lindos-compat", "binfmt", action, "--json"], timeout=90)
+        message = ""
+        try:
+            data = json.loads(r.out) if r.out.strip() else {}
+            if isinstance(data, dict):
+                message = str(data.get("message") or "")
+        except ValueError:
+            pass
+        return HelperResult(r.ok, message or r.out, r.err, r.code)
+
+    def winget_search(self, query: str, limit: int = 20) -> list[dict[str, str]]:
+        """``lindos-compat winget search <query> --json`` (SPEC-WINDOWS §28.10)."""
+        if not query.strip() or not self.which("lindos-compat"):
+            return []
+        r = self.run(["lindos-compat", "winget", "search", query, "--limit", str(limit), "--json"], timeout=30)
+        if not r.ok or not r.out.strip():
+            return []
+        try:
+            return model.parse_winget_results(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("lindos-compat winget search --json: bad output (%s)", exc)
+            return []
+
+    @staticmethod
+    def winget_install_argv(package_id: str) -> list[str]:
+        """argv for an :class:`OutputDialog` (SPEC-WINDOWS §32: "install button -> ... in a
+        terminal or with progress"). ``--accept-package-agreements`` is required because a
+        streamed log view cannot answer the CLI's interactive yes/no license prompt; the
+        agreement text is still shown in the streamed output before the download starts."""
+        return ["lindos-compat", "winget", "install", package_id, "--accept-package-agreements"]
+
+    def transfer_gui_available(self) -> bool:
+        return bool(self.which("lindos-transfer-gui"))
+
+    def launch_transfer_gui(self) -> bool:
+        return self.spawn(["lindos-transfer-gui"])
+
+    # ------------------------------------------------------------------ play-anywhere (SPEC-WINDOWS §30)
+    def not_possible_games(self) -> list[dict[str, str]]:
+        """Titles from the compat matrix that need Windows (kernel anti-cheat with no Linux
+        build) -- the "Games that need Windows" card."""
+        return [g for g in self.compat_matrix() if g.get("status") == "not-possible"]
+
+    def game_route(self, title: str) -> dict[str, Any]:
+        """``lindos-game route <title> --json`` (SPEC-WINDOWS §30.2), fully defensive."""
+        title = (title or "").strip()
+        if not title:
+            return model.normalize_game_route({})
+        if not self.which("lindos-game"):
+            return model.normalize_game_route(
+                {"title": title, "notes": ["lindos-game (lindos-gaming) is not installed"]})
+        r = self.run(["lindos-game", "route", title, "--json"], timeout=20)
+        if not r.ok or not r.out.strip():
+            return model.normalize_game_route(
+                {"title": title, "notes": [(r.err or r.out).strip() or "could not look up routes for this game"]})
+        try:
+            return model.normalize_game_route(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("lindos-game route --json: bad output (%s)", exc)
+            return model.normalize_game_route(
+                {"title": title, "notes": ["lindos-game returned data Settings could not read"]})
+
+    def region(self) -> str:
+        return str(self.config_get("region", "") or "")
+
+    def set_region(self, region: str) -> bool:
+        return self.config_set("region", region)
+
+    def install_geforce_now(self) -> HelperResult:
+        """``lindos-game cloud install geforce-now`` -- the official NVIDIA Flatpak through the
+        helper's ``install-flatpaks`` action (SPEC-WINDOWS §30.2/§30.4); can take a while."""
+        if not self.which("lindos-game"):
+            return HelperResult(False, "", "lindos-game (lindos-gaming) is not installed", 127)
+        r = self.run(["lindos-game", "cloud", "install", "geforce-now"], timeout=600)
+        return HelperResult(r.ok, r.out, r.err, r.code)
+
+    def dualboot_status(self) -> dict[str, Any]:
+        """``lindos-dualboot status --json`` (SPEC-WINDOWS §30.3)."""
+        if not self.which("lindos-dualboot"):
+            return model.normalize_dualboot_status({"why": "lindos-dualboot (lindos-core) is not installed"})
+        r = self.run(["lindos-dualboot", "status", "--json"], timeout=20)
+        if not r.ok or not r.out.strip():
+            return model.normalize_dualboot_status(
+                {"why": (r.err or r.out).strip() or "could not read the dual-boot status"})
+        try:
+            return model.normalize_dualboot_status(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("lindos-dualboot status --json: bad output (%s)", exc)
+            return model.normalize_dualboot_status({"why": "lindos-dualboot returned data Settings could not read"})
+
+    def reboot_to_windows(self, entry: str = "") -> HelperResult:
+        """``lindos-dualboot reboot-to-windows --yes [--entry X]`` -- the CLI re-validates the
+        chosen entry is really Windows Boot Manager (as root) before touching anything."""
+        if not self.which("lindos-dualboot"):
+            return HelperResult(False, "", "lindos-dualboot (lindos-core) is not installed", 127)
+        argv = ["lindos-dualboot", "reboot-to-windows", "--yes"]
+        if entry:
+            argv += ["--entry", entry]
+        r = self.run(argv, timeout=30)
+        return HelperResult(r.ok, r.out, r.err, r.code)
+
+    # ------------------------------------------------------------------ Lindos updates (SPEC-UPDATE §36/§37)
+    def _update_cli_json(self, argv: Sequence[str], tool: str, timeout: float, normalize: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
+        """Run ``argv`` (a read-only ``--json`` query) and hand the parsed/failed result to
+        *normalize* -- defensive against a missing binary, non-zero exit or bad JSON, exactly
+        like :meth:`formats`/:meth:`binfmt_status` above: never an exception, always an honest
+        dict the page can render."""
+        if not self.which(str(argv[0])):
+            return normalize({"_missing": True})
+        r = self.run(list(argv), timeout=timeout)
+        if not r.ok or not r.out.strip():
+            return normalize({"_error": (r.err or r.out).strip() or f"{tool} exited {r.code}"})
+        try:
+            return normalize(json.loads(r.out))
+        except ValueError as exc:
+            log.warning("%s: bad output (%s)", " ".join(argv), exc)
+            return normalize({"_error": f"{tool} returned data Settings could not read"})
+
+    def update_check(self) -> dict[str, Any]:
+        """``lindos-update check --json`` (SPEC-UPDATE §36.1/§36.2): every ``lindos-*``
+        package's installed/available version, the booted/available kernel, and whether an apt
+        repo is configured. Read-only, no root, safe to call as often as the UI wants."""
+        return self._update_cli_json(["lindos-update", "check", "--json"], "lindos-update", 30, model.normalize_update_status)
+
+    def update_kernel_status(self) -> dict[str, Any]:
+        """``lindos-update kernel-status --json`` (SPEC-UPDATE §36.1) -- booted vs. installed vs.
+        available kernel version for the Kernel card."""
+        return self._update_cli_json(["lindos-update", "kernel-status", "--json"], "lindos-update", 20, model.normalize_kernel_status)
+
+    def update_repo_status(self) -> dict[str, Any]:
+        """``lindos-update repo status --json`` (SPEC-UPDATE §36.1) -- is ``LINDOS_APT_REPO_URL``
+        configured and reachable."""
+        return self._update_cli_json(["lindos-update", "repo", "status", "--json"], "lindos-update", 20, model.normalize_repo_status)
+
+    def secureboot_status(self) -> dict[str, Any]:
+        """``lindos-kernel secureboot status --json`` (SPEC-WINDOWS §31.3, shipped by
+        lindos-kernel) -- Secure-Boot-signed indicator for the Kernel card."""
+        return self._update_cli_json(["lindos-kernel", "secureboot", "status", "--json"], "lindos-kernel", 20, model.normalize_secureboot_status)
+
+    def update_refresh(self) -> HelperResult:
+        """"Check now": privileged helper action ``apt-get-update`` (SPEC-UPDATE §36.4) refreshes
+        the apt cache; the caller re-runs :meth:`update_check` afterwards to read the new state.
+        Same "run privileged" mechanism as :meth:`install_packages`/:meth:`install_drivers`."""
+        return self.run_privileged("apt-get-update", {})
+
+    def update_apply(self, packages: Sequence[str], allow_kernel: bool = False) -> HelperResult:
+        """"Update now" / the kernel's "Apply now": privileged helper action ``system-upgrade``
+        (SPEC-UPDATE §36.4) with an explicit, exact ``name=version`` list the caller computed
+        from :meth:`update_check`'s own output (:func:`lindos_settings.model.lindos_update_payload`
+        / :func:`~lindos_settings.model.kernel_update_payload`) -- never a bare apt-get upgrade."""
+        payload: dict[str, Any] = {"packages": [str(p) for p in packages]}
+        if allow_kernel:
+            payload["allow_kernel"] = True
+        return self.run_privileged("system-upgrade", payload)
+
+    @staticmethod
+    def sideload_argv(directory: str) -> list[str]:
+        """``lindos-update sideload <DIR> --yes`` (SPEC-UPDATE §36.3) -- the CLI itself inspects
+        every ``lindos-*.deb`` in *directory* and talks to the privileged helper
+        (``install-local-debs``); ``--yes`` is required because the streamed
+        :class:`~lindos_settings.widgets.OutputDialog` runs with stdin closed and cannot answer
+        an interactive downgrade prompt."""
+        return ["lindos-update", "sideload", str(directory), "--yes"]
+
     # ------------------------------------------------------------------ system info (about)
     @staticmethod
     def os_release() -> dict[str, str]:

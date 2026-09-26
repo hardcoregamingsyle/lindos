@@ -1,0 +1,27 @@
+#!/bin/sh
+# postrm for lindos-transfer — idempotent.
+set -e
+
+case "${1:-}" in
+    remove|purge)
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+        if command -v update-mime-database >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+        fi
+        if [ "$1" = "purge" ]; then
+            # Per-user state (plans, resumable-copy journals, the last report) is never removed here:
+            # it lives under each user's own $HOME/.local/state/lindos/transfer, and this package
+            # never touches another user's files. Nothing is written system-wide by lindos-transfer.
+            :
+        fi
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

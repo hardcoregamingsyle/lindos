@@ -1,7 +1,29 @@
 """lindos-kernel CLI smoke tests: runs on Windows against a faked LINDOS_ROOT (SPEC-KERNEL §15.4)."""
 from __future__ import annotations
 
+import importlib.util
 import json
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+CLI_PATH = HERE.parent / "root" / "usr" / "bin" / "lindos-kernel"
+
+
+@pytest.fixture(scope="module")
+def cli_module():
+    """Load the `/usr/bin/lindos-kernel` script (no .py suffix) as an importable module, so
+    its private helpers (e.g. `_newest_kernel_version`) can be unit-tested directly without
+    going through a subprocess. `main()` is only invoked under `__name__ == "__main__"`, so
+    importing it this way never runs the CLI."""
+    loader = SourceFileLoader("lindos_kernel_cli_under_test", str(CLI_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)  # type: ignore[union-attr]
+    return module
 
 
 def _env(fake_root, **extra) -> dict:
@@ -70,9 +92,75 @@ def test_cmdline_preset_gaming(run_cli, fake_root) -> None:
     assert "mitigations=off" in res.stdout
 
 
+def test_secureboot_status_json(run_cli, fake_root) -> None:
+    fake_root["write"]("/etc/default/grub.d/51-lindos-kernel-select.cfg",
+                       "# >>> lindos >>>\nGRUB_DEFAULT=\"0\"\n# <<< lindos <<<\n")
+    res = run_cli("secureboot", "status", "--json", env=_env(fake_root))
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["firmware"] in ("uefi", "bios")
+    assert "mok" in data and "tools" in data and "kernels" in data
+
+
+def test_secureboot_status_human_readable(run_cli, fake_root) -> None:
+    res = run_cli("secureboot", "status", env=_env(fake_root))
+    assert res.returncode == 0, res.stderr
+    assert "Firmware" in res.stdout
+    assert "Secure Boot" in res.stdout
+
+
+def test_secureboot_apply_selection(run_cli, fake_root) -> None:
+    fake_root["write"]("/etc/default/grub.d/51-lindos-kernel-select.cfg",
+                       "# >>> lindos >>>\nGRUB_DEFAULT=\"0\"\n# <<< lindos <<<\n")
+    res = run_cli("secureboot", "apply-selection", "--json", env=_env(fake_root))
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["grub_default"] == "0"  # no Secure Boot info in the fake root -> allowed
+
+
+# --- _newest_kernel_version (regression, correct-platform:F3) ------------------------------
+# A plain lexicographic string sort mis-orders real kernel version strings: sorted(...)[-1]
+# picks '6.8.0-40-generic' over '6.11.0-9-generic' because '1' < '8' at the first differing
+# character, so `secureboot apply-selection` could name a stale kernel as the GRUB fallback
+# entry instead of the actually-newest one.
+def test_newest_kernel_version_is_numeric_not_lexicographic(cli_module) -> None:
+    images = [
+        {"version": "6.8.0-40-generic", "lindos": False},
+        {"version": "6.11.0-9-generic", "lindos": False},
+    ]
+    assert cli_module._newest_kernel_version(images, lindos=False) == "6.11.0-9-generic"
+
+
+def test_newest_kernel_version_filters_by_lindos_flag(cli_module) -> None:
+    images = [
+        {"version": "6.8.0-40-generic", "lindos": False},
+        {"version": "6.14.0-lindos", "lindos": True},
+    ]
+    assert cli_module._newest_kernel_version(images, lindos=True) == "6.14.0-lindos"
+    assert cli_module._newest_kernel_version(images, lindos=False) == "6.8.0-40-generic"
+
+
+def test_newest_kernel_version_empty_returns_none(cli_module) -> None:
+    assert cli_module._newest_kernel_version([], lindos=False) is None
+    assert cli_module._newest_kernel_version([{"version": "1.0", "lindos": True}], lindos=False) is None
+
+
 def test_build_prints_plan_never_compiles(run_cli, fake_root) -> None:
     # Non-Linux: prints the plan and exits 0.  Linux: LINDOS_KERNEL_BUILD_DRYRUN keeps CI from
     # launching a real kernel compile.  Either way the build command must not hang or build.
     res = run_cli("build", "--jobs", "2", env=_env(fake_root, LINDOS_KERNEL_BUILD_DRYRUN="1"))
     assert res.returncode == 0, res.stderr
     assert "config fragment" in res.stdout
+
+
+def test_build_default_base_config_is_ubuntu(run_cli, fake_root) -> None:
+    res = run_cli("build", env=_env(fake_root, LINDOS_KERNEL_BUILD_DRYRUN="1"))
+    assert res.returncode == 0, res.stderr
+    assert "base config    : ubuntu" in res.stdout
+
+
+def test_build_base_config_flag_passthrough(run_cli, fake_root) -> None:
+    res = run_cli("build", "--base-config", "defconfig",
+                  env=_env(fake_root, LINDOS_KERNEL_BUILD_DRYRUN="1"))
+    assert res.returncode == 0, res.stderr
+    assert "base config    : defconfig" in res.stdout

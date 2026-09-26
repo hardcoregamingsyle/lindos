@@ -3,28 +3,49 @@
 Every check is a small probe with an injectable ``which``/``run``/``dpkg`` so the
 logic is testable without Wine.  Output: one ✓/✗ line per check with the command
 that fixes it, and a summary.  ``--json`` gives the same data structured.
+
+Checks for the other Windows file types (SPEC-WINDOWS §28.9): DOSBox (DOS programs),
+PowerShell 7 (``.ps1``), cabextract (``.cab``), terminal ``.exe`` support (binfmt_misc,
+incl. other handlers that claim ``MZ`` files), case-insensitive C:\\ drives (casefold),
+udisks2 (disk images), the Wine WoW64 mode (16-bit programs) and python3-hivex (MSIX
+registry settings).  The probes of the sibling modules (``dos``, ``binfmt``) are imported
+lazily and replaceable, so a missing module only turns its check into "unknown".
 """
 
 from __future__ import annotations
 
 import glob
+import importlib
+import importlib.util
 import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Callable, Dict, List, Optional
 
 from . import CoreMissing, core, get_logger, user_home
-from .prefix import find_wine, prefixes_dir, wine_version
+from .prefix import casefold_probe, find_wine, prefixes_dir, wine_version
 from .runner import BOTTLES_APP_ID, find_proton, is_bottles_installed
 
-__all__ = ["Check", "DoctorReport", "run_doctor", "format_report", "dpkg_installed", "INSTALL_CMD"]
+__all__ = ["Check", "DoctorReport", "run_doctor", "format_report", "dpkg_installed", "INSTALL_CMD",
+           "POWERSHELL_INSTALL_CMD", "POWERSHELL_DEB_URL"]
 
 log = get_logger("lindos-compat.doctor")
 
 INSTALL_CMD = "pkexec /usr/libexec/lindos/install-compat.sh   (or: Lindos Settings > Windows apps > Install)"
 LEVELS = ("required", "recommended", "optional")
+#: Microsoft's repository package for Ubuntu 24.04 -- hard-coded on purpose: Linux Mint's own
+#: VERSION_ID (22.x) is not a Microsoft repository path and would give "404 Not Found".
+POWERSHELL_DEB_URL = "https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb"
+POWERSHELL_INSTALL_CMD = (f"wget {POWERSHELL_DEB_URL} && sudo dpkg -i packages-microsoft-prod.deb && "
+                          "sudo apt update && sudo apt install powershell")
+_WOW64_TEXT = {
+    "old-wow64": (True, "classic WoW64 (16-bit programs get their own 32-bit C:\\ drive)"),
+    "new-wow64-16bit": (True, "new WoW64 with 16-bit support"),
+    "new-wow64-no16bit": (False, "new WoW64 without 16-bit support (Wine older than 10.16)"),
+}
 
 
 @dataclass
@@ -87,6 +108,81 @@ def _tool_version(argv: List[str], run: Callable[..., "subprocess.CompletedProce
     return text.splitlines()[0][:80] if text else ""
 
 
+def _sibling(name: str) -> Optional[ModuleType]:
+    try:
+        return importlib.import_module(f"{__package__}.{name}")
+    except ImportError:
+        return None
+
+
+def _default_dosbox_probe(which: Callable[[str], Optional[str]], run: Callable[..., object]) -> Optional[str]:
+    dos = _sibling("dos")
+    if dos is None:
+        return None
+    try:
+        found = dos.find_dosbox(which=which, run=run)
+    except Exception as exc:  # noqa: BLE001 - a probe problem is reported as "not found"
+        log.debug("find_dosbox failed: %s", exc)
+        return None
+    if not found:
+        return None
+    argv, flavor = found
+    return f"{flavor} ({' '.join(str(a) for a in argv)})"
+
+
+def _default_wow64_probe(which: Callable[[str], Optional[str]], run: Callable[..., object]) -> str:
+    dos = _sibling("dos")
+    if dos is None:
+        return "unknown"
+    try:
+        return str(dos.wine_wow64_mode(which=which, run=run))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("wine_wow64_mode failed: %s", exc)
+        return "unknown"
+
+
+def _default_binfmt_probe(root: Optional[Path]) -> Optional[Dict[str, object]]:
+    mod = _sibling("binfmt")
+    if mod is None:
+        return None
+    try:
+        return dict(mod.status(root))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("binfmt.status failed: %s", exc)
+        return None
+
+
+def _binfmt_check(st: Optional[Dict[str, object]]) -> Check:
+    label = "Run .exe from a terminal (binfmt_misc, ./setup.exe)"
+    if st is None:
+        return Check("binfmt", label, False, "optional", "status unknown (support module missing)",
+                     "apt install --reinstall lindos-compat")
+    conflicts = [c for c in (st.get("conflicts") or []) if isinstance(c, dict)]
+    others = ", ".join(f"'{c.get('name', '?')}' ({c.get('interpreter', '?')})" for c in conflicts)
+    note = str(st.get("note") or "")
+    if st.get("masked"):
+        return Check("binfmt", label, False, "optional", "turned off (masked)",
+                     "lindos-compat binfmt enable   (or Lindos Settings > Windows apps)")
+    if not st.get("registered") or not st.get("enabled"):
+        detail = "not registered" if not st.get("registered") else "registered but disabled"
+        return Check("binfmt", label, False, "optional", detail + (f"; {note}" if note else ""),
+                     "lindos-compat binfmt enable   (or Lindos Settings > Windows apps)")
+    if conflicts:
+        return Check("binfmt", label, False, "optional",
+                     f"active, but {others} also claims Windows programs; the handler registered last wins "
+                     "(at boot that is usually binfmt-support's)" + (f"; {note}" if note else ""),
+                     "leave it, or remove the other handler yourself (e.g. sudo apt remove wine-binfmt) - "
+                     "Lindos never changes other handlers")
+    return Check("binfmt", label, True, "optional", "active" + (f"; {note}" if note else ""), "")
+
+
+def _hivex_available() -> bool:
+    try:
+        return importlib.util.find_spec("hivex") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def run_doctor(
     *,
     which: Callable[[str], Optional[str]] = shutil.which,
@@ -97,6 +193,11 @@ def run_doctor(
     isdir: Callable[[str], bool] = os.path.isdir,
     isfile: Callable[[str], bool] = os.path.isfile,
     exists: Callable[[str], bool] = os.path.exists,
+    dosbox_probe: Optional[Callable[[], Optional[str]]] = None,
+    wow64_probe: Optional[Callable[[], str]] = None,
+    binfmt_probe: Optional[Callable[[], Optional[Dict[str, object]]]] = None,
+    casefold: Optional[Callable[[], Dict[str, object]]] = None,
+    hivex: Optional[Callable[[], bool]] = None,
 ) -> DoctorReport:
     env = dict(os.environ) if env is None else env
     home = home or user_home()
@@ -261,6 +362,62 @@ def run_doctor(
     rep.checks.append(Check("vkd3d", "VKD3D-Proton (Direct3D 12 -> Vulkan)", proton_dxvk, "optional",
                             "built into Proton (umu)" if proton_dxvk else "no Proton; add per C:\\ drive with install-vkd3d",
                             "" if proton_dxvk else "lindos-compat install-umu   (or per prefix: lindos-compat install-vkd3d <slug>)"))
+
+    # --- other Windows file types (SPEC-WINDOWS §28.9) --------------------------------
+    # 22. DOSBox for DOS programs
+    dosbox = dosbox_probe() if dosbox_probe is not None else _default_dosbox_probe(which, run)
+    dos_hint = str(getattr(_sibling("dos"), "DOSBOX_INSTALL_HINT", "") or "sudo apt install dosbox-x")
+    rep.checks.append(Check("dosbox", "DOSBox (runs DOS programs: .com, old .exe)", bool(dosbox), "recommended",
+                            dosbox or "not found", "" if dosbox else dos_hint))
+
+    # 23. PowerShell 7 (optional; Microsoft's repository, never the snap)
+    pwsh = which("pwsh")
+    rep.checks.append(Check("powershell", "PowerShell 7 (\"Run with PowerShell\" for .ps1 scripts)", bool(pwsh),
+                            "optional",
+                            (_tool_version([pwsh, "--version"], run) or pwsh) if pwsh else "not installed",
+                            "" if pwsh else POWERSHELL_INSTALL_CMD))
+
+    # 24. udisks2 for disk images (.iso / .img)
+    udisks = which("udisksctl")
+    rep.checks.append(Check("udisks2", "udisks2 (opens .iso/.img disk images read-only)", bool(udisks), "recommended",
+                            udisks or "not found", "" if udisks else "apt install udisks2"))
+
+    # 25. binfmt_misc: typing ./setup.exe in a terminal
+    st = binfmt_probe() if binfmt_probe is not None else _default_binfmt_probe(Path(root_prefix) if root_prefix else None)
+    rep.checks.append(_binfmt_check(st))
+
+    # 26. case-insensitive C:\ drives (ext4 casefold) - decided by trying, not by /sys alone
+    cf = casefold() if casefold is not None else casefold_probe(prefixes_dir(), sys_root=root_prefix)
+    state = str(cf.get("state") or "error")
+    cf_fix = {
+        "not-enabled": "optional: the filesystem needs the casefold feature (mkfs.ext4 -O casefold, or "
+                       "tune2fs -O casefold while it is not mounted, e.g. from the live USB); Lindos never runs "
+                       "tune2fs",
+        "no-kernel-support": "optional: needs a kernel with CONFIG_UNICODE (the Lindos kernel has it)",
+    }.get(state, "optional: nothing to do (Wine works without it, just slower on huge folders)")
+    rep.checks.append(Check("casefold", "Case-insensitive C:\\ drives (casefold speed-up)", state == "active",
+                            "optional", f"casefold: {cf.get('detail') or state}", "" if state == "active" else cf_fix))
+
+    # 27. Wine WoW64 mode (decides how 16-bit Windows programs run)
+    if wine:
+        mode = wow64_probe() if wow64_probe is not None else _default_wow64_probe(which, run)
+        ok_mode, text = _WOW64_TEXT.get(mode, (False, "could not be determined"))
+        fix = ""
+        if mode == "new-wow64-no16bit":
+            fix = "install Wine 11 or newer (WineHQ) to run 16-bit Windows programs: " + INSTALL_CMD
+        elif not ok_mode:
+            fix = "only matters for 16-bit Windows programs; see docs/WINDOWS-FORMATS.md"
+        rep.checks.append(Check("wine-wow64", "Wine WoW64 mode (16-bit Windows programs)", ok_mode, "optional",
+                                f"{mode}: {text}", fix))
+    else:
+        rep.checks.append(Check("wine-wow64", "Wine WoW64 mode (16-bit Windows programs)", False, "optional",
+                                "Wine is not installed", INSTALL_CMD))
+
+    # 28. python3-hivex: MSIX packages' own registry settings (Registry.dat)
+    hv = hivex() if hivex is not None else _hivex_available()
+    rep.checks.append(Check("hivex", "python3-hivex (registry settings of MSIX app packages)", bool(hv), "recommended",
+                            "installed" if hv else "not installed (MSIX apps install without their registry settings)",
+                            "" if hv else "apt install python3-hivex"))
     return rep
 
 

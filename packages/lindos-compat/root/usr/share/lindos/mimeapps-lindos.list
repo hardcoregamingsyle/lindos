@@ -1,18 +1,77 @@
-# Lindos: open Windows programs with lindos-run (Wine/Proton) by default.
-# Merged into /etc/xdg/mimeapps.list by the lindos-compat postinst (SPEC §9);
-# users can still change the default in Settings > Default apps.
+# Lindos: open Windows files with lindos-run (Wine/Proton) by default, disk images with the
+# AutoPlay-style opener, and - like Windows - PowerShell scripts and .inf files in the text
+# editor ("Run with PowerShell" is a right-click action).  Merged into /etc/xdg/mimeapps.list
+# by the lindos-compat postinst (SPEC §9, SPEC-WINDOWS §28.9); a default the administrator
+# already set is never replaced, and users can still change it in Settings > Default apps.
 [Default Applications]
-application/x-ms-dos-executable=lindos-run.desktop
 application/x-msdownload=lindos-run.desktop
+application/x-ms-dos-executable=lindos-run.desktop
+application/x-dosexec=lindos-run.desktop
 application/vnd.microsoft.portable-executable=lindos-run.desktop
+application/x-ms-ne-executable=lindos-run.desktop
 application/x-msi=lindos-run.desktop
+application/x-lindos-msp=lindos-run.desktop
+application/x-lindos-mst=lindos-run.desktop
 application/x-ms-shortcut=lindos-run.desktop
 application/x-bat=lindos-run.desktop
+application/appx=lindos-run.desktop
+application/msix=lindos-run.desktop
+application/appxbundle=lindos-run.desktop
+application/msixbundle=lindos-run.desktop
+application/appinstaller=lindos-run.desktop
+application/x-lindos-msix-upload=lindos-run.desktop
+application/x-lindos-msix-encrypted=lindos-run.desktop
+application/x-lindos-msixvc=lindos-run.desktop
+text/x-ms-regedit=lindos-run.desktop
+application/x-mswinurl=lindos-run.desktop
+text/vbscript=lindos-run.desktop
+text/vbscript.encode=lindos-run.desktop
+application/x-lindos-wsf=lindos-run.desktop
+application/x-lindos-cpl=lindos-run.desktop
+application/vnd.ms-cab-compressed=lindos-run.desktop
+application/x-lindos-clickonce=lindos-run.desktop
+application/x-lindos-appref-ms=lindos-run.desktop
+application/x-lindos-dos-program=lindos-run.desktop
+application/vnd.efi.iso=lindos-open-image.desktop
+application/x-cd-image=lindos-open-image.desktop
+application/x-iso9660-image=lindos-open-image.desktop
+application/vnd.efi.img=lindos-open-image.desktop
+application/x-raw-disk-image=lindos-open-image.desktop
+application/x-powershell=org.xfce.mousepad.desktop
+application/x-lindos-inf=org.xfce.mousepad.desktop
 
 [Added Associations]
-application/x-ms-dos-executable=lindos-run.desktop;
 application/x-msdownload=lindos-run.desktop;
+application/x-ms-dos-executable=lindos-run.desktop;
+application/x-dosexec=lindos-run.desktop;
 application/vnd.microsoft.portable-executable=lindos-run.desktop;
+application/x-ms-ne-executable=lindos-run.desktop;
 application/x-msi=lindos-run.desktop;
+application/x-lindos-msp=lindos-run.desktop;
+application/x-lindos-mst=lindos-run.desktop;
 application/x-ms-shortcut=lindos-run.desktop;
 application/x-bat=lindos-run.desktop;
+application/appx=lindos-run.desktop;
+application/msix=lindos-run.desktop;
+application/appxbundle=lindos-run.desktop;
+application/msixbundle=lindos-run.desktop;
+application/appinstaller=lindos-run.desktop;
+application/x-lindos-msix-upload=lindos-run.desktop;
+application/x-lindos-msix-encrypted=lindos-run.desktop;
+application/x-lindos-msixvc=lindos-run.desktop;
+text/x-ms-regedit=lindos-run.desktop;
+application/x-mswinurl=lindos-run.desktop;
+text/vbscript=lindos-run.desktop;
+text/vbscript.encode=lindos-run.desktop;
+application/x-lindos-wsf=lindos-run.desktop;
+application/x-lindos-cpl=lindos-run.desktop;
+application/x-lindos-inf=lindos-run.desktop;
+application/vnd.ms-cab-compressed=lindos-run.desktop;
+application/x-lindos-clickonce=lindos-run.desktop;
+application/x-lindos-appref-ms=lindos-run.desktop;
+application/x-lindos-dos-program=lindos-run.desktop;
+application/vnd.efi.iso=lindos-open-image.desktop;
+application/x-cd-image=lindos-open-image.desktop;
+application/x-iso9660-image=lindos-open-image.desktop;
+application/vnd.efi.img=lindos-open-image.desktop;
+application/x-raw-disk-image=lindos-open-image.desktop;

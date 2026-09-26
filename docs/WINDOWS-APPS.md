@@ -8,6 +8,13 @@
 > table below says which is which; when a program is *broken* the recipe names native
 > alternatives.
 
+> **Every other Windows file type** — Store-style app packages (`.msix`/`.appx`), `.msp`
+> patches, `.reg`, `.ps1`, `.vbs`, Internet shortcuts, `.cab`, disk images, ClickOnce, DOS and
+> 16-bit programs, terminal `./setup.exe`, case-insensitive C:\ drives — is covered in
+> [WINDOWS-FORMATS.md](WINDOWS-FORMATS.md); `lindos-transfer` (bringing files/apps over from a
+> Windows install) is in [TRANSFER.md](TRANSFER.md); getting a program by name instead of a
+> downloaded file is in [WINGET.md](WINGET.md).
+
 ## 1. Double-click and go: `lindos-run`
 
 Any `.exe`, `.msi`, `.bat`/`.cmd` or `.lnk` opens with **Windows App Runner (Lindos)**
@@ -142,9 +149,17 @@ homepage.
 | `photoshop-cc-2021` | Adobe Photoshop CC 2021 (v22) | creator | **partial** | wine / win64 | Everyday editing works; GPU features, Neural Filters and Creative Cloud sign-in do not; 2022+ crash. | GIMP, Krita, Photopea |
 | `photoshop-cs6` | Adobe Photoshop CS6 (13.x) | creator | **works** | wine / win64 | Runs well for photo editing; keep GPU acceleration off; install with a serial, not an Adobe ID trial. | GIMP, Krita, Photopea |
 | `premiere` | Adobe Premiere Pro (CC 2019–2024) | creator | **broken** | wine / win64 | Does NOT work: installer fails and the editor needs GPU/media features Wine cannot provide. | Kdenlive, DaVinci Resolve, Shotcut |
-| `riot-client` | Riot Client (Valorant, League of Legends, TFT) | gaming | **broken** | wine / win64 | **Not possible on any Linux**: Riot Vanguard is a Windows-only kernel anti-cheat. | (none) — Counter-Strike 2 / Dota 2 native, GeForce NOW (cloud) |
+| `riot-client` | Riot Client (Valorant, League of Legends, TFT) | gaming | **broken** | wine / win64 | **Not possible on any Linux**: Riot Vanguard is a Windows-only kernel anti-cheat. | (none) — Counter-Strike 2 / Dota 2 native, restart into Windows (`lindos-game route valorant`) |
 | `roblox-player` | Roblox Player (Windows client) | gaming | **broken** | wine / win64 | The Windows client is blocked on Wine by Roblox's Hyperion anti-cheat; **play Roblox through Sober instead (works)** — `lindos-game install sober`. | Sober (Roblox for Linux), Roblox in Lindos Settings |
 | `winrar` | WinRAR | utility | **works** | wine / win64 | Runs through Wine (trial nag included); Lindos also opens RAR archives natively. | Archive Manager, rar for Linux, PeaZip |
+
+*Correction:* earlier notes for `riot-client` said League of Legends streamed through NVIDIA
+GeForce NOW; NVIDIA removed League of Legends from GeForce NOW on **1 May 2024** (Vanguard,
+Riot's kernel anti-cheat, refuses to run inside GeForce NOW's virtual machines), and Valorant
+was never offered there either. There is currently **no cloud-gaming route** for either game —
+see [COMPATIBILITY.md](COMPATIBILITY.md) and [ANTI-CHEAT.md](ANTI-CHEAT.md) for the full,
+regularly-verified list of what streams where, and `lindos-game route <title>` for the honest
+alternatives (restarting into Windows, or a native/cloud route when one really exists).
 
 Recipe JSON schema: `{id, name, vendor, category, status, notes, runner (wine|umu|bottles),
 arch (win32|win64), winetricks[], dll_overrides{}, env{}, post_cmds[], registry[{key,name,type,

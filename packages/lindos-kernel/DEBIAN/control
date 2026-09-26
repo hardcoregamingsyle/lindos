@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
 Depends: python3 (>= 3.10), lindos-core
-Recommends: scx-scheds
+Recommends: scx-scheds, sbsigntool, mokutil
 Suggests: lindos-tune
 Homepage: https://lindos.dev
 Description: Lindos-tuned kernel recipe, boot integration and runtime CLI

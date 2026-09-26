@@ -323,3 +323,53 @@ def _build_lnk(
 def build_lnk() -> Callable[..., bytes]:
     """The .lnk builder as a fixture (importable-by-name is not guaranteed under importlib mode)."""
     return _build_lnk
+
+
+# --------------------------------------------------------------------------- #
+# synthetic PE / NE / MZ images (never vendored binaries)
+# --------------------------------------------------------------------------- #
+def _build_pe(*, machine: int = 0x8664, subsystem: int = 2, dll: bool = False, pad: int = 512) -> bytes:
+    """A minimal, structurally valid PE image (MZ → e_lfanew → PE\\0\\0 → COFF → optional header)."""
+    e_lfanew = 0x80
+    buf = bytearray(b"MZ" + b"\x90\x00" + b"\x00" * (0x3C - 4))
+    buf += struct.pack("<I", e_lfanew)
+    buf += b"\x00" * (e_lfanew - len(buf))
+    characteristics = 0x0022 | (0x2000 if dll else 0)
+    pe32plus = machine in (0x8664, 0xAA64)
+    opt_size = 240 if pe32plus else 224
+    buf += b"PE\x00\x00"
+    buf += struct.pack("<HHIIIHH", machine, 0, 0, 0, 0, opt_size, characteristics)
+    opt = bytearray(struct.pack("<H", 0x20B if pe32plus else 0x10B))
+    opt += b"\x00" * (68 - len(opt))
+    opt += struct.pack("<H", subsystem)
+    opt += b"\x00" * ((108 if pe32plus else 92) - len(opt))
+    opt += struct.pack("<I", 16)                      # NumberOfRvaAndSizes
+    opt += b"\x00" * (opt_size - len(opt))            # empty data directories (no CLR header)
+    buf += opt
+    buf += b"\x00" * pad
+    return bytes(buf)
+
+
+def _build_ne(*, exetyp: int = 2, library: bool = False) -> bytes:
+    """A minimal NE (16-bit Windows) image: MZ stub + ``NE`` header with ne_flags/ne_exetyp."""
+    e_lfanew = 0x80
+    buf = bytearray(b"MZ" + b"\x00" * (0x3C - 2))
+    buf += struct.pack("<I", e_lfanew)
+    buf += b"\x00" * (e_lfanew - len(buf))
+    ne = bytearray(b"NE" + b"\x00" * 0x3E)
+    struct.pack_into("<H", ne, 0x0C, 0x8000 if library else 0x0002)
+    ne[0x36] = exetyp
+    buf += ne + b"\x00" * 256
+    return bytes(buf)
+
+
+@pytest.fixture()
+def make_pe() -> Callable[..., bytes]:
+    """``make_pe(machine=0x8664, subsystem=2, dll=False)`` → bytes of a synthetic PE image."""
+    return _build_pe
+
+
+@pytest.fixture()
+def make_ne() -> Callable[..., bytes]:
+    """``make_ne(exetyp=2, library=False)`` → bytes of a synthetic 16-bit NE image."""
+    return _build_ne

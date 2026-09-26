@@ -1,11 +1,17 @@
 #!/bin/sh
-# postinst for lindos-compat (SPEC §9) — idempotent, offline-safe, no downloads.
+# postinst for lindos-compat (SPEC §9, SPEC-WINDOWS §28.7/§28.9) — idempotent, offline-safe,
+# no downloads.
 #
 #  * merges [Default Applications] (and [Added Associations]) from
 #    /usr/share/lindos/mimeapps-lindos.list into /etc/xdg/mimeapps.list without duplicates
 #  * merges the Thunar custom actions from /usr/share/lindos/thunar-uca-lindos.xml into
 #    /etc/xdg/Thunar/uca.xml (created if missing; actions with the same <unique-id> are skipped)
 #  * update-mime-database / update-desktop-database / icon cache
+#  * registers the binfmt_misc rule lindos-pe (./setup.exe in a terminal) with
+#    '/usr/lib/systemd/systemd-binfmt /usr/lib/binfmt.d/lindos-pe.conf' — that registers ONLY this
+#    file; never 'systemctl restart systemd-binfmt' (it would flush every other entry, e.g. qemu
+#    or wine).  Skipped when the rule is masked/overridden in /etc/binfmt.d, in a chroot (ISO
+#    build) or without a running systemd; systemd-binfmt.service applies it at the next boot.
 # Wine itself is NOT installed here (see /usr/libexec/lindos/install-compat.sh, run by the
 # Lindos helper action 'install-compat' from OOBE / Lindos Settings, and by the ISO build).
 set -e
@@ -17,8 +23,32 @@ LINDOS_UCA_SRC="${LINDOS_UCA_SRC:-/usr/share/lindos/thunar-uca-lindos.xml}"
 LINDOS_UCA_DST="${LINDOS_UCA_DST:-/etc/xdg/Thunar/uca.xml}"
 export LINDOS_MIMEAPPS_SRC LINDOS_MIMEAPPS_DST LINDOS_UCA_SRC LINDOS_UCA_DST
 
+BINFMT_CONF="${LINDOS_BINFMT_CONF:-/usr/lib/binfmt.d/lindos-pe.conf}"
+BINFMT_MASK="${LINDOS_BINFMT_MASK:-/etc/binfmt.d/lindos-pe.conf}"
+SYSTEMD_BINFMT="${LINDOS_SYSTEMD_BINFMT:-/usr/lib/systemd/systemd-binfmt}"
+
 log() {
     printf 'lindos-compat: %s\n' "$*" >&2
+}
+
+in_chroot() {
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        systemd-detect-virt --quiet --chroot && return 0
+    fi
+    return 1
+}
+
+register_binfmt() {
+    [ -f "$BINFMT_CONF" ] || return 0
+    if [ -e "$BINFMT_MASK" ] || [ -L "$BINFMT_MASK" ]; then
+        log "binfmt rule lindos-pe is masked or overridden in $BINFMT_MASK (not registering)"
+        return 0
+    fi
+    [ -x "$SYSTEMD_BINFMT" ] || return 0
+    [ -d /run/systemd/system ] || return 0            # not booted with systemd
+    in_chroot && return 0                             # ISO build: never touch the build host
+    [ -e /proc/sys/fs/binfmt_misc/register ] || return 0
+    "$SYSTEMD_BINFMT" "$BINFMT_CONF" >/dev/null 2>&1 || log "could not register the binfmt rule lindos-pe (non-fatal)"
 }
 
 merge_mimeapps() {
@@ -29,7 +59,6 @@ import os, re, sys
 
 src = os.environ["LINDOS_MIMEAPPS_SRC"]
 dst = os.environ["LINDOS_MIMEAPPS_DST"]
-OURS = "lindos-run.desktop"
 
 
 def parse(path):
@@ -97,7 +126,7 @@ for key, value in s_sections.get("Default Applications", []):
             del entries[i]
             changed = True
 
-# [Added Associations]: make sure lindos-run.desktop is listed (semicolon separated list).
+# [Added Associations]: make sure our .desktop ids are listed (semicolon separated list).
 for key, value in s_sections.get("Added Associations", []):
     if key is None:
         continue
@@ -109,8 +138,9 @@ for key, value in s_sections.get("Added Associations", []):
     else:
         k, v = entries[idx[0]]
         apps = [a for a in v.split(";") if a]
-        if OURS not in apps:
-            apps.append(OURS)
+        missing = [a for a in value.split(";") if a and a not in apps]
+        if missing:
+            apps.extend(missing)
             entries[idx[0]] = (k, ";".join(apps) + ";")
             changed = True
 
@@ -183,7 +213,8 @@ PYEOF
 
 case "${1:-}" in
     configure)
-        for f in /usr/libexec/lindos/install-compat.sh /usr/bin/lindos-run /usr/bin/lindos-compat; do
+        for f in /usr/libexec/lindos/install-compat.sh /usr/libexec/lindos/lindos-binfmt /usr/bin/lindos-run \
+                 /usr/bin/lindos-compat; do
             [ -f "$f" ] && chmod 0755 "$f" 2>/dev/null || true
         done
         mkdir -p /var/log/lindos 2>/dev/null || true
@@ -202,6 +233,7 @@ case "${1:-}" in
             gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
         fi
         # xdg-mime (xdg-utils) keeps its own cache of the system defaults; nothing to refresh.
+        register_binfmt
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)
         ;;

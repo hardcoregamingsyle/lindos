@@ -1,0 +1,332 @@
+#!/usr/bin/python3
+"""lindos-update — updates for Lindos's own 12 packages, honestly (SPEC-UPDATE.md §35-§36).
+
+The base system (kernel, XFCE, Firefox, Wine, everything from Ubuntu/Mint's own repositories)
+already updates through Mint's own Update Manager (``mintupdate``) — this tool never touches
+that, it only counts how many system packages are upgradable so the Settings page can point you
+at Update Manager. What this tool actually manages is Lindos's own ``lindos-*`` packages, which
+have no update channel until someone configures a real signed apt repository
+(``LINDOS_APT_REPO_URL`` in ``build/config.env`` — a placeholder until then, see
+``docs/UPDATES.md``); until that exists, the honest, today-usable path is 'sideload': installing
+``lindos-*.deb`` files from a local folder (e.g. a CI artifact) with no repo at all.
+
+  lindos-update check [--json]
+      what's upgradable, read-only, no root, never refreshes apt's cache itself
+  lindos-update apply [--include-kernel] [--yes] [--dry-run] [--json]
+      install the exact Lindos component (and, with --include-kernel, kernel) updates 'check' found
+  lindos-update cleanup [--yes] [--dry-run] [--json]
+      apt-get autoremove --purge (old kernels / orphaned packages)
+  lindos-update kernel-status [--json]
+      booted vs. installed vs. available kernel, and whether a reboot is pending
+  lindos-update sideload <DIR> [--yes] [--dry-run] [--json]
+      install/replace lindos-* .deb files from a local folder — no apt repo needed
+  lindos-update repo status [--json]
+      is LINDOS_APT_REPO_URL configured & reachable
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 nothing to do.
+
+Checking is always safe and needs no privilege; applying anything is opt-in, confirmed, and
+never scheduled to run unattended (SPEC-UPDATE.md §35) — nothing here is ever silent.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TREE_LIB = os.path.normpath(os.path.join(_HERE, "..", "lib", "python3", "dist-packages"))
+if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.path:
+    sys.path.insert(0, _TREE_LIB)
+
+try:
+    from lindos import __version__ as LINDOS_VERSION
+    from lindos import helper as lhelper
+    from lindos import update as lupdate
+except ImportError as exc:  # pragma: no cover
+    sys.stderr.write(f"lindos-update: the 'lindos' python package is missing ({exc}); install lindos-core\n")
+    sys.exit(1)
+
+PROG = "lindos-update"
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NOTHING = 0, 1, 2, 3
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
+
+def _emit(data: Any, as_json: bool, text: str = "") -> None:
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        print(text)
+
+
+def _confirm(prompt: str, yes: bool) -> bool:
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{prompt} Re-run with --yes to proceed non-interactively.")
+        return False
+    try:
+        reply = input(f"{prompt} [y/N] ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return reply.strip().lower() in ("y", "yes")
+
+
+def _dry_run_helper(enabled: bool) -> None:
+    """Route through :mod:`lindos.helper`'s own dry-run support (``LINDOS_HELPER_DRYRUN=1``)
+    instead of reimplementing it — the helper already prints exactly what it would run."""
+    if enabled:
+        os.environ[lhelper.DRYRUN_ENV] = "1"
+
+
+# --- check ---------------------------------------------------------------------------------
+def cmd_check(ns: argparse.Namespace) -> int:
+    st = lupdate.check()
+    if ns.json:
+        _emit(st.to_dict(), True)
+        return EXIT_OK if (st.lindos_updates or st.kernel_available) else EXIT_NOTHING
+    print("apt lists last refreshed: " + (st.refreshed_at or "never (run 'lindos-update apply', or wait for apt-daily.timer)"))
+    if st.lindos_updates:
+        print(f"Lindos component updates ({len(st.lindos_updates)}):")
+        for u in st.lindos_updates:
+            print(f"  {u.name}: {u.installed} -> {u.candidate}")
+    else:
+        print("Lindos components: up to date")
+    print(f"other system updates: {len(st.system_updates)} (see Update Manager / mintupdate)")
+    if st.kernel_available:
+        ka = st.kernel_available
+        print(f"kernel update available: {ka.name} {ka.installed} -> {ka.candidate} (use --include-kernel to apply)")
+    else:
+        print("kernel update available: none")
+    tuned = " (lindos-tuned)" if st.booted_is_lindos_kernel else ""
+    print(f"booted kernel: {st.booted_kernel or 'unknown'}{tuned}")
+    if st.reboot_required:
+        print("a reboot is required to finish a previous update.")
+    if st.repo_configured:
+        print(f"Lindos apt repo: configured (reachable: {'yes' if st.repo_reachable else 'no'})")
+    else:
+        print("Lindos apt repo: not configured yet — see docs/UPDATES.md ('lindos-update sideload' works today with no repo)")
+    return EXIT_OK if (st.lindos_updates or st.kernel_available) else EXIT_NOTHING
+
+
+# --- apply ---------------------------------------------------------------------------------
+def cmd_apply(ns: argparse.Namespace) -> int:
+    st = lupdate.check()
+    names_versions: Dict[str, str] = {u.name: u.candidate for u in st.lindos_updates}
+    if ns.include_kernel and st.kernel_available is not None:
+        names_versions[st.kernel_available.name] = st.kernel_available.candidate
+    if not names_versions:
+        msg = "nothing to update"
+        if ns.json:
+            _emit({"status": "nothing-to-do", "message": msg}, True)
+        else:
+            print(msg)
+        return EXIT_NOTHING
+    payload = lupdate.apply_payload(names_versions, allow_kernel=ns.include_kernel)
+    packages = payload["packages"]
+    if not packages:
+        msg = "nothing to update without --include-kernel (only a kernel package is available)"
+        if ns.json:
+            _emit({"status": "nothing-to-do", "message": msg}, True)
+        else:
+            print(msg)
+        return EXIT_NOTHING
+    if not _confirm(f"Install {len(packages)} update(s): {', '.join(packages)}?", ns.yes):
+        print("cancelled.")
+        return EXIT_OK
+    _dry_run_helper(ns.dry_run)
+    result = lhelper.run_privileged("system-upgrade", payload, log=print)
+    if not result.ok:
+        sys.stderr.write(f"{PROG}: {result.message}\n")
+    if ns.json:
+        _emit({"status": "ok" if result.ok else "error", "packages": packages, **result.to_dict()}, True)
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+# --- cleanup -------------------------------------------------------------------------------
+def cmd_cleanup(ns: argparse.Namespace) -> int:
+    if not _confirm("Remove old kernels and orphaned packages (apt-get autoremove --purge)?", ns.yes):
+        print("cancelled.")
+        return EXIT_OK
+    _dry_run_helper(ns.dry_run)
+    result = lhelper.run_privileged("cleanup-old-packages", lupdate.cleanup_payload(), log=print)
+    if not result.ok:
+        sys.stderr.write(f"{PROG}: {result.message}\n")
+    if ns.json:
+        _emit({"status": "ok" if result.ok else "error", **result.to_dict()}, True)
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+# --- kernel-status ---------------------------------------------------------------------------
+def cmd_kernel_status(ns: argparse.Namespace) -> int:
+    st = lupdate.check()
+    if ns.json:
+        _emit({
+            "booted_kernel": st.booted_kernel,
+            "booted_is_lindos_kernel": st.booted_is_lindos_kernel,
+            "kernel_available": st.kernel_available.to_dict() if st.kernel_available else None,
+            "reboot_required": st.reboot_required,
+        }, True)
+        return EXIT_OK
+    print(f"booted kernel:       {st.booted_kernel or 'unknown'}")
+    print(f"lindos-tuned kernel: {'yes' if st.booted_is_lindos_kernel else 'no'}")
+    if st.kernel_available:
+        ka = st.kernel_available
+        print(f"kernel update:       {ka.name} {ka.installed} -> {ka.candidate}")
+    else:
+        print("kernel update:       none available")
+    print(f"reboot required:    {'yes' if st.reboot_required else 'no'}")
+    return EXIT_OK
+
+
+# --- sideload --------------------------------------------------------------------------------
+def cmd_sideload(ns: argparse.Namespace) -> int:
+    directory = ns.directory
+    if not os.path.isdir(directory):
+        sys.stderr.write(f"{PROG}: not a directory: {directory}\n")
+        return EXIT_ERROR
+    candidates = lupdate.scan_sideload_dir(directory)
+    if not candidates:
+        msg = f"no .deb files found in {directory}"
+        if ns.json:
+            _emit({"status": "nothing-to-do", "message": msg, "candidates": []}, True)
+        else:
+            print(msg)
+        return EXIT_NOTHING
+    accepted = [c for c in candidates if c.accepted]
+    rejected = [c for c in candidates if not c.accepted]
+    downgrades = [c for c in accepted if c.reason]
+    if not ns.json:
+        for c in rejected:
+            print(f"skipped {c.path}: {c.reason}")
+        for c in accepted:
+            note = f"  ({c.reason})" if c.reason else ""
+            print(f"will install: {c.package} {c.version}{note}")
+    if not accepted:
+        msg = f"no lindos-* packages found among the .deb files in {directory}"
+        if ns.json:
+            _emit({"status": "nothing-to-do", "message": msg,
+                  "candidates": [c.to_dict() for c in candidates]}, True)
+        else:
+            print(msg)
+        return EXIT_NOTHING
+    if not ns.yes:
+        if downgrades:
+            listing = ", ".join(f"{c.package} ({c.installed_version} -> {c.version})" for c in downgrades)
+            prompt = (f"{len(downgrades)} package(s) would be DOWNGRADED: {listing}. "
+                     f"Install {len(accepted)} package(s) from {directory}?")
+        else:
+            prompt = f"Install {len(accepted)} package(s) from {directory}?"
+        if not _confirm(prompt, ns.yes):
+            print("cancelled.")
+            return EXIT_OK
+    payload = lupdate.sideload_payload(c.path for c in accepted)
+    _dry_run_helper(ns.dry_run)
+    result = lhelper.run_privileged("install-local-debs", payload, log=print)
+    if not result.ok:
+        sys.stderr.write(f"{PROG}: {result.message}\n")
+    if ns.json:
+        _emit({"status": "ok" if result.ok else "error",
+              "candidates": [c.to_dict() for c in candidates], **result.to_dict()}, True)
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
+# --- repo status -----------------------------------------------------------------------------
+def cmd_repo_status(ns: argparse.Namespace) -> int:
+    url = lupdate.configured_repo_url()
+    if not url:
+        msg = ("no Lindos apt repository is configured yet (LINDOS_APT_REPO_ENABLE was 0 at "
+              "build time, or /etc/apt/sources.list.d/lindos.list is missing) — see docs/UPDATES.md; "
+              "'lindos-update sideload' works today with no repo at all")
+        if ns.json:
+            _emit({"configured": False, "url": None, "reachable": None, "message": msg}, True)
+        else:
+            print(msg)
+        return EXIT_NOTHING
+    reachable, message = lupdate.repo_status(url)
+    if ns.json:
+        _emit({"configured": True, "url": url, "reachable": reachable, "message": message}, True)
+    else:
+        print(f"configured url: {url}")
+        print(f"reachable:      {'yes' if reachable else 'no'}")
+        print(message)
+    return EXIT_OK if reachable else EXIT_ERROR
+
+
+def cmd_repo(ns: argparse.Namespace) -> int:
+    if getattr(ns, "repo_command", None) == "status":
+        return cmd_repo_status(ns)
+    sys.stderr.write(f"{PROG}: 'repo' needs a subcommand (status)\n")
+    return EXIT_USAGE
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=PROG,
+        description="Check for and apply updates to Lindos's own lindos-* packages — never "
+                    "the base system, which Mint's own Update Manager already handles.")
+    parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
+    sub = parser.add_subparsers(dest="command", metavar="command")
+
+    p = sub.add_parser("check", help="what's upgradable (read-only, no root)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("apply", help="install the Lindos component (and, opt-in, kernel) updates")
+    p.add_argument("--include-kernel", action="store_true",
+                   help="also install a linux-image-*/linux-headers-*/linux-modules-* update")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument("--dry-run", action="store_true", help="print what would run, change nothing")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("cleanup", help="apt-get autoremove --purge (old kernels/orphans)")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument("--dry-run", action="store_true", help="print what would run, change nothing")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_cleanup)
+
+    p = sub.add_parser("kernel-status", help="booted vs. installed vs. available kernel")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_kernel_status)
+
+    p = sub.add_parser("sideload", help="install/replace lindos-*.deb files from a local folder")
+    p.add_argument("directory", metavar="DIR", help="folder containing lindos-*.deb files")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation (incl. downgrades)")
+    p.add_argument("--dry-run", action="store_true", help="print what would run, change nothing")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_sideload)
+
+    p = sub.add_parser("repo", help="is the Lindos apt repository configured & reachable")
+    repo_sub = p.add_subparsers(dest="repo_command", metavar="repo-command")
+    rs = repo_sub.add_parser("status", help="LINDOS_APT_REPO_URL configured & reachable")
+    rs.add_argument("--json", action="store_true")
+    rs.set_defaults(func=cmd_repo_status)
+    p.set_defaults(func=cmd_repo, json=False)
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    if not getattr(ns, "func", None):
+        parser.print_help()
+        return EXIT_USAGE
+    try:
+        return int(ns.func(ns))
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

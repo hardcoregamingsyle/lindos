@@ -6,8 +6,8 @@ Usage::
     lindos-settings [PAGE] [--power-menu] [--debug] [--list-pages] [--version]
 
 * ``PAGE``          open this page (home, system, personalization, apps, windows-apps, gaming,
-                    hardware, network, accounts, mode, update, about).  Unknown ids fall back
-                    to ``home`` with a warning.
+                    hardware, network, accounts, mode, update, updates, about).  Unknown ids
+                    fall back to ``home`` with a warning.
 * ``--power-menu``  show the Win+X style popup (Sleep / Restart / Shut down / Sign out / Lock /
                     Settings / File Explorer / Terminal / Task Manager) instead of the window.
 * ``--list-pages``  print the page registry (id, kind, title) and exit — no GTK needed.
@@ -96,7 +96,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     page = args.page
     if page is not None:
         page = page.strip().lower().replace("_", "-")
-        aliases = {"windowsapps": "windows-apps", "wine": "windows-apps", "games": "gaming", "modes": "mode", "updates": "update", "personalisation": "personalization"}
+        # NOTE: "updates" is now its own page id (SPEC-UPDATE §37) -- it is deliberately not
+        # aliased to "update" (Update & Recovery) any more.
+        aliases = {"windowsapps": "windows-apps", "wine": "windows-apps", "games": "gaming", "modes": "mode", "personalisation": "personalization"}
         page = aliases.get(page, page)
         if page not in model.PAGE_ORDER:
             log.warning("unknown page %r; opening home", args.page)

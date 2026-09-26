@@ -87,6 +87,10 @@ SYSTEM_ACTION_ORDER: List[str] = [
 APP_KINDS = ("apt", "flatpak", "script")
 SCRIPT_ACTIONS = (ACT_INSTALL_COMPAT, ACT_INSTALL_GAMING)
 
+# Selections.transfer["source_type"] (SPEC-WINDOWS §29.3: "partition" | "bundle"; "" = no source
+# chosen / skipped).  Nothing is ever copied during OOBE -- see the `transfer` page and DonePage.
+TRANSFER_SOURCE_TYPES: List[str] = ["", "partition", "bundle"]
+
 FALLBACK_ACCENTS: List[Dict[str, str]] = [
     {"id": "aurora-blue", "name": "Aurora Blue", "hex": "#60CDFF"},
     {"id": "classic-blue", "name": "Classic Blue", "hex": "#0067C0"},
@@ -166,6 +170,10 @@ class Selections:
     apps: List[str] = field(default_factory=list)
     location: bool = False
     crash_reports: bool = False
+    # optional OOBE "transfer" page choice (SPEC-WINDOWS §32): never copies anything itself --
+    # it only records what the Done page should hand to `lindos-transfer-gui --from <source>`.
+    transfer: Dict[str, Any] = field(
+        default_factory=lambda: {"enabled": False, "source_type": "", "source": ""})
 
     # -- validation / helpers -------------------------------------------------
     def validate(self) -> None:
@@ -186,6 +194,14 @@ class Selections:
             raise ValueError("apps must be a list of app ids")
         if not isinstance(self.location, bool) or not isinstance(self.crash_reports, bool):
             raise ValueError("location / crash_reports must be booleans")
+        if not isinstance(self.transfer, dict):
+            raise ValueError("transfer must be an object")
+        if not isinstance(self.transfer.get("enabled", False), bool):
+            raise ValueError("transfer['enabled'] must be a boolean")
+        if self.transfer.get("source_type", "") not in TRANSFER_SOURCE_TYPES:
+            raise ValueError("transfer['source_type'] must be one of %s" % TRANSFER_SOURCE_TYPES)
+        if not isinstance(self.transfer.get("source", ""), str):
+            raise ValueError("transfer['source'] must be a string")
 
     @property
     def dark(self) -> bool:
@@ -197,6 +213,7 @@ class Selections:
     def as_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["apps"] = list(self.apps)
+        d["transfer"] = dict(self.transfer)
         return d
 
     @classmethod
@@ -211,6 +228,13 @@ class Selections:
         for key in ("location", "crash_reports"):
             if key in data and data[key] is not None:
                 setattr(sel, key, bool(data[key]))
+        transfer = data.get("transfer")
+        if isinstance(transfer, dict):
+            sel.transfer = {
+                "enabled": bool(transfer.get("enabled", False)),
+                "source_type": str(transfer.get("source_type", "") or ""),
+                "source": str(transfer.get("source", "") or ""),
+            }
         return sel
 
     def set_theme(self, theme: str, *, follow_wallpaper: bool = True) -> None:
@@ -821,6 +845,11 @@ def summarize(selections: Selections, catalog: Optional[Catalog] = None,
     accent_label = accent_names.get(selections.accent.upper(), selections.accent.upper())
     if accent_label != selections.accent.upper():
         accent_label = "%s (%s)" % (accent_label, selections.accent.upper())
+    transfer = selections.transfer or {}
+    if transfer.get("enabled"):
+        transfer_label = "Yes — Transfer tool opens after setup finishes"
+    else:
+        transfer_label = "Not now"
     return [
         ("Mode", mode_names.get(selections.mode, selections.mode.capitalize())),
         ("Browser", browser_names.get(selections.browser, selections.browser.capitalize())),
@@ -829,6 +858,7 @@ def summarize(selections: Selections, catalog: Optional[Catalog] = None,
         ("Wallpaper", wallpaper),
         ("Taskbar", selections.taskbar_alignment.capitalize()),
         ("Apps", ", ".join(apps) if apps else "None"),
+        ("Bring your files from Windows", transfer_label),
         ("Location services", "On" if selections.location else "Off"),
         ("Crash reports", "On" if selections.crash_reports else "Off"),
     ]
@@ -837,6 +867,7 @@ def summarize(selections: Selections, catalog: Optional[Catalog] = None,
 __all__ = [
     "SCHEMA", "MODE_IDS", "BROWSER_IDS", "DOWNLOAD_BROWSERS", "THEMES", "TASKBAR_ALIGNMENTS",
     "DEFAULT_ACCENT", "DEFAULT_WALLPAPER", "LIGHT_WALLPAPER", "WALLPAPER_DIR", "WALLPAPER_NAMES",
+    "TRANSFER_SOURCE_TYPES",
     "KIND_USER", "KIND_SYSTEM",
     "Selections", "AppEntry", "Catalog", "load_catalog", "load_accents", "find_data_file",
     "Step", "Plan", "build_plan", "StepResult", "RunResult", "Runner",

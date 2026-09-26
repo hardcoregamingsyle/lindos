@@ -5,7 +5,9 @@
 #  Runs INSIDE the squashfs chroot as root.  build-iso.sh stages out/debs/*.deb
 #  to /tmp/lindos/debs/.  Order (LINDOS_DEB_ORDER in build/config.env):
 #      lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming
-#      lindos-setup lindos-settings lindos-meta
+#      lindos-transfer lindos-setup lindos-settings lindos-meta
+#  (lindos-transfer installs before lindos-setup per SPEC-WINDOWS §33 so the
+#  OOBE's optional "Bring your stuff from Windows" page can call it.)
 #  All debs are handed to ONE 'apt-get install --no-install-recommends ./x.deb …'
 #  transaction (apt resolves the inter-dependencies and pulls Depends from the
 #  archive; Recommends are deliberately NOT followed — see below);
@@ -19,7 +21,7 @@ set -Eeuo pipefail
 
 hook_begin "lindos debs"
 
-: "${LINDOS_DEB_ORDER:=lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-setup lindos-settings lindos-meta}"
+: "${LINDOS_DEB_ORDER:=lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-meta}"
 : "${INSTALL_MODE_PACKAGES:=1}"
 : "${TUNE_MODE:=everyday}"
 

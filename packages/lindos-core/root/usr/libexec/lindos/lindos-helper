@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Make the in-tree ``lindos`` package importable when run from the repository
@@ -36,7 +38,9 @@ if os.path.isdir(os.path.join(_TREE_LIB, "lindos")) and _TREE_LIB not in sys.pat
 
 try:
     from lindos import __version__ as LINDOS_VERSION
+    from lindos import compat as lcompat
     from lindos import config as lconfig
+    from lindos import dualboot as ldualboot
     from lindos import hardware as lhardware
     from lindos import helper as lhelper
     from lindos import paths as lpaths
@@ -56,6 +60,14 @@ SCX_DEFAULT = "/etc/default/scx"
 SCX_UNIT = "scx.service"
 SCX_LOADER_BUS = "org.scx.Loader"
 SCX_LOADER_OBJ = "/org/scx/Loader"
+# --- dual-boot / Wi-Fi import / binfmt (SPEC-WINDOWS §28.7, §30.3-§30.4) ---
+NM_SYSTEM_CONNECTIONS_DIR = "/etc/NetworkManager/system-connections"
+GRUB_CFG_PATH = "/boot/grub/grub.cfg"
+BINFMT_NAME = "lindos-pe"
+BINFMT_CONF_PATH = "/usr/lib/binfmt.d/lindos-pe.conf"
+BINFMT_MASK_PATH = "/etc/binfmt.d/lindos-pe.conf"
+BINFMT_PROC_ENTRY = "/proc/sys/fs/binfmt_misc/lindos-pe"
+SYSTEMD_BINFMT_BIN = "/usr/lib/systemd/systemd-binfmt"
 
 log = logging.getLogger(PROG)
 
@@ -256,15 +268,23 @@ def apt_install(ctx: Ctx, packages: List[str], *, offline: bool = False) -> bool
     ok_update, _ = ctx.run(["apt-get", "update", "-qq"], timeout=900)
     if not ok_update:
         ctx.warn("apt-get update failed; trying to install with the current lists")
+    # "--" ends option parsing: defense in depth so a caller-controlled "package" name can never
+    # be parsed as an apt-get option even if the client-side PACKAGE_RE whitelist were bypassed.
     ok, tail = ctx.run(["apt-get", "install", "-y", "-q",
-                        "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"] + missing)
+                        "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+                        "--"] + missing)
     if not ok:
         ctx.error(f"apt-get install failed: {tail}")
     return ok
 
 
-def flatpak_install(ctx: Ctx, ids: List[str], *, offline: bool = False) -> bool:
-    """``flatpak install -y flathub <id>`` for each id (adds the Flathub remote if needed)."""
+def flatpak_install(ctx: Ctx, ids: List[str], *, offline: bool = False,
+                    remote: Optional[Dict[str, str]] = None) -> bool:
+    """``flatpak install -y <remote> <id>`` for each id.
+
+    Adds Flathub with ``--if-not-exists`` by default, or *remote* (``{"name","url"}``, e.g.
+    NVIDIA's own non-Flathub GeForce NOW repo — SPEC-WINDOWS §30.4) when the caller gives one.
+    """
     if not ids:
         return True
     if not ctx.which("flatpak") and not ctx.dry_run:
@@ -273,15 +293,41 @@ def flatpak_install(ctx: Ctx, ids: List[str], *, offline: bool = False) -> bool:
     if offline or not ctx.online():
         ctx.warn(f"offline: skipping flatpak install of {' '.join(ids)}")
         return True
-    ctx.run(["flatpak", "remote-add", "--if-not-exists", "--system", "flathub", FLATHUB_URL], timeout=300)
+    remote_name = remote["name"] if remote else "flathub"
+    remote_url = remote["url"] if remote else FLATHUB_URL
+    ctx.run(["flatpak", "remote-add", "--if-not-exists", "--system", remote_name, remote_url], timeout=300)
     ok_all = True
     for fid in ids:
-        ctx.say(f"installing flatpak {fid}")
-        ok, tail = ctx.run(["flatpak", "install", "-y", "--noninteractive", "--system", "flathub", fid], timeout=3600)
+        ctx.say(f"installing flatpak {fid} (remote: {remote_name})")
+        # "--" ends option parsing: defense in depth so a caller-controlled flatpak id (or remote
+        # name) can never be parsed as a flatpak option even if the client-side whitelist were
+        # bypassed.
+        ok, tail = ctx.run(["flatpak", "install", "-y", "--noninteractive", "--system", "--",
+                            remote_name, fid], timeout=3600)
         if not ok:
             ctx.error(f"flatpak install {fid} failed: {tail}")
             ok_all = False
     return ok_all
+
+
+def _run_capture(ctx: Ctx, cmd: Sequence[str], *, timeout: float = 30) -> Tuple[bool, str]:
+    """Run *cmd* and return its **full** stdout (unlike :meth:`Ctx.run`, which only keeps the
+    last few lines for error messages and streams the rest to the terminal) — for output the
+    caller needs to parse, such as ``efibootmgr``'s entry list. Nothing is printed. Dry-run: a
+    no-op success with empty output, like every other action here."""
+    if ctx.dry_run:
+        return True, ""
+    argv = [str(a) for a in cmd]
+    exe = ctx.which(argv[0]) if not os.path.isabs(argv[0]) else argv[0]
+    if not exe or not os.path.exists(exe):
+        return False, f"{argv[0]}: not found"
+    try:
+        proc = subprocess.run([exe] + argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
+                              env=ctx.env, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    return proc.returncode == 0, proc.stdout or ""
 
 
 def unit_exists(ctx: Ctx, unit: str) -> bool:
@@ -524,7 +570,7 @@ def act_install_flatpaks(ctx: Ctx, p: Dict[str, Any]) -> int:
     if not ctx.online() and not ctx.dry_run:
         ctx.error("offline: cannot download flatpaks " + " ".join(p["flatpaks"]))
         return EXIT_ERROR
-    return EXIT_OK if flatpak_install(ctx, p["flatpaks"]) else EXIT_ERROR
+    return EXIT_OK if flatpak_install(ctx, p["flatpaks"], remote=p.get("remote")) else EXIT_ERROR
 
 
 def act_set_governor(ctx: Ctx, p: Dict[str, Any]) -> int:
@@ -633,6 +679,270 @@ def act_enable_earlyoom(ctx: Ctx, p: Dict[str, Any]) -> int:
     return EXIT_OK if ok else EXIT_ERROR
 
 
+# --- dual-boot: "restart into Windows" / firmware setup (SPEC-WINDOWS §27, §30.3-§30.4) --------
+# This is the one place that actually reboots the machine, so it re-derives and re-checks every
+# fact for itself instead of trusting the (already-validated, but client-supplied) payload: the
+# entry/menu id must belong to a *currently real* active Windows Boot Manager loader or
+# --class windows os-prober menu entry, never merely to something the caller claims.
+def act_reboot_to_windows(ctx: Ctx, p: Dict[str, Any]) -> int:
+    method = p["method"]
+    if method == "bootnext":
+        efibootmgr = ctx.which("efibootmgr")
+        if not efibootmgr and not ctx.dry_run:
+            ctx.error("efibootmgr is not installed (apt install efibootmgr)")
+            return EXIT_ERROR
+        if ctx.dry_run:
+            ctx.say(f"[dry-run] would re-run efibootmgr and require entry {p['entry']} to be "
+                     "an active Windows Boot Manager loader (\\EFI\\Microsoft\\Boot\\bootmgfw.efi)")
+        else:
+            ok, out = _run_capture(ctx, [efibootmgr])
+            if not ok:
+                ctx.error(f"efibootmgr failed: {out.strip() or 'unknown error'}")
+                return EXIT_ERROR
+            parsed = ldualboot.parse_efibootmgr(out)
+            entries = {e.num.upper(): e for e in parsed["entries"]}
+            entry = entries.get(p["entry"].upper())
+            if entry is None or not entry.is_windows or not entry.active:
+                ctx.error(f"boot entry {p['entry']} is not currently an active Windows Boot "
+                         "Manager entry — refusing (this never edits Windows or your firmware)")
+                return EXIT_ERROR
+        ok, tail = ctx.run([efibootmgr or "efibootmgr", "--bootnext", p["entry"]], timeout=30)
+        if not ok:
+            ctx.error(f"efibootmgr --bootnext {p['entry']} failed: {tail}")
+            return EXIT_ERROR
+    else:  # grub-reboot
+        grub_reboot = ctx.which("grub-reboot") or ctx.which("grub2-reboot")
+        if not grub_reboot and not ctx.dry_run:
+            ctx.error("grub-reboot is not installed (apt install grub2-common)")
+            return EXIT_ERROR
+        if ctx.dry_run:
+            ctx.say(f"[dry-run] would re-read grub.cfg and require {p['menuentry']} to be a "
+                     "--class windows os-prober menu entry, and require grubenv to be writable")
+        else:
+            cfg_path = lpaths.resolve(GRUB_CFG_PATH)
+            try:
+                with open(cfg_path, "r", encoding="utf-8", errors="replace") as fh:
+                    cfg_text = fh.read()
+            except OSError as exc:
+                ctx.error(f"cannot read {cfg_path}: {exc}")
+                return EXIT_ERROR
+            ids = {row["id"] for row in ldualboot.grub_windows_entries(cfg_text)}
+            if p["menuentry"] not in ids:
+                ctx.error(f"{p['menuentry']} is not a --class windows GRUB menu entry — refusing")
+                return EXIT_ERROR
+            if not ldualboot.grubenv_writable():
+                ctx.error("grubenv cannot be written on this /boot (btrfs, zfs, LVM or mdraid) — "
+                         "the one-shot choice would stick and every boot would go to Windows; "
+                         "choose Windows from the GRUB menu by hand instead")
+                return EXIT_ERROR
+        ok, tail = ctx.run([grub_reboot or "grub-reboot", p["menuentry"]], timeout=30)
+        if not ok:
+            ctx.error(f"grub-reboot {p['menuentry']} failed: {tail}")
+            return EXIT_ERROR
+    if not p.get("reboot", True):
+        ctx.say("one-shot boot choice set; not rebooting (reboot: false)")
+        return EXIT_OK
+    ok, tail = ctx.run(["systemctl", "reboot"], timeout=30)
+    if not ok:
+        ctx.error(f"systemctl reboot failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_firmware_setup(ctx: Ctx, p: Dict[str, Any]) -> int:
+    ok, tail = ctx.run(["systemctl", "reboot", "--firmware-setup"], timeout=30)
+    if not ok:
+        ctx.error(f"systemctl reboot --firmware-setup failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+# --- Wi-Fi import (SPEC-WINDOWS §29.8, §30.4) --------------------------------------------------
+def _wifi_safe_name(ssid: str) -> str:
+    """A filesystem-safe, collision-proof slug for the ``.nmconnection`` filename.
+
+    Two different SSIDs can slugify to the same ASCII text (accents/punctuation stripped), so a
+    short hash of the *real* SSID bytes is always appended.
+    """
+    slug = lcompat.slugify(ssid, max_len=40) if ssid.strip() else "hidden-network"
+    digest = hashlib.sha256(ssid.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
+def _render_nmconnection(net: Dict[str, Any]) -> str:
+    """A NetworkManager keyfile for one imported network (nm-settings-keyfile(5))."""
+    ssid = net["ssid"]
+    security = net["security"]
+    hidden = bool(net.get("hidden"))
+    agent_owned = bool(net.get("agent_owned"))
+    psk = net.get("psk")
+    lines = [
+        "[connection]",
+        f"id=Lindos: {ssid}",
+        f"uuid={uuid.uuid4()}",
+        "type=wifi",
+        "autoconnect=true",
+        "",
+        "[wifi]",
+        "mode=infrastructure",
+        f"ssid={ssid}",
+    ]
+    if hidden:
+        lines.append("hidden=true")
+    lines.append("")
+    if security != "open":
+        lines.append("[wifi-security]")
+        lines.append("key-mgmt=" + ("wpa-psk" if security == "wpa-psk" else "sae"))
+        if psk and not agent_owned:
+            lines.append(f"psk={psk}")
+        else:
+            lines.append("psk-flags=1")   # NetworkManager asks the user once, stores it in their keyring
+        lines.append("")
+    lines += ["[ipv4]", "method=auto", "", "[ipv6]", "method=auto", ""]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def act_import_wifi(ctx: Ctx, p: Dict[str, Any]) -> int:
+    conn_dir = lpaths.resolve(NM_SYSTEM_CONNECTIONS_DIR)
+    ok_all = True
+    for net in p["networks"]:
+        filename = f"lindos-{_wifi_safe_name(net['ssid'])}.nmconnection"
+        path = os.path.join(conn_dir, filename)
+        content = _render_nmconnection(net)
+        # root:root is automatic (this process runs as root by the time we get here); 0600 is explicit.
+        if not ctx.write_file(path, content, mode=0o600):
+            ok_all = False
+            continue
+        ctx.say(f"wifi: wrote {path} (ssid: {net['ssid']!r})")
+        ok, tail = ctx.run(["nmcli", "connection", "load", path], timeout=30, allow_missing=True)
+        if not ok:
+            ctx.warn(f"nmcli connection load {path} failed: {tail}")
+    return EXIT_OK if ok_all else EXIT_ERROR
+
+
+# --- terminal ./setup.exe via binfmt_misc (SPEC-WINDOWS §28.7) ---------------------------------
+def act_set_binfmt(ctx: Ctx, p: Dict[str, Any]) -> int:
+    mask_path = lpaths.resolve(BINFMT_MASK_PATH)
+    conf_path = lpaths.resolve(BINFMT_CONF_PATH)
+    if p.get("enabled"):
+        if ctx.dry_run:
+            ctx.say(f"[dry-run] would remove the binfmt mask {mask_path} (if present)")
+        else:
+            try:
+                if os.path.islink(mask_path) or os.path.exists(mask_path):
+                    os.remove(mask_path)
+                    ctx.say(f"removed binfmt mask {mask_path}")
+            except OSError as exc:
+                ctx.error(f"cannot remove {mask_path}: {exc}")
+                return EXIT_ERROR
+        systemd_binfmt = ctx.which("systemd-binfmt") or SYSTEMD_BINFMT_BIN
+        ok, tail = ctx.run([systemd_binfmt, conf_path], timeout=30)
+        if not ok:
+            ctx.error(f"{systemd_binfmt} {conf_path} failed: {tail}")
+            return EXIT_ERROR
+        ctx.say(f"binfmt: {BINFMT_NAME} enabled (a terminal './setup.exe' now runs through Lindos)")
+        return EXIT_OK
+    # disable: mask it for next boot, and remove the live entry now if it is registered
+    if ctx.dry_run:
+        ctx.say(f"[dry-run] would symlink {mask_path} -> /dev/null")
+        ctx.say(f"[dry-run] would write '-1' to {BINFMT_PROC_ENTRY} (ignoring a missing entry)")
+        return EXIT_OK
+    try:
+        os.makedirs(os.path.dirname(mask_path), exist_ok=True)
+        if os.path.islink(mask_path) or os.path.exists(mask_path):
+            os.remove(mask_path)
+        os.symlink("/dev/null", mask_path)
+        ctx.say(f"masked {conf_path} ({mask_path} -> /dev/null)")
+    except OSError as exc:
+        ctx.error(f"cannot mask {conf_path}: {exc}")
+        return EXIT_ERROR
+    proc_entry = lpaths.resolve(BINFMT_PROC_ENTRY)
+    try:
+        with open(proc_entry, "w", encoding="utf-8") as fh:
+            fh.write("-1")
+        ctx.say(f"binfmt: {BINFMT_NAME} disabled (removed the live entry)")
+    except FileNotFoundError:
+        ctx.say(f"binfmt: {BINFMT_NAME} was not currently registered; mask written for next boot")
+    except OSError as exc:
+        ctx.error(f"cannot write {proc_entry}: {exc}")
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+# --- Lindos's own updates: apt-get-update / system-upgrade / cleanup-old-packages /
+# install-local-debs (SPEC-UPDATE.md §36.4; read-only planning lives in ``lindos.update``) --------
+def act_apt_get_update(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """Refresh apt's package indexes only — nothing is installed/removed/upgraded here."""
+    if not ctx.online() and not ctx.dry_run:
+        ctx.error("offline: cannot refresh package indexes (apt-get update needs network)")
+        return EXIT_ERROR
+    ok, tail = ctx.run(["apt-get", "update", "-q"], timeout=900)
+    if not ok:
+        ctx.error(f"apt-get update failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_system_upgrade(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """``apt-get install --only-upgrade`` the **exact** ``name=version`` tokens already validated
+    by :func:`lindos.helper.validate_payload` — never a bare ``upgrade``/``dist-upgrade``."""
+    packages = list(p.get("packages", []))
+    if not packages:
+        ctx.say("system-upgrade: nothing to do (empty package list)")
+        return EXIT_OK
+    if not ctx.online() and not ctx.dry_run:
+        ctx.error("offline: cannot upgrade " + " ".join(packages))
+        return EXIT_ERROR
+    # "--" ends option parsing: defense in depth, matching apt_install()/flatpak_install() above.
+    ok, tail = ctx.run(["apt-get", "install", "--only-upgrade", "-y", "-q",
+                        "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+                        "--"] + packages, timeout=1800)
+    if not ok:
+        ctx.error(f"apt-get install --only-upgrade failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_cleanup_old_packages(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """``apt-get autoremove --purge`` (old kernels/orphaned dependencies) — fully offline-safe."""
+    ok, tail = ctx.run(["apt-get", "autoremove", "--purge", "-y", "-q"], timeout=900)
+    if not ok:
+        ctx.error(f"apt-get autoremove --purge failed: {tail}")
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def act_install_local_debs(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """Re-verify every file's real ``Package:`` field (never trust the filename alone — that was
+    only :func:`lindos.helper.validate_payload`'s cheap client-side proxy) before ``dpkg -i``-ing
+    the whole batch, then ``apt-get -f install -y`` to resolve dependencies."""
+    files = list(p.get("files", []))
+    if not files:
+        ctx.say("install-local-debs: nothing to do (empty file list)")
+        return EXIT_OK
+    dpkg_deb = ctx.which("dpkg-deb")
+    if not dpkg_deb and not ctx.dry_run:
+        ctx.error("dpkg-deb is not installed (part of dpkg — this should never happen)")
+        return EXIT_ERROR
+    verified: List[str] = []
+    for path in files:
+        if not ctx.dry_run and not os.path.isfile(path):
+            ctx.error(f"file not found: {path}")
+            return EXIT_ERROR
+        ok, out = _run_capture(ctx, [dpkg_deb or "dpkg-deb", "--field", path, "Package"])
+        pkg_name = out.strip()
+        if ctx.dry_run:
+            ctx.say(f"[dry-run] would verify {path}'s Package field starts with 'lindos-' before dpkg -i")
+        elif not ok or not pkg_name or not lhelper.PACKAGE_RE.match(pkg_name) or not pkg_name.startswith("lindos-"):
+            ctx.error(f"{path}: Package field {pkg_name!r} is not a lindos-* package — refusing")
+            return EXIT_ERROR
+        else:
+            ctx.say(f"verified {path}: Package: {pkg_name}")
+        verified.append(path)
+    ok, tail = ctx.run(["dpkg", "-i", "--"] + verified, timeout=900)
+    if not ok:
+        ctx.error(f"dpkg -i failed: {tail}")
+    ok2, tail2 = ctx.run(["apt-get", "-f", "install", "-y", "-q"], timeout=900)
+    if not ok2:
+        ctx.error(f"apt-get -f install failed: {tail2}")
+    return EXIT_OK if (ok and ok2) else EXIT_ERROR
+
+
 HANDLERS = {
     "apply-mode": act_apply_mode,
     "install-browser": act_install_browser,
@@ -650,8 +960,29 @@ HANDLERS = {
     "set-sched": act_set_sched,
     "write-system-config": act_write_system_config,
     "enable-earlyoom": act_enable_earlyoom,
+    "reboot-to-windows": act_reboot_to_windows,
+    "firmware-setup": act_firmware_setup,
+    "import-wifi": act_import_wifi,
+    "set-binfmt": act_set_binfmt,
+    "apt-get-update": act_apt_get_update,
+    "system-upgrade": act_system_upgrade,
+    "cleanup-old-packages": act_cleanup_old_packages,
+    "install-local-debs": act_install_local_debs,
 }
 assert set(HANDLERS) == set(ACTIONS), "helper actions out of sync with lindos.helper.ACTIONS"
+
+
+def _redact_for_log(action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of *payload* safe to print or log — a secret (``import-wifi``'s Wi-Fi passwords)
+    must never reach the log file or a dry-run's echoed-back JSON, exactly as it must never reach
+    argv (that is what ``stdin_payload`` is for)."""
+    if action != "import-wifi":
+        return payload
+    redacted = dict(payload)
+    redacted["networks"] = [
+        {**net, "psk": ("***" if net.get("psk") else net.get("psk"))} for net in payload.get("networks", [])
+    ]
+    return redacted
 
 
 # --- entry point --------------------------------------------------------------------------------
@@ -708,11 +1039,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_ERROR
 
     caller = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID") or str(getattr(os, "getuid", lambda: -1)())
-    log.info("=== %s %s (uid %s%s)", ns.action, json.dumps(payload, sort_keys=True), caller,
+    logged_payload = _redact_for_log(ns.action, payload)
+    log.info("=== %s %s (uid %s%s)", ns.action, json.dumps(logged_payload, sort_keys=True), caller,
              ", dry-run" if dry_run else "")
     ctx = Ctx(dry_run)
     if dry_run:
-        ctx.say(f"[dry-run] {ns.action} {json.dumps(payload, sort_keys=True)}")
+        ctx.say(f"[dry-run] {ns.action} {json.dumps(logged_payload, sort_keys=True)}")
     try:
         code = HANDLERS[ns.action](ctx, payload)
     except KeyboardInterrupt:

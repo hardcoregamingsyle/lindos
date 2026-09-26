@@ -593,6 +593,18 @@ def choose_file(parent: Any, title: str, filters: Sequence[tuple[str, Sequence[s
     return path
 
 
+def choose_folder(parent: Any, title: str, folder: Optional[str] = None) -> Optional[str]:
+    """Native folder chooser (portal/GTK), e.g. "Load updates from a folder…".  Returns the
+    selected directory or None."""
+    chooser = Gtk.FileChooserNative.new(title, parent, Gtk.FileChooserAction.SELECT_FOLDER, "Select", "Cancel")
+    if folder:
+        chooser.set_current_folder(folder)
+    resp = chooser.run()
+    path = chooser.get_filename() if resp == Gtk.ResponseType.ACCEPT else None
+    chooser.destroy()
+    return path
+
+
 class OutputDialog:
     """Dialog with a monospace log view.  ``run_argv`` streams a command into it."""
 
@@ -882,6 +894,7 @@ __all__ = [
     "confirm",
     "message",
     "choose_file",
+    "choose_folder",
     "OutputDialog",
     "ProgressDialog",
     "Toast",

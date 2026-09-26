@@ -3,6 +3,7 @@
 set -e
 
 PYLIB="/usr/lib/python3/dist-packages/lindos"
+USER_TIMER_LINK="/usr/lib/systemd/user/timers.target.wants/lindos-update-notify.timer"
 
 case "$1" in
     remove|upgrade|deconfigure|abort-install|abort-upgrade|disappear|failed-upgrade)
@@ -14,6 +15,18 @@ case "$1" in
             py3clean -p lindos-core 2>/dev/null || true
         fi
         ;;
+esac
+
+case "$1" in
+    remove|purge)
+        # postinst created this ".wants" symlink itself (dpkg does not track it) -- remove it
+        # whenever the package goes away, not just on purge, so a plain removal does not leave
+        # a dangling systemd --user enablement symlink behind.
+        [ -L "$USER_TIMER_LINK" ] && rm -f "$USER_TIMER_LINK" 2>/dev/null || true
+        ;;
+esac
+
+case "$1" in
     purge)
         rm -rf "$PYLIB/__pycache__" 2>/dev/null || true
         rm -f /var/log/lindos/helper.log /var/log/lindos/install-browser.log 2>/dev/null || true

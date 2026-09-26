@@ -1,0 +1,52 @@
+#!/bin/sh
+# postinst for lindos-transfer — idempotent, offline-safe, no downloads, no network.
+set -e
+
+log() {
+    printf 'lindos-transfer: %s\n' "$*" >&2
+}
+
+in_chroot() {
+    # ischroot(1) exits 0 inside a chroot; also treat a missing /run/systemd/system as "no systemd running"
+    if command -v ischroot >/dev/null 2>&1 && ischroot; then
+        return 0
+    fi
+    [ ! -d /run/systemd/system ]
+}
+
+case "${1:-}" in
+    configure)
+        # 1. the CLI and GUI launchers must be executable even if the tarball lost the bit
+        for f in /usr/bin/lindos-transfer /usr/bin/lindos-transfer-gui; do
+            [ -e "$f" ] && chmod 0755 "$f" 2>/dev/null || true
+        done
+
+        # 2. desktop database + icon cache, for lindos-transfer-gui's .desktop entry and icon
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+        fi
+
+        # 3. mime database, for lindos-transfer.json / the .desktop entry's mime associations (if any)
+        if command -v update-mime-database >/dev/null 2>&1; then
+            if in_chroot; then
+                log "not updating the MIME database (chroot) - it applies at next boot"
+            else
+                update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # Nothing else: no daemons, no udev rules, no downloads. lindos-transfer only ever reads a
+        # Windows drive/transfer folder when the user runs it, and asks the root helper
+        # (lindos-core's /usr/libexec/lindos/lindos-helper) for install-packages / install-flatpaks /
+        # install-browser / install-gaming / import-wifi, each time the user chooses to.
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

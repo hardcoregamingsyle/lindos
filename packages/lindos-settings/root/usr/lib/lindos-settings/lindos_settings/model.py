@@ -41,9 +41,10 @@ PAGE_ORDER: tuple[str, ...] = (
     "accounts",
     "mode",
     "update",
+    "updates",
     "about",
 )
-NATIVE_PAGES: tuple[str, ...] = ("home", "personalization", "windows-apps", "gaming", "hardware", "mode", "about")
+NATIVE_PAGES: tuple[str, ...] = ("home", "personalization", "windows-apps", "gaming", "hardware", "mode", "updates", "about")
 DELEGATE_PAGES: tuple[str, ...] = ("system", "apps", "network", "accounts", "update")
 
 PAGES_JSON = "/usr/share/lindos/settings/pages.json"
@@ -355,7 +356,7 @@ BUILTIN_PAGES: dict[str, Any] = {
             "icon": ["wine", "application-x-executable"],
             "kind": "native",
             "description": "Run .exe/.msi programs through Wine / Proton, prefixes, recipes",
-            "keywords": ["exe", "msi", "wine", "proton", "prefix", "recipe", "adobe", "office", "doctor", "install a windows program"],
+            "keywords": ["exe", "msi", "wine", "proton", "prefix", "recipe", "adobe", "office", "doctor", "install a windows program", "winget", "msix", "appx", "reg", "powershell", "dos", "transfer", "migrate", "easy transfer"],
         },
         {
             "id": "gaming",
@@ -363,7 +364,7 @@ BUILTIN_PAGES: dict[str, Any] = {
             "icon": ["applications-games"],
             "kind": "native",
             "description": "Game Mode, MangoHud, Proton-GE, launchers, controllers, refresh rate",
-            "keywords": ["steam", "proton", "lutris", "heroic", "roblox", "minecraft", "controller", "gamepad", "fps", "mangohud", "gamemode", "anti-cheat", "refresh"],
+            "keywords": ["steam", "proton", "lutris", "heroic", "roblox", "minecraft", "controller", "gamepad", "fps", "mangohud", "gamemode", "anti-cheat", "refresh", "dual boot", "restart into windows", "cloud gaming", "geforce now", "xbox cloud"],
         },
         {
             "id": "hardware",
@@ -502,6 +503,14 @@ BUILTIN_PAGES: dict[str, Any] = {
                     "keywords": ["kernel", "linux", "hwe"],
                 },
             ],
+        },
+        {
+            "id": "updates",
+            "title": "Updates",
+            "icon": ["system-software-update", "lindos-start"],
+            "kind": "native",
+            "description": "Lindos component updates, kernel version, Secure Boot signing",
+            "keywords": ["update", "upgrade", "apt", "package", "manager", "mintupdate", "lindos-update", "kernel", "secure boot", "sideload"],
         },
         {
             "id": "about",
@@ -1553,6 +1562,451 @@ def summarize_driver_status(data: Any) -> str:
     return " · ".join(parts)
 
 
+# ---------------------------------------------------------------------------------------------
+# Windows apps: file formats, terminal .exe, winget (SPEC-WINDOWS §28, §32)
+# ---------------------------------------------------------------------------------------------
+
+FORMAT_STATUSES: tuple[str, ...] = ("works", "partial", "unsupported")
+
+
+def normalize_format_row(d: Any) -> dict[str, Any]:
+    """One row of ``lindos-compat formats --json`` -> {id,label,suffixes,mime,handler,status,note}
+    (SPEC-WINDOWS §28.2 ``FormatSpec``); defensive against missing/odd fields."""
+    if not isinstance(d, dict):
+        d = {}
+    suffixes = d.get("suffixes")
+    if isinstance(suffixes, str):
+        suffixes = [suffixes]
+    elif not isinstance(suffixes, (list, tuple)):
+        suffixes = []
+    status = str(d.get("status") or "").strip().lower()
+    if status not in FORMAT_STATUSES:
+        status = "unsupported" if status else "unknown"
+    return {
+        "id": str(d.get("id") or ""),
+        "label": str(d.get("label") or d.get("id") or ""),
+        "suffixes": [str(s) for s in suffixes if str(s)],
+        "mime": str(d.get("mime") or ""),
+        "handler": str(d.get("handler") or ""),
+        "status": status,
+        "note": str(d.get("note") or ""),
+    }
+
+
+def parse_formats_table(data: Any) -> list[dict[str, Any]]:
+    """``lindos-compat formats --json`` (a bare list, or ``{"formats": [...]}``\\ ) -> normalised
+    rows, sorted works -> partial -> unsupported, then by label. Never raises."""
+    rows: Any = data
+    if isinstance(data, dict):
+        rows = data.get("formats") if isinstance(data.get("formats"), list) else []
+    if not isinstance(rows, list):
+        rows = []
+    out = [normalize_format_row(r) for r in rows if isinstance(r, dict)]
+    order = {s: i for i, s in enumerate(FORMAT_STATUSES)}
+    return sorted(out, key=lambda r: (order.get(r["status"], len(order)), r["label"].lower()))
+
+
+def normalize_binfmt_status(data: Any) -> dict[str, Any]:
+    """``lindos-compat binfmt status --json`` (SPEC-WINDOWS §28.7) ->
+    ``{registered,enabled,masked,conflicts,interpreter,note}``, honest about conflicts."""
+    if not isinstance(data, dict):
+        data = {}
+    conflicts_raw = data.get("conflicts")
+    conflicts: list[dict[str, str]] = []
+    if isinstance(conflicts_raw, list):
+        for c in conflicts_raw:
+            if isinstance(c, dict):
+                conflicts.append({"name": str(c.get("name") or ""), "interpreter": str(c.get("interpreter") or "")})
+    return {
+        "registered": bool(data.get("registered")),
+        "enabled": bool(data.get("enabled")),
+        "masked": bool(data.get("masked")),
+        "conflicts": conflicts,
+        "interpreter": str(data.get("interpreter") or ""),
+        "note": str(data.get("note") or ""),
+    }
+
+
+def binfmt_summary(st: dict[str, Any]) -> str:
+    """One-line honest summary for the 'Run .exe from the terminal' switch's subtitle."""
+    if st.get("registered") and st.get("enabled"):
+        text = "On — double-click behaviour also works when you type ./program.exe in a terminal"
+    elif st.get("masked"):
+        text = "Off"
+    elif st.get("registered"):
+        text = "Off (registered but disabled)"
+    else:
+        text = "Off"
+    if st.get("conflicts"):
+        names = ", ".join(c["name"] for c in st["conflicts"] if c.get("name"))
+        text += f" — also registered: {names} (Lindos does not change it; whichever loaded last wins)"
+    if st.get("note"):
+        text += f" — {st['note']}"
+    return text
+
+
+def parse_winget_results(data: Any) -> list[dict[str, str]]:
+    """``lindos-compat winget search <q> --json`` -> ``[{id,name,version,moniker,match}]``."""
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, str]] = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        rid = str(r.get("id") or "")
+        if not rid:
+            continue
+        out.append({
+            "id": rid,
+            "name": str(r.get("name") or rid),
+            "version": str(r.get("version") or ""),
+            "moniker": str(r.get("moniker") or ""),
+            "match": str(r.get("match") or ""),
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------------------------
+# Gaming: play-anywhere routes, dual boot (SPEC-WINDOWS §30, §32)
+# ---------------------------------------------------------------------------------------------
+
+GAME_ROUTE_TYPES: tuple[str, ...] = ("native", "proton", "cloud", "windows", "vm")
+
+
+def normalize_game_route_entry(d: Any) -> dict[str, Any]:
+    if not isinstance(d, dict):
+        d = {}
+    action = d.get("action")
+    requires = d.get("requires")
+    provider = d.get("provider")
+    return {
+        "type": str(d.get("type") or ""),
+        "provider": str(provider) if provider else None,
+        "label": str(d.get("label") or ""),
+        "available": bool(d.get("available")),
+        "why": str(d.get("why") or ""),
+        "requires": [str(x) for x in requires] if isinstance(requires, (list, tuple)) else [],
+        "action": dict(action) if isinstance(action, dict) else None,
+    }
+
+
+def normalize_game_route(data: Any) -> dict[str, Any]:
+    """``lindos-game route <title> --json`` (SPEC-WINDOWS §30.2) -> a fully-defensive dict;
+    an odd/partial shape degrades to empty routes rather than raising."""
+    if not isinstance(data, dict):
+        data = {}
+    routes_raw = data.get("routes")
+    routes = [normalize_game_route_entry(r) for r in routes_raw if isinstance(r, dict)] if isinstance(routes_raw, list) else []
+    try:
+        recommended = int(data.get("recommended", 0))
+    except (TypeError, ValueError):
+        recommended = 0
+    if not routes or not (0 <= recommended < len(routes)):
+        recommended = 0
+    notes_raw = data.get("notes")
+    notes = [str(n) for n in notes_raw if n] if isinstance(notes_raw, list) else []
+    return {
+        "title": str(data.get("title") or ""),
+        "id": str(data.get("id") or ""),
+        "status": str(data.get("status") or ""),
+        "anticheat": str(data.get("anticheat") or ""),
+        "region": str(data.get("region") or "unknown"),
+        "routes": routes,
+        "recommended": recommended,
+        "notes": notes,
+    }
+
+
+#: First entry ("auto") means "detect from the system locale/timezone" (empty ``region`` config
+#: key) -- never an empty combo-box id, which some GtkComboBoxText versions treat as "no match".
+REGION_CHOICES: tuple[tuple[str, str], ...] = (
+    ("auto", "Detect automatically"),
+    ("US", "United States"),
+    ("GB", "United Kingdom"),
+    ("IN", "India"),
+    ("CA", "Canada"),
+    ("AU", "Australia"),
+    ("DE", "Germany"),
+    ("FR", "France"),
+    ("BR", "Brazil"),
+    ("JP", "Japan"),
+)
+
+
+def region_combo_id(value: str) -> str:
+    """Stored ``region`` config value -> combo-box id (``"" -> "auto"``)."""
+    return str(value) if value else "auto"
+
+
+def region_config_value(region_id: str) -> str:
+    """Combo-box id -> the ``region`` config value to store (``"auto" -> ""``)."""
+    return "" if region_id in ("", "auto") else region_id
+
+
+def normalize_boot_entry(d: Any) -> dict[str, str]:
+    if not isinstance(d, dict):
+        d = {}
+    return {
+        "num": str(d.get("num") or ""),
+        "label": str(d.get("label") or ""),
+        "partuuid": str(d.get("partuuid") or ""),
+        "disk": str(d.get("disk") or ""),
+    }
+
+
+def normalize_dualboot_status(data: Any) -> dict[str, Any]:
+    """``lindos-dualboot status --json`` (SPEC-WINDOWS §30.3) -> an honest dict; never raises,
+    never invents a `can_reboot_to_windows: True` when the shape is unexpected."""
+    if not isinstance(data, dict):
+        data = {}
+    entries_raw = data.get("windows_entries")
+    entries = [normalize_boot_entry(e) for e in entries_raw if isinstance(e, dict)] if isinstance(entries_raw, list) else []
+    return {
+        "firmware": str(data.get("firmware") or "unknown"),
+        "secure_boot": str(data.get("secure_boot") or "unknown"),
+        "tpm": data.get("tpm"),
+        "windows_entries": entries,
+        "can_reboot_to_windows": bool(data.get("can_reboot_to_windows")),
+        "method": data.get("method") if data.get("method") else None,
+        "why": str(data.get("why") or ""),
+        "lindos_kernel_signed": data.get("lindos_kernel_signed"),
+        "bitlocker_hint": bool(data.get("bitlocker_hint")),
+    }
+
+
+def dualboot_summary(st: dict[str, Any]) -> str:
+    """One-line honest summary shown under 'Restart into Windows'."""
+    parts: list[str] = []
+    if st.get("can_reboot_to_windows"):
+        parts.append("Ready")
+    else:
+        parts.append("Not available")
+    sb = st.get("secure_boot")
+    if sb and sb != "unknown":
+        parts.append(f"Secure Boot {sb}")
+    tpm = st.get("tpm")
+    if tpm:
+        parts.append(f"TPM {tpm}")
+    if not st.get("can_reboot_to_windows") and st.get("why"):
+        parts.append(st["why"])
+    return " · ".join(parts)
+
+
+# ---------------------------------------------------------------------------------------------
+# Lindos updates: lindos-update check/kernel-status/repo-status, lindos-kernel secureboot status
+# (SPEC-UPDATE §36/§37)
+# ---------------------------------------------------------------------------------------------
+
+#: ``PackageUpdate.channel`` (SPEC-UPDATE §36.2).
+UPDATE_CHANNELS: tuple[str, ...] = ("lindos", "system", "kernel")
+
+
+def normalize_package_update(d: Any) -> dict[str, str]:
+    """One ``PackageUpdate`` (SPEC-UPDATE §36.2) -> ``{name, installed, candidate, channel}``;
+    an odd/missing shape degrades to empty strings rather than raising."""
+    if not isinstance(d, dict):
+        d = {}
+    channel = str(d.get("channel") or "").strip().lower()
+    if channel not in UPDATE_CHANNELS:
+        channel = channel or "lindos"
+    return {
+        "name": str(d.get("name") or ""),
+        "installed": str(d.get("installed") or ""),
+        "candidate": str(d.get("candidate") or ""),
+        "channel": channel,
+    }
+
+
+def _package_update_list(data: Any, key: str) -> list[dict[str, str]]:
+    raw = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return [normalize_package_update(e) for e in raw if isinstance(e, dict) and e.get("name")]
+
+
+def _missing_or_error_message(data: Any, tool: str) -> str:
+    if not isinstance(data, dict):
+        return ""
+    if data.get("_error"):
+        return str(data["_error"])
+    if data.get("_missing"):
+        return f"{tool} is not installed"
+    return ""
+
+
+def normalize_update_status(data: Any) -> dict[str, Any]:
+    """``lindos-update check --json`` (SPEC-UPDATE §36.2 ``UpdateStatus``) -> an honest dict;
+    never raises. The backend passes a missing binary / non-zero exit / bad JSON in as
+    ``{"_missing": True}`` / ``{"_error": "..."}`` — this degrades to an empty "nothing known
+    yet" status plus that message in ``error``, so the page never needs its own try/except."""
+    if not isinstance(data, dict):
+        data = {}
+    error = _missing_or_error_message(data, "lindos-update")
+    kernel_avail = data.get("kernel_available")
+    repo_reachable = data.get("repo_reachable")
+    return {
+        "refreshed_at": str(data.get("refreshed_at") or "") or None,
+        "lindos_updates": _package_update_list(data, "lindos_updates"),
+        "system_updates": _package_update_list(data, "system_updates"),
+        "kernel_available": normalize_package_update(kernel_avail) if isinstance(kernel_avail, dict) else None,
+        "booted_kernel": str(data.get("booted_kernel") or ""),
+        "booted_is_lindos_kernel": bool(data.get("booted_is_lindos_kernel")),
+        "reboot_required": bool(data.get("reboot_required")),
+        "repo_configured": bool(data.get("repo_configured")),
+        "repo_reachable": repo_reachable if isinstance(repo_reachable, bool) else None,
+        "error": error,
+    }
+
+
+def normalize_kernel_status(data: Any) -> dict[str, Any]:
+    """``lindos-update kernel-status --json`` -> the kernel-relevant subset of ``UpdateStatus``
+    (booted vs. installed vs. available kernel version, whether a restart is pending)."""
+    if not isinstance(data, dict):
+        data = {}
+    error = _missing_or_error_message(data, "lindos-update")
+    kernel_avail = data.get("kernel_available")
+    return {
+        "booted_kernel": str(data.get("booted_kernel") or ""),
+        "booted_is_lindos_kernel": bool(data.get("booted_is_lindos_kernel")),
+        "kernel_available": normalize_package_update(kernel_avail) if isinstance(kernel_avail, dict) else None,
+        "reboot_required": bool(data.get("reboot_required")),
+        "error": error,
+    }
+
+
+def normalize_repo_status(data: Any) -> dict[str, Any]:
+    """``lindos-update repo status --json`` -> ``{configured, reachable, message, url}``.
+    Accepts either ``configured``/``reachable`` or the ``UpdateStatus`` field spellings
+    ``repo_configured``/``repo_reachable`` — both are plausible for this CLI subcommand and
+    guessing wrong must never crash the page. ``reachable`` stays ``None`` (unknown) unless the
+    data explicitly says so, matching ``repo_status()``'s own honesty rule (never invents
+    "trusted")."""
+    if not isinstance(data, dict):
+        data = {}
+    error = _missing_or_error_message(data, "lindos-update")
+    configured = data.get("configured", data.get("repo_configured"))
+    reachable = data.get("reachable", data.get("repo_reachable"))
+    return {
+        "configured": bool(configured),
+        "reachable": reachable if isinstance(reachable, bool) else None,
+        "message": str(data.get("message") or error or ""),
+        "url": str(data.get("url") or ""),
+    }
+
+
+def normalize_secureboot_status(data: Any) -> dict[str, Any]:
+    """``lindos-kernel secureboot status --json`` (SPEC-WINDOWS §31.3, already shipped by
+    ``lindos_kernel.secureboot.status()``) -> a defensive copy; an unusual/missing field
+    degrades to ``None``/empty rather than raising."""
+    if not isinstance(data, dict):
+        data = {}
+    mok = data.get("mok") if isinstance(data.get("mok"), dict) else {}
+    kernels_raw = data.get("kernels")
+    kernels: list[dict[str, Any]] = []
+    if isinstance(kernels_raw, list):
+        for k in kernels_raw:
+            if isinstance(k, dict):
+                signed = k.get("signed")
+                kernels.append({
+                    "version": str(k.get("version") or ""),
+                    "path": str(k.get("path") or ""),
+                    "signed": signed if isinstance(signed, bool) else None,
+                })
+    any_signed = data.get("any_lindos_kernel_signed")
+    secure_boot = data.get("secure_boot")
+    return {
+        "firmware": str(data.get("firmware") or "unknown"),
+        "secure_boot": secure_boot if isinstance(secure_boot, bool) else None,
+        "mok_present": bool(mok.get("present")),
+        "mok_enrolled": mok.get("enrolled") if isinstance(mok.get("enrolled"), bool) else None,
+        "kernels": kernels,
+        "any_lindos_kernel_signed": any_signed if isinstance(any_signed, bool) else None,
+        "error": _missing_or_error_message(data, "lindos-kernel"),
+    }
+
+
+def lindos_update_payload(status: dict[str, Any]) -> list[str]:
+    """``"name=candidate"`` tokens for every Lindos-channel package with a real update
+    (the helper ``system-upgrade`` payload, SPEC-UPDATE §36.4) — never the kernel, which has its
+    own separately-confirmed "Apply now" flow, and never a bare name with no ``=version``."""
+    return [f"{u['name']}={u['candidate']}" for u in (status.get("lindos_updates") or []) if u.get("name") and u.get("candidate")]
+
+
+def kernel_update_payload(status_or_kernel: dict[str, Any]) -> list[str]:
+    """``["name=candidate"]`` for the available kernel update, or ``[]`` when there is none.
+    Works against either ``normalize_update_status``'s or ``normalize_kernel_status``'s output
+    (both carry a ``kernel_available`` ``PackageUpdate``)."""
+    ka = status_or_kernel.get("kernel_available") if isinstance(status_or_kernel, dict) else None
+    if not isinstance(ka, dict) or not ka.get("name") or not ka.get("candidate"):
+        return []
+    return [f"{ka['name']}={ka['candidate']}"]
+
+
+def update_status_summary(status: dict[str, Any]) -> str:
+    """One-line subtitle for the "Lindos components" card."""
+    if status.get("error"):
+        return status["error"]
+    updates = status.get("lindos_updates") or []
+    if not updates:
+        refreshed = status.get("refreshed_at")
+        when = f" (checked {refreshed[:19].replace('T', ' ')})" if refreshed else " (never checked yet — press Check now)"
+        return "Lindos components are up to date" + when
+    names = ", ".join(u["name"] for u in updates[:6])
+    more = " …" if len(updates) > 6 else ""
+    n = len(updates)
+    return f"{n} update{'s' if n != 1 else ''} available: {names}{more}"
+
+
+def sideload_note_text(status: dict[str, Any]) -> str:
+    """Plain-language note shown above the "Load updates from a folder…" picker (SPEC-UPDATE
+    §37) — only rendered by the page when :func:`needs_sideload_note` is true."""
+    if status.get("repo_reachable") is False:
+        return ("Lindos's own apt repository is configured but could not be reached right now. "
+                "You can still update by loading updates from a folder of .deb files below.")
+    return ("No Lindos update channel is configured yet. You can still update by loading updates "
+            "from a folder of .deb files below (for example, ones you built or downloaded).")
+
+
+def needs_sideload_note(status: dict[str, Any]) -> bool:
+    """True when the honest "no repo configured" note + folder picker should show."""
+    return not bool(status.get("repo_configured"))
+
+
+def kernel_status_summary(kernel: dict[str, Any]) -> str:
+    """Booted vs. installed vs. available kernel line for the Kernel card."""
+    if kernel.get("error"):
+        return kernel["error"]
+    parts = [f"Booted: {kernel.get('booted_kernel') or 'unknown'}"]
+    if kernel.get("booted_kernel") and not kernel.get("booted_is_lindos_kernel"):
+        parts[-1] += " (not the Lindos kernel)"
+    ka = kernel.get("kernel_available")
+    if ka and ka.get("candidate"):
+        parts.append(f"Installed: {ka.get('installed') or '—'} → Available: {ka['candidate']}")
+    else:
+        parts.append("No newer Lindos kernel available")
+    if kernel.get("reboot_required"):
+        parts.append("A restart is needed to finish a previous update")
+    return "  ·  ".join(parts)
+
+
+def secureboot_summary(sb: dict[str, Any]) -> str:
+    """One-line honest summary of ``lindos-kernel secureboot status`` for the Kernel card."""
+    if sb.get("error"):
+        return sb["error"]
+    if sb.get("firmware") != "uefi":
+        return "Secure Boot: not applicable (BIOS/legacy firmware)"
+    if sb.get("secure_boot") is None:
+        return "Secure Boot: unknown"
+    if sb.get("secure_boot") is False:
+        return "Secure Boot is off"
+    signed = sb.get("any_lindos_kernel_signed")
+    if signed is True:
+        return "Secure Boot on — the Lindos kernel is signed"
+    if signed is False:
+        return "Secure Boot on — the Lindos kernel is NOT signed yet (see Kernels in Update Manager)"
+    return "Secure Boot on — kernel signing state unknown"
+
+
 def compositor_state_from_output(code: int, out: str) -> bool:
     """Interpret ``lindos-compositor status``: exit 0 + text without 'stopped/off/inactive'
     → running.  Non-zero exit → not running."""
@@ -1651,4 +2105,32 @@ __all__ = [
     "driver_install_payload",
     "summarize_driver_status",
     "compositor_state_from_output",
+    "FORMAT_STATUSES",
+    "normalize_format_row",
+    "parse_formats_table",
+    "normalize_binfmt_status",
+    "binfmt_summary",
+    "parse_winget_results",
+    "GAME_ROUTE_TYPES",
+    "normalize_game_route_entry",
+    "normalize_game_route",
+    "REGION_CHOICES",
+    "region_combo_id",
+    "region_config_value",
+    "normalize_boot_entry",
+    "normalize_dualboot_status",
+    "dualboot_summary",
+    "UPDATE_CHANNELS",
+    "normalize_package_update",
+    "normalize_update_status",
+    "normalize_kernel_status",
+    "normalize_repo_status",
+    "normalize_secureboot_status",
+    "lindos_update_payload",
+    "kernel_update_payload",
+    "update_status_summary",
+    "sideload_note_text",
+    "needs_sideload_note",
+    "kernel_status_summary",
+    "secureboot_summary",
 ]

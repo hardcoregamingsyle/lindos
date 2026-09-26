@@ -1,21 +1,25 @@
 """Desktop feedback when ``lindos-run`` is started without a terminal (file manager, Start Menu).
 
-Uses ``zenity`` (preferred) or ``yad`` for a pulsating progress window and error
-dialogs, and ``notify-send`` for the "installed" toast.  Everything is optional and
-silently degrades to plain logging.
+Uses ``zenity`` (preferred) or ``yad`` for a pulsating progress window, error/explanation
+dialogs, Windows-style Yes/No questions and a C:\\ drive chooser, and ``notify-send`` for
+the "installed" toast.  Everything is optional and silently degrades to plain logging
+(:meth:`Feedback.question` / :meth:`Feedback.choose` then return ``None`` so the caller can
+ask on the terminal instead).  Dialog text is never interpreted as markup: file names and
+registry keys may contain ``<`` or ``&``.
 """
 
 from __future__ import annotations
 
+import html
 import os
 import shutil
 import subprocess
 import sys
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import get_logger
 
-__all__ = ["Feedback", "gui_wanted"]
+__all__ = ["Feedback", "gui_wanted", "TITLE"]
 
 log = get_logger("lindos-compat.gui")
 
@@ -104,6 +108,15 @@ class Feedback:
                 pass
 
     # -- dialogs ----------------------------------------------------------
+    @property
+    def interactive(self) -> bool:
+        """True when dialogs can actually be shown (GUI mode and zenity/yad present)."""
+        return bool(self.enabled and self.tool and self._which(self.tool))
+
+    def _text_arg(self, text: str) -> str:
+        # zenity gets --no-markup; yad always parses Pango markup, so escape for it
+        return f"--text={text if self.tool == 'zenity' else html.escape(text, quote=False)}"
+
     def _dialog(self, kind: str, text: str) -> None:
         if not self.enabled or not self.tool:
             (log.error if kind == "error" else log.info)("%s", text)
@@ -112,8 +125,9 @@ class Feedback:
         if not exe:
             return
         flag = {"error": "--error", "info": "--info", "warning": "--warning"}.get(kind, "--info")
-        argv = [exe, flag, f"--title={TITLE}", f"--text={text}", "--width=460"]
+        argv = [exe, flag, f"--title={TITLE}", self._text_arg(text), "--width=460"]
         if self.tool == "zenity":
+            argv.append("--no-markup")
             if len(text) < 90:
                 argv.append("--no-wrap")
         else:
@@ -133,6 +147,64 @@ class Feedback:
 
     def warning(self, text: str) -> None:
         self._dialog("warning", text)
+
+    def explain(self, text: str) -> None:
+        """Why a file cannot be opened (``lindos-run`` exit code 3): a warning dialog."""
+        self.close_progress()
+        self._dialog("warning", text)
+
+    def question(self, text: str, *, ok_label: str = "Yes", cancel_label: str = "No",
+                 title: str = TITLE) -> Optional[bool]:
+        """Windows-style Yes/No question.  ``None`` when no dialog can be shown."""
+        if not self.interactive:
+            return None
+        self.close_progress()
+        exe = self._which(str(self.tool))
+        assert exe is not None
+        if self.tool == "zenity":
+            argv = [exe, "--question", f"--title={title}", self._text_arg(text), "--no-markup", "--width=520",
+                    f"--ok-label={ok_label}", f"--cancel-label={cancel_label}"]
+        else:
+            argv = [exe, f"--title={title}", self._text_arg(text), "--width=520", "--center",
+                    "--image=dialog-question", f"--button={cancel_label}:1", f"--button={ok_label}:0"]
+        try:
+            proc = self._run(argv, timeout=3600, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return getattr(proc, "returncode", 1) == 0
+
+    def choose(self, text: str, rows: Sequence[Tuple[str, str]], *, column: str = "C:\\ drive",
+               detail_column: str = "Programs", ok_label: str = "OK", title: str = TITLE) -> Optional[str]:
+        """Pick one of ``rows`` (``(value, description)``); returns the value, "" on cancel,
+        ``None`` when no dialog can be shown."""
+        if not self.interactive or not rows:
+            return None
+        self.close_progress()
+        exe = self._which(str(self.tool))
+        assert exe is not None
+        cells: List[str] = []
+        for value, detail in rows:
+            # list cells are plain arguments: never let one look like an option
+            cells += [value.lstrip("-") or value, (detail or " ").lstrip("-") or " "]
+        label = f"--text={html.escape(text, quote=False)}"  # list labels are markup in zenity and yad
+        if self.tool == "zenity":
+            argv = [exe, "--list", f"--title={title}", label, f"--column={column}",
+                    f"--column={detail_column}", "--print-column=1", "--width=560", "--height=380",
+                    f"--ok-label={ok_label}", *cells]
+        else:
+            argv = [exe, "--list", f"--title={title}", label, f"--column={column}",
+                    f"--column={detail_column}", "--print-column=1", "--width=560", "--height=380", "--center",
+                    *cells]
+        try:
+            proc = self._run(argv, timeout=3600, check=False, capture_output=True, text=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if getattr(proc, "returncode", 1) != 0:
+            return ""
+        out = (getattr(proc, "stdout", "") or "").strip().splitlines()
+        choice = out[0].strip().rstrip("|") if out else ""
+        valid = {value for value, _detail in rows}
+        return choice if choice in valid else ""
 
     # -- notifications ----------------------------------------------------
     def notify(self, summary: str, body: str = "", icon: str = "lindos-exe") -> bool:

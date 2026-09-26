@@ -104,10 +104,23 @@ def test_build_command_variants(fake_which):
     w = fake_which("wine", "umu-run", "gamemoderun", "mangohud", "flatpak")
     msi, bat, game, app, g = (Path("/x/Setup.msi"), Path("/x/run.bat"), Path("/x/game.exe"), Path("/x/app.exe"),
                               Path("/x/g.exe"))
+    # Wine tools get Windows paths (SPEC-WINDOWS §28.1): Z:\ outside a C:\ drive
     argv, warns = runner.build_command("wine", msi, "msi", which=w)
-    assert argv == ["/usr/bin/wine", "msiexec", "/i", str(msi)] and not warns
+    assert argv == ["/usr/bin/wine", "msiexec", "/i", runner.wine_path(msi)] and not warns
+    assert argv[3].startswith("Z:\\") and argv[3].endswith("\\x\\Setup.msi")
+    # SPEC-WINDOWS §28.3: a .msp is a *patch* - "/p ... REINSTALL=ALL REINSTALLMODE=omus", never
+    # the old "/i" (which fails: msiexec refuses to install a patch as if it were a product).
+    msp = Path("/x/Update.msp")
+    argv, warns = runner.build_command("wine", msp, "installer", which=w)
+    assert argv == ["/usr/bin/wine", "msiexec", "/p", runner.wine_path(msp), *runner.MSP_PROPERTIES] and not warns
+    assert "/i" not in argv
+    # an explicit "tail" (SPEC-WINDOWS §28.1: the complete argv after wine/umu-run, e.g. from
+    # formats.plan_action) always wins over the file-kind guess, and "args" are appended after it.
+    argv, _ = runner.build_command("wine", Path("/x/settings.reg"), "app", which=w,
+                                   tail=["regedit", "/S", "Z:\\x\\settings.reg"], args=["/extra"])
+    assert argv == ["/usr/bin/wine", "regedit", "/S", "Z:\\x\\settings.reg", "/extra"]
     argv, _ = runner.build_command("wine", bat, "app", which=w, args=["a", "b"])
-    assert argv == ["/usr/bin/wine", "cmd", "/c", str(bat), "a", "b"]
+    assert argv == ["/usr/bin/wine", "cmd", "/c", runner.wine_path(bat), "a", "b"]
     argv, _ = runner.build_command("umu", game, "game", which=w, gamemode=True, mangohud=True)
     # umu: MangoHud is enabled through the env (MANGOHUD=1), gamemoderun wraps the command
     assert argv == ["/usr/bin/gamemoderun", "/usr/bin/umu-run", str(game)]
@@ -272,9 +285,9 @@ def test_cli_flags_match_spec():
     assert exc.value.code == 2
 
 
-def test_cli_info_prints_json(fake_core, home: Path, tmp_path: Path, capsys, monkeypatch):
+def test_cli_info_prints_json(fake_core, home: Path, tmp_path: Path, capsys, monkeypatch, make_pe):
     exe = tmp_path / "npp.8.6.Installer.x64.exe"
-    exe.write_bytes(b"MZ" + b"\x00" * 64)
+    exe.write_bytes(make_pe())
     fake_core.PRODUCT_OVERRIDES[exe.name] = "Notepad++"
     rc = cli_run.main(["--info", str(exe)])
     assert rc == 0
@@ -290,12 +303,13 @@ def test_cli_missing_file_is_usage_error(fake_core, home: Path, tmp_path: Path):
     assert cli_run.main([str(tmp_path / "nope.exe")]) == 2
 
 
-def test_cli_dry_run_plan(fake_core, home: Path, tmp_path: Path, capsys, monkeypatch, fake_which):
+def test_cli_dry_run_plan(fake_core, home: Path, tmp_path: Path, capsys, monkeypatch, fake_which, make_pe):
     w = fake_which("wine", "umu-run", "gamemoderun")
+    monkeypatch.setattr(cli_run, "_which", w)
     monkeypatch.setattr(cli_run, "choose_runner", functools.partial(runner.choose_runner, which=w, bottles_installed=False))
     monkeypatch.setattr(cli_run, "build_plan", functools.partial(runner.build_plan, which=w, home=home, nvidia=False))
     exe = tmp_path / "SuperGame.exe"
-    exe.write_bytes(b"MZ")
+    exe.write_bytes(make_pe())
     rc = cli_run.main(["--dry-run", "--mangohud", str(exe), "-windowed"])
     assert rc == 0
     plan = json.loads(capsys.readouterr().out)
@@ -307,10 +321,11 @@ def test_cli_dry_run_plan(fake_core, home: Path, tmp_path: Path, capsys, monkeyp
     assert plan["prefix"].endswith("supergame")
     # msi under wine
     msi = tmp_path / "Tool.msi"
-    msi.write_bytes(b"\xd0\xcf\x11\xe0")
+    msi.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 1024)
     rc = cli_run.main(["--dry-run", str(msi)])
     plan = json.loads(capsys.readouterr().out)
     assert rc == 0 and plan["runner"] == "wine" and plan["argv"][1:3] == ["msiexec", "/i"]
+    assert plan["argv"][3].endswith("Tool.msi") and "/" not in plan["argv"][3]   # a Windows path
     # .bat under wine cmd /c, forced runner
     bat = tmp_path / "run.bat"
     bat.write_text("@echo off\n")
@@ -325,14 +340,15 @@ def test_split_windows_args():
 
 
 def test_cli_installer_flow_creates_start_menu_entry(fake_core, home: Path, tmp_path: Path, monkeypatch, fake_which,
-                                                     fake_run, build_lnk, capsys):
+                                                     fake_run, build_lnk, capsys, make_pe):
     """End-to-end: run an installer -> post-run scan -> .desktop + apps DB record (no Wine involved)."""
     w = fake_which("wine", "wineboot", "wineserver")
     monkeypatch.setattr(cli_run, "choose_runner", functools.partial(runner.choose_runner, which=w, bottles_installed=False))
     monkeypatch.setattr(cli_run, "build_plan", functools.partial(runner.build_plan, which=w, home=home, nvidia=False))
     monkeypatch.setattr(cli_run, "ensure_prefix", functools.partial(prefix.ensure_prefix, which=w, run=fake_run))
+    monkeypatch.setattr(cli_run, "_which", w)
     installer = tmp_path / "FooSetup-x64.exe"
-    installer.write_bytes(b"MZ" + b"\x00" * 32)
+    installer.write_bytes(make_pe())
     pfx = home / ".local/share/lindos/prefixes/foo"
 
     def fake_run_plan(plan, **kw):
@@ -342,8 +358,8 @@ def test_cli_installer_flow_creates_start_menu_entry(fake_core, home: Path, tmp_
         drive_c = plan.prefix / "drive_c"
         exe = drive_c / "Program Files" / "Foo Corp" / "Foo.exe"
         exe.parent.mkdir(parents=True, exist_ok=True)
-        exe.write_bytes(b"MZ")
-        (exe.parent / "unins000.exe").write_bytes(b"MZ")
+        exe.write_bytes(make_pe())
+        (exe.parent / "unins000.exe").write_bytes(make_pe())
         sm = drive_c / "users" / "user" / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Foo Corp"
         sm.mkdir(parents=True, exist_ok=True)
         (sm / "Foo Editor.lnk").write_bytes(build_lnk(local_base_path="C:\\Program Files\\Foo Corp\\Foo.exe",

@@ -41,9 +41,11 @@ def test_control_fields():
     for dep in ("python3", "lindos-core", "cabextract", "winbind", "xdg-utils", "desktop-file-utils", "shared-mime-info"):
         assert dep in c["Depends"], dep
     for rec in ("winehq-staging | wine-staging | wine", "winetricks", "umu-launcher", "icoutils", "zenity", "gamemode",
-                "mangohud", "libvulkan1", "mesa-vulkan-drivers", "fonts-liberation"):
+                "mangohud", "libvulkan1", "mesa-vulkan-drivers", "fonts-liberation",
+                "dosbox-x", "python3-yaml", "python3-hivex", "udisks2"):
         assert rec in c["Recommends"], rec
     assert "bottles" in c["Suggests"]
+    assert "powershell" in c["Suggests"]
     assert not (DEBIAN / "conffiles").exists()
 
 
@@ -84,19 +86,30 @@ def test_mimeapps_list_and_xml_fragments():
     uca = ET.parse(SHARE / "thunar-uca-lindos.xml").getroot()
     assert uca.tag == "actions"
     names = [a.findtext("name") for a in uca.findall("action")]
-    assert names == ["Run with Lindos (Windows app)", "Run with Proton (game)", "Open C:\\ drive"]
+    assert names == ["Run with Lindos (Windows app)", "Run with Proton (game)", "Open C:\\ drive",
+                     "Run with PowerShell", "Install into a C:\\ drive (MSIX)", "Mount disk image",
+                     "Merge into a C:\\ drive (.reg)"]
     ids = [a.findtext("unique-id") for a in uca.findall("action")]
-    assert len(set(ids)) == 3 and all(ids)
+    assert len(set(ids)) == 7 and all(ids)
     cmds = [a.findtext("command") for a in uca.findall("action")]
     assert cmds[0] == "lindos-run %f" and "--runner umu" in cmds[1] and cmds[2].startswith("lindos-compat prefixes open")
+    # SPEC-WINDOWS §28.9: reuse shared-mime-info 2.4 types (.exe/.msi/.lnk/... already exist
+    # there), so lindos-windows.xml only adds the *missing* types (application/x-lindos-*) plus
+    # the one glob shared-mime-info lacks (*.cmd on the existing application/x-bat type) - it
+    # must NOT redefine .exe/.msi/.lnk itself (that would fight the system's own mime data).
     mime = ET.parse(ROOT / "usr/share/mime/packages/lindos-windows.xml").getroot()
     ns = "{http://www.freedesktop.org/standards/shared-mime-info}"
     types = {t.get("type"): t for t in mime.findall(f"{ns}mime-type")}
-    assert set(types) >= {"application/x-ms-dos-executable", "application/x-msi", "application/x-bat",
-                          "application/x-ms-shortcut"}
+    assert set(types) >= {"application/x-bat", "application/x-lindos-msp", "application/x-lindos-mst",
+                          "application/x-lindos-cpl", "application/x-lindos-inf",
+                          "application/x-lindos-msix-encrypted", "application/x-lindos-msix-upload",
+                          "application/x-lindos-msixvc", "application/x-lindos-clickonce",
+                          "application/x-lindos-appref-ms", "application/x-lindos-wsf",
+                          "application/x-lindos-dos-program"}
+    assert {"application/x-ms-dos-executable", "application/x-msi", "application/x-ms-shortcut"}.isdisjoint(types)
     globs = {g.get("pattern") for t in types.values() for g in t.findall(f"{ns}glob")}
-    assert {"*.exe", "*.msi", "*.bat", "*.lnk"} <= globs
-    assert types["application/x-ms-dos-executable"].findtext(f"{ns}comment") == "Windows program"
+    assert {"*.cmd", "*.msp", "*.cpl", "*.inf", "*.wsf", "*.application", "*.appref-ms"} <= globs
+    assert types["application/x-bat"].find(f"{ns}glob").get("pattern") == "*.cmd"
 
 
 def test_bins_and_lib_layout():
@@ -159,7 +172,8 @@ def test_postinst_postrm_merge_roundtrip(tmp_path: Path):
     assert "application/x-msi=other.desktop;lindos-run.desktop;" in text  # but we are an added association
     assert text.count("application/x-ms-dos-executable=lindos-run.desktop\n") == 1
     ids = [a.findtext("unique-id") for a in ET.parse(uca).getroot().findall("action")]
-    assert ids == ["1-1", "1755000000000001-1", "1755000000000002-2", "1755000000000003-3"]
+    assert ids == ["1-1", "1755000000000001-1", "1755000000000002-2", "1755000000000003-3",
+                   "1755000000000004-4", "1755000000000005-5", "1755000000000006-6", "1755000000000007-7"]
     run("postinst", "configure")  # idempotent
     assert mimeapps.read_text(encoding="utf-8") == text
     assert [a.findtext("unique-id") for a in ET.parse(uca).getroot().findall("action")] == ids
@@ -173,6 +187,6 @@ def test_postinst_postrm_merge_roundtrip(tmp_path: Path):
     uca.unlink()
     run("postinst", "configure")
     assert "application/x-msi=lindos-run.desktop" in mimeapps.read_text(encoding="utf-8")
-    assert len(ET.parse(uca).getroot().findall("action")) == 3
+    assert len(ET.parse(uca).getroot().findall("action")) == 7
     run("postrm", "purge")
     assert not mimeapps.exists() and not uca.exists()

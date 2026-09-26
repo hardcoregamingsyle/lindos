@@ -1,0 +1,1581 @@
+{
+  "schema": 1,
+  "generated_note": "Windows program -> honest Lindos route (SPEC-WINDOWS section 29.9). 'match' entries are Python regexes (case-insensitive) checked against the installed program's DisplayName; the optional 'publisher' narrows a match the same way (skipped when the source has no publisher for that entry). Action 'type': builtin (already in Lindos) | apt/flatpak/browser/launcher (the root helper installs it) | recipe/winget (lindos-compat) | web (a .desktop shortcut to the site) | winapps/vm (run it through your own licensed Windows) | not_possible (kernel-mode anti-cheat; see lindos-game route). Nothing here is installed without the user selecting it in the transfer plan.",
+  "apps": [
+    {
+      "id": "google-chrome",
+      "match": [
+        "Google Chrome"
+      ],
+      "actions": [
+        {
+          "type": "browser",
+          "id": "chrome",
+          "label": "Google Chrome for Linux"
+        }
+      ],
+      "winget": [
+        "Google.Chrome"
+      ]
+    },
+    {
+      "id": "microsoft-edge",
+      "match": [
+        "Microsoft Edge"
+      ],
+      "actions": [
+        {
+          "type": "browser",
+          "id": "edge",
+          "label": "Microsoft Edge for Linux"
+        }
+      ],
+      "winget": [
+        "Microsoft.Edge"
+      ]
+    },
+    {
+      "id": "mozilla-firefox",
+      "match": [
+        "Mozilla Firefox"
+      ],
+      "actions": [
+        {
+          "type": "builtin",
+          "id": "firefox",
+          "label": "Firefox is already included in Lindos"
+        }
+      ],
+      "winget": [
+        "Mozilla.Firefox"
+      ]
+    },
+    {
+      "id": "brave-browser",
+      "match": [
+        "Brave"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.brave.Browser",
+          "label": "Brave Browser (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Brave.Brave"
+      ]
+    },
+    {
+      "id": "opera-gx",
+      "match": [
+        "Opera GX"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.opera.Opera",
+          "label": "Opera (Flatpak; GX gaming extras are Windows-only)"
+        }
+      ],
+      "winget": [
+        "Opera.OperaGX"
+      ]
+    },
+    {
+      "id": "opera",
+      "match": [
+        "Opera(?! GX)"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.opera.Opera",
+          "label": "Opera (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Opera.Opera"
+      ]
+    },
+    {
+      "id": "vivaldi",
+      "match": [
+        "Vivaldi"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.vivaldi.Vivaldi",
+          "label": "Vivaldi (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Vivaldi.Vivaldi"
+      ]
+    },
+    {
+      "id": "chromium",
+      "match": [
+        "^Chromium$"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "org.chromium.Chromium",
+          "label": "Chromium (Flatpak)"
+        }
+      ]
+    },
+    {
+      "id": "discord",
+      "match": [
+        "Discord"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.discordapp.Discord",
+          "label": "Discord (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Discord.Discord"
+      ]
+    },
+    {
+      "id": "slack",
+      "match": [
+        "Slack"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.slack.Slack",
+          "label": "Slack (Flatpak)"
+        }
+      ],
+      "winget": [
+        "SlackTechnologies.Slack"
+      ]
+    },
+    {
+      "id": "zoom",
+      "match": [
+        "Zoom"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "us.zoom.Zoom",
+          "label": "Zoom (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Zoom.Zoom"
+      ]
+    },
+    {
+      "id": "skype",
+      "match": [
+        "Skype"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.skype.Client",
+          "label": "Skype (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Microsoft.Skype"
+      ]
+    },
+    {
+      "id": "microsoft-teams",
+      "match": [
+        "Microsoft Teams"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.github.IsmaelMartinez.teams_for_linux",
+          "label": "Teams for Linux (unofficial, Flatpak)"
+        },
+        {
+          "type": "web",
+          "id": "teams-web",
+          "label": "Microsoft Teams in your browser",
+          "url": "https://teams.microsoft.com"
+        }
+      ],
+      "winget": [
+        "Microsoft.Teams"
+      ]
+    },
+    {
+      "id": "whatsapp",
+      "match": [
+        "WhatsApp"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "whatsapp-web",
+          "label": "WhatsApp Web",
+          "url": "https://web.whatsapp.com"
+        }
+      ]
+    },
+    {
+      "id": "telegram",
+      "match": [
+        "Telegram"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "org.telegram.desktop",
+          "label": "Telegram Desktop (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Telegram.TelegramDesktop"
+      ]
+    },
+    {
+      "id": "signal",
+      "match": [
+        "Signal"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "org.signal.Signal",
+          "label": "Signal (Flatpak)"
+        }
+      ],
+      "winget": [
+        "OpenWhisperSystems.Signal"
+      ]
+    },
+    {
+      "id": "viber",
+      "match": [
+        "Viber"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.viber.Viber",
+          "label": "Viber (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Viber.Viber"
+      ]
+    },
+    {
+      "id": "vlc",
+      "match": [
+        "VLC media player",
+        "^VLC$"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "vlc",
+          "label": "VLC media player",
+          "packages": [
+            "vlc"
+          ]
+        }
+      ],
+      "winget": [
+        "VideoLAN.VLC"
+      ]
+    },
+    {
+      "id": "spotify",
+      "match": [
+        "Spotify"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.spotify.Client",
+          "label": "Spotify (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Spotify.Spotify"
+      ]
+    },
+    {
+      "id": "itunes",
+      "match": [
+        "iTunes"
+      ],
+      "actions": [
+        {
+          "type": "vm",
+          "id": "windows-vm",
+          "label": "Run iTunes in the Lindos Windows VM (no Linux port exists)"
+        }
+      ]
+    },
+    {
+      "id": "audacity",
+      "match": [
+        "Audacity"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "audacity",
+          "label": "Audacity",
+          "packages": [
+            "audacity"
+          ]
+        }
+      ],
+      "winget": [
+        "Audacity.Audacity"
+      ]
+    },
+    {
+      "id": "obs-studio",
+      "match": [
+        "OBS Studio",
+        "Open Broadcaster Software"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "obs-studio",
+          "label": "OBS Studio",
+          "packages": [
+            "obs-studio"
+          ]
+        }
+      ],
+      "winget": [
+        "OBSProject.OBSStudio"
+      ]
+    },
+    {
+      "id": "gimp",
+      "match": [
+        "GIMP"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "gimp",
+          "label": "GIMP",
+          "packages": [
+            "gimp"
+          ]
+        }
+      ],
+      "winget": [
+        "GIMP.GIMP"
+      ]
+    },
+    {
+      "id": "krita",
+      "match": [
+        "Krita"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "krita",
+          "label": "Krita",
+          "packages": [
+            "krita"
+          ]
+        }
+      ],
+      "winget": [
+        "KDE.Krita"
+      ]
+    },
+    {
+      "id": "inkscape",
+      "match": [
+        "Inkscape"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "inkscape",
+          "label": "Inkscape",
+          "packages": [
+            "inkscape"
+          ]
+        }
+      ],
+      "winget": [
+        "Inkscape.Inkscape"
+      ]
+    },
+    {
+      "id": "blender",
+      "match": [
+        "Blender"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "blender",
+          "label": "Blender",
+          "packages": [
+            "blender"
+          ]
+        }
+      ],
+      "winget": [
+        "BlenderFoundation.Blender"
+      ]
+    },
+    {
+      "id": "handbrake",
+      "match": [
+        "HandBrake"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "handbrake",
+          "label": "HandBrake",
+          "packages": [
+            "handbrake"
+          ]
+        }
+      ],
+      "winget": [
+        "HandBrake.HandBrake"
+      ]
+    },
+    {
+      "id": "qbittorrent",
+      "match": [
+        "qBittorrent"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "qbittorrent",
+          "label": "qBittorrent",
+          "packages": [
+            "qbittorrent"
+          ]
+        }
+      ],
+      "winget": [
+        "qBittorrent.qBittorrent"
+      ]
+    },
+    {
+      "id": "utorrent",
+      "match": [
+        "[Uu]Torrent",
+        "BitTorrent"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "qbittorrent",
+          "label": "qBittorrent (a maintained, ad-free alternative)",
+          "packages": [
+            "qbittorrent"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transmission",
+      "match": [
+        "Transmission"
+      ],
+      "actions": [
+        {
+          "type": "builtin",
+          "id": "transmission",
+          "label": "Transmission is already included in Lindos"
+        }
+      ]
+    },
+    {
+      "id": "winzip",
+      "match": [
+        "WinZip"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "file-roller",
+          "label": "Archive Manager (opens zip/rar/7z out of the box)",
+          "packages": [
+            "file-roller"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rufus",
+      "match": [
+        "Rufus"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "io.balena.Etcher",
+          "label": "balenaEtcher (bootable-USB writer, Flatpak)"
+        }
+      ]
+    },
+    {
+      "id": "windirstat",
+      "match": [
+        "WinDirStat"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "qdirstat",
+          "label": "QDirStat (disk-usage analyser)",
+          "packages": [
+            "qdirstat"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "everything-search",
+      "match": [
+        "^Everything$"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "catfish",
+          "label": "Catfish (Xfce's file-search tool)",
+          "packages": [
+            "catfish"
+          ]
+        }
+      ],
+      "publisher": [
+        "voidtools"
+      ]
+    },
+    {
+      "id": "7-zip",
+      "match": [
+        "7-Zip"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "p7zip-full",
+          "label": "7-Zip-compatible archive support (Archive Manager already opens .7z)",
+          "packages": [
+            "p7zip-full"
+          ]
+        },
+        {
+          "type": "recipe",
+          "id": "7zip",
+          "label": "The real 7-Zip, through Wine (lindos-compat recipe)"
+        }
+      ],
+      "winget": [
+        "7zip.7zip"
+      ]
+    },
+    {
+      "id": "winrar",
+      "match": [
+        "WinRAR"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "unrar",
+          "label": "Extract .rar files (Archive Manager already opens them)",
+          "packages": [
+            "unrar"
+          ]
+        },
+        {
+          "type": "recipe",
+          "id": "winrar",
+          "label": "The real WinRAR, through Wine (lindos-compat recipe; to create new .rar files)"
+        }
+      ]
+    },
+    {
+      "id": "notepad-plus-plus",
+      "match": [
+        "Notepad\\+\\+"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "notepad-plus-plus",
+          "label": "Notepad++ (lindos-compat recipe)"
+        },
+        {
+          "type": "apt",
+          "id": "gedit",
+          "label": "gedit (Lindos' own text editor)",
+          "packages": [
+            "gedit"
+          ]
+        }
+      ],
+      "winget": [
+        "Notepad++.Notepad++"
+      ]
+    },
+    {
+      "id": "visual-studio-code",
+      "match": [
+        "Visual Studio Code",
+        "^VSCode$"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.visualstudio.code",
+          "label": "Visual Studio Code (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Microsoft.VisualStudioCode"
+      ]
+    },
+    {
+      "id": "git-for-windows",
+      "match": [
+        "Git version",
+        "^Git$"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "git",
+          "label": "git",
+          "packages": [
+            "git"
+          ]
+        }
+      ],
+      "publisher": [
+        "Git for Windows",
+        "The Git Development Community"
+      ]
+    },
+    {
+      "id": "python",
+      "match": [
+        "^Python \\d"
+      ],
+      "actions": [
+        {
+          "type": "builtin",
+          "id": "python3",
+          "label": "Python 3 is already included in Lindos"
+        }
+      ],
+      "publisher": [
+        "Python Software Foundation"
+      ]
+    },
+    {
+      "id": "putty",
+      "match": [
+        "PuTTY"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "putty",
+          "label": "PuTTY",
+          "packages": [
+            "putty"
+          ]
+        }
+      ],
+      "winget": [
+        "PuTTY.PuTTY"
+      ]
+    },
+    {
+      "id": "filezilla",
+      "match": [
+        "FileZilla"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "filezilla",
+          "label": "FileZilla",
+          "packages": [
+            "filezilla"
+          ]
+        }
+      ],
+      "winget": [
+        "TimKosse.FileZilla.Client"
+      ]
+    },
+    {
+      "id": "winscp",
+      "match": [
+        "WinSCP"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "filezilla",
+          "label": "FileZilla (an SFTP/FTP client that covers the same job)",
+          "packages": [
+            "filezilla"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "foobar2000",
+      "match": [
+        "foobar2000"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "foobar2000",
+          "label": "foobar2000, through Wine (lindos-compat recipe)"
+        }
+      ],
+      "winget": [
+        "PeterPawlowski.foobar2000"
+      ]
+    },
+    {
+      "id": "paint-net",
+      "match": [
+        "Paint\\.NET",
+        "paint\\.net"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "paint-net",
+          "label": "Paint.NET, through Wine (lindos-compat recipe)"
+        }
+      ],
+      "winget": [
+        "dotPDNLLC.paintdotnet"
+      ]
+    },
+    {
+      "id": "autocad",
+      "match": [
+        "AutoCAD"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "autocad",
+          "label": "AutoCAD, through Wine (lindos-compat recipe; partial support)"
+        }
+      ],
+      "winget": [
+        "Autodesk.AutoCAD"
+      ]
+    },
+    {
+      "id": "cpu-z",
+      "match": [
+        "CPU-Z"
+      ],
+      "actions": [
+        {
+          "type": "apt",
+          "id": "hardinfo",
+          "label": "HardInfo (the closest Linux hardware-info tool)",
+          "packages": [
+            "hardinfo"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adobe-photoshop-cc",
+      "match": [
+        "Adobe Photoshop(?! CS6)"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "photoshop",
+          "label": "Photoshop over lindos-winapps (your own licensed Windows PC)"
+        },
+        {
+          "type": "recipe",
+          "id": "photoshop-cc-2021",
+          "label": "Photoshop CC 2021, through Wine (lindos-compat recipe; partial support)"
+        }
+      ]
+    },
+    {
+      "id": "adobe-photoshop-cs6",
+      "match": [
+        "Photoshop CS6"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "photoshop-cs6",
+          "label": "Photoshop CS6, through Wine (lindos-compat recipe)"
+        },
+        {
+          "type": "winapps",
+          "id": "photoshop",
+          "label": "Photoshop over lindos-winapps (your own licensed Windows PC)"
+        }
+      ]
+    },
+    {
+      "id": "adobe-illustrator",
+      "match": [
+        "Adobe Illustrator"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "illustrator",
+          "label": "Illustrator over lindos-winapps (your own licensed Windows PC)"
+        },
+        {
+          "type": "recipe",
+          "id": "illustrator-cc-2021",
+          "label": "Illustrator CC 2021, through Wine (lindos-compat recipe; partial support)"
+        }
+      ]
+    },
+    {
+      "id": "adobe-premiere",
+      "match": [
+        "Adobe Premiere"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "premiere",
+          "label": "Premiere Pro over lindos-winapps (your own licensed Windows PC)"
+        },
+        {
+          "type": "recipe",
+          "id": "premiere",
+          "label": "Premiere Pro, through Wine (lindos-compat recipe; partial support)"
+        }
+      ]
+    },
+    {
+      "id": "adobe-acrobat",
+      "match": [
+        "Adobe Acrobat"
+      ],
+      "actions": [
+        {
+          "type": "builtin",
+          "id": "xreader",
+          "label": "Lindos' own document viewer already opens and prints PDFs"
+        },
+        {
+          "type": "winapps",
+          "id": "acrobat",
+          "label": "The full Acrobat Reader/Pro over lindos-winapps (forms, signing)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-365",
+      "match": [
+        "Microsoft 365",
+        "Office 365"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "office",
+          "label": "Office over lindos-winapps (your own licensed Windows PC)"
+        },
+        {
+          "type": "recipe",
+          "id": "office-365",
+          "label": "Office 365, through Wine (lindos-compat recipe; partial support)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-office-2016",
+      "match": [
+        "Microsoft Office (Standard|Professional|Home).*2016",
+        "Office 2016"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "office",
+          "label": "Office over lindos-winapps (your own licensed Windows PC)"
+        },
+        {
+          "type": "recipe",
+          "id": "office-2016",
+          "label": "Office 2016, through Wine (lindos-compat recipe; partial support)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-word",
+      "match": [
+        "Microsoft Word"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "word",
+          "label": "Word over lindos-winapps (your own licensed Windows PC)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-excel",
+      "match": [
+        "Microsoft Excel"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "excel",
+          "label": "Excel over lindos-winapps (your own licensed Windows PC)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-powerpoint",
+      "match": [
+        "Microsoft PowerPoint"
+      ],
+      "actions": [
+        {
+          "type": "winapps",
+          "id": "powerpoint",
+          "label": "PowerPoint over lindos-winapps (your own licensed Windows PC)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-outlook",
+      "match": [
+        "Microsoft Outlook"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "outlook-web",
+          "label": "Outlook on the web",
+          "url": "https://outlook.office.com"
+        },
+        {
+          "type": "winapps",
+          "id": "outlook",
+          "label": "Outlook over lindos-winapps (your own licensed Windows PC)"
+        }
+      ]
+    },
+    {
+      "id": "microsoft-onenote",
+      "match": [
+        "Microsoft OneNote",
+        "^OneNote$"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "onenote-web",
+          "label": "OneNote on the web",
+          "url": "https://www.onenote.com"
+        }
+      ]
+    },
+    {
+      "id": "libreoffice",
+      "match": [
+        "LibreOffice"
+      ],
+      "actions": [
+        {
+          "type": "builtin",
+          "id": "libreoffice",
+          "label": "LibreOffice is already included in Lindos"
+        }
+      ]
+    },
+    {
+      "id": "notion",
+      "match": [
+        "Notion"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "notion-web",
+          "label": "Notion in your browser",
+          "url": "https://www.notion.so"
+        }
+      ]
+    },
+    {
+      "id": "evernote",
+      "match": [
+        "Evernote"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "evernote-web",
+          "label": "Evernote in your browser",
+          "url": "https://www.evernote.com"
+        }
+      ]
+    },
+    {
+      "id": "trello",
+      "match": [
+        "Trello"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "trello-web",
+          "label": "Trello in your browser",
+          "url": "https://trello.com"
+        }
+      ]
+    },
+    {
+      "id": "dropbox",
+      "match": [
+        "Dropbox"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "dropbox-web",
+          "label": "Dropbox in your browser",
+          "url": "https://www.dropbox.com"
+        }
+      ]
+    },
+    {
+      "id": "google-drive",
+      "match": [
+        "Google Drive",
+        "Backup and Sync"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "drive-web",
+          "label": "Google Drive in your browser",
+          "url": "https://drive.google.com"
+        }
+      ]
+    },
+    {
+      "id": "onedrive-app",
+      "match": [
+        "Microsoft OneDrive",
+        "^OneDrive$"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "onedrive-web",
+          "label": "OneDrive in your browser (files already on this disk are moved by the 'onedrive' item above)",
+          "url": "https://onedrive.live.com"
+        }
+      ]
+    },
+    {
+      "id": "icloud",
+      "match": [
+        "iCloud"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "icloud-web",
+          "label": "iCloud in your browser",
+          "url": "https://www.icloud.com"
+        }
+      ]
+    },
+    {
+      "id": "bitwarden",
+      "match": [
+        "Bitwarden"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.bitwarden.desktop",
+          "label": "Bitwarden (Flatpak)"
+        }
+      ],
+      "winget": [
+        "Bitwarden.Bitwarden"
+      ]
+    },
+    {
+      "id": "1password",
+      "match": [
+        "1Password"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "1password-web",
+          "label": "1Password in your browser",
+          "url": "https://start.1password.com"
+        }
+      ]
+    },
+    {
+      "id": "lastpass",
+      "match": [
+        "LastPass"
+      ],
+      "actions": [
+        {
+          "type": "web",
+          "id": "lastpass-web",
+          "label": "LastPass in your browser",
+          "url": "https://lastpass.com"
+        }
+      ]
+    },
+    {
+      "id": "anydesk",
+      "match": [
+        "AnyDesk"
+      ],
+      "actions": [
+        {
+          "type": "flatpak",
+          "id": "com.anydesk.Anydesk",
+          "label": "AnyDesk (Flatpak)"
+        }
+      ]
+    },
+    {
+      "id": "steam",
+      "match": [
+        "^Steam$"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "steam",
+          "label": "Steam"
+        }
+      ],
+      "publisher": [
+        "Valve",
+        "Valve Corporation"
+      ],
+      "winget": [
+        "Valve.Steam"
+      ]
+    },
+    {
+      "id": "epic-games-launcher",
+      "match": [
+        "Epic Games Launcher"
+      ],
+      "actions": [
+        {
+          "type": "recipe",
+          "id": "epic-games-launcher",
+          "label": "Epic Games Launcher, through Wine (lindos-compat recipe)"
+        },
+        {
+          "type": "launcher",
+          "id": "heroic",
+          "label": "Heroic Games Launcher (native, Epic + GOG storefronts)"
+        }
+      ]
+    },
+    {
+      "id": "gog-galaxy",
+      "match": [
+        "GOG Galaxy",
+        "GOG\\.com"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "heroic",
+          "label": "Heroic Games Launcher (native, GOG storefront)"
+        }
+      ]
+    },
+    {
+      "id": "battle-net",
+      "match": [
+        "Battle\\.net",
+        "Blizzard"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "lutris",
+          "label": "Lutris (its Battle.net installer script)"
+        }
+      ]
+    },
+    {
+      "id": "ubisoft-connect",
+      "match": [
+        "Ubisoft Connect",
+        "Uplay"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "lutris",
+          "label": "Lutris (its Ubisoft Connect installer script)"
+        }
+      ]
+    },
+    {
+      "id": "ea-app",
+      "match": [
+        "^EA app$",
+        "Origin",
+        "Electronic Arts"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "lutris",
+          "label": "Lutris (its EA app / Origin installer script)"
+        }
+      ]
+    },
+    {
+      "id": "roblox",
+      "match": [
+        "^Roblox$",
+        "Roblox Player"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "sober",
+          "label": "Sober (runs the official Roblox Android build natively; not affiliated with Roblox Corporation)"
+        }
+      ],
+      "winget": [
+        "Roblox.Roblox"
+      ]
+    },
+    {
+      "id": "roblox-studio",
+      "match": [
+        "Roblox Studio"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "vinegar",
+          "label": "Vinegar (Roblox Studio through Wine)"
+        }
+      ]
+    },
+    {
+      "id": "minecraft-launcher",
+      "match": [
+        "Minecraft Launcher",
+        "^Minecraft$"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "prism",
+          "label": "Prism Launcher (native Java Edition, mods, shaders)"
+        }
+      ],
+      "publisher": [
+        "Mojang",
+        "Mojang Studios",
+        "Microsoft Studios"
+      ],
+      "winget": [
+        "Mojang.MinecraftLauncher"
+      ]
+    },
+    {
+      "id": "minecraft-bedrock",
+      "match": [
+        "Minecraft for Windows",
+        "Minecraft.*Bedrock"
+      ],
+      "actions": [
+        {
+          "type": "launcher",
+          "id": "mcpelauncher",
+          "label": "mcpelauncher (unofficial, runs the Android build you own)"
+        }
+      ]
+    },
+    {
+      "id": "riot-client",
+      "match": [
+        "Riot Client"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "riot-client",
+          "label": "valorant: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"valorant\"",
+          "anticheat": "Riot Vanguard (kernel driver)"
+        }
+      ]
+    },
+    {
+      "id": "valorant",
+      "match": [
+        "^VALORANT$"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "valorant",
+          "label": "valorant: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"valorant\"",
+          "anticheat": "Riot Vanguard (kernel driver)"
+        }
+      ]
+    },
+    {
+      "id": "league-of-legends",
+      "match": [
+        "League of Legends"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "league-of-legends",
+          "label": "League of Legends: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"League of Legends\"",
+          "anticheat": "Riot Vanguard (kernel driver)"
+        }
+      ]
+    },
+    {
+      "id": "fortnite",
+      "match": [
+        "Fortnite"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "fortnite",
+          "label": "Fortnite: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Fortnite\"",
+          "anticheat": "Easy Anti-Cheat + BattlEye (Linux disabled by Epic)"
+        }
+      ]
+    },
+    {
+      "id": "apex-legends",
+      "match": [
+        "Apex Legends"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "apex-legends",
+          "label": "Apex Legends: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Apex Legends\"",
+          "anticheat": "Easy Anti-Cheat (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "rainbow-six-siege",
+      "match": [
+        "Rainbow Six Siege",
+        "Tom Clancy.?s Rainbow Six"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "rainbow-six-siege",
+          "label": "Rainbow Six Siege: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Rainbow Six Siege\"",
+          "anticheat": "BattlEye (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "destiny-2",
+      "match": [
+        "Destiny 2"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "destiny-2",
+          "label": "Destiny 2: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Destiny 2\"",
+          "anticheat": "BattlEye (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "pubg",
+      "match": [
+        "PUBG"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "pubg",
+          "label": "PUBG: Battlegrounds: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"PUBG: Battlegrounds\"",
+          "anticheat": "BattlEye (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "rust-game",
+      "match": [
+        "^Rust$"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "rust-game",
+          "label": "Rust: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Rust\"",
+          "anticheat": "Easy Anti-Cheat (kernel mode on Windows)"
+        }
+      ],
+      "publisher": [
+        "Facepunch",
+        "Facepunch Studios"
+      ]
+    },
+    {
+      "id": "escape-from-tarkov",
+      "match": [
+        "Escape from Tarkov"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "escape-from-tarkov",
+          "label": "Escape from Tarkov: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Escape from Tarkov\"",
+          "anticheat": "BattlEye (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "call-of-duty",
+      "match": [
+        "Call of Duty"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "call-of-duty",
+          "label": "Call of Duty: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Call of Duty\"",
+          "anticheat": "Ricochet (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "delta-force",
+      "match": [
+        "Delta Force"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "delta-force",
+          "label": "Delta Force: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Delta Force\"",
+          "anticheat": "kernel-mode anti-cheat (Windows only)"
+        }
+      ]
+    },
+    {
+      "id": "battlefield-2042",
+      "match": [
+        "Battlefield 2042"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "battlefield-2042",
+          "label": "Battlefield 2042: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Battlefield 2042\"",
+          "anticheat": "Javelin (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "battlefield-6",
+      "match": [
+        "Battlefield 6"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "battlefield-6",
+          "label": "Battlefield 6: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Battlefield 6\"",
+          "anticheat": "Javelin (kernel mode on Windows)"
+        }
+      ]
+    },
+    {
+      "id": "xbox-app",
+      "match": [
+        "^Xbox$",
+        "Xbox app",
+        "PC Game Pass"
+      ],
+      "actions": [
+        {
+          "type": "not_possible",
+          "id": "xbox-app",
+          "label": "Xbox app / PC Game Pass: does not run on Linux",
+          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Xbox app / PC Game Pass\"",
+          "anticheat": "Xbox Play Anywhere DRM/services (Windows only)"
+        }
+      ]
+    }
+  ]
+}

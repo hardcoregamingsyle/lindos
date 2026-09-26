@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Thunar custom actions shipped by lindos-compat (SPEC §9).
+  Thunar custom actions shipped by lindos-compat (SPEC §9, SPEC-WINDOWS §28.9).
   Merged into /etc/xdg/Thunar/uca.xml by the package postinst; actions are
-  identified by <unique-id> so re-installing never duplicates them.
+  identified by <unique-id> so re-installing never duplicates them (postrm removes
+  exactly these ids).  Every action runs lindos-run, which classifies the file by its
+  content and asks before anything destructive (registry merges, scripts, installs,
+  setup programs on disk images).
 -->
 <actions>
 <action>
@@ -13,7 +16,7 @@
 	<command>lindos-run %f</command>
 	<description>Run this Windows program through Wine (its own C:\ drive is created automatically)</description>
 	<range></range>
-	<patterns>*.exe;*.EXE;*.msi;*.MSI;*.bat;*.BAT;*.cmd;*.lnk;*.LNK</patterns>
+	<patterns>*.exe;*.EXE;*.msi;*.MSI;*.msp;*.MSP;*.bat;*.BAT;*.cmd;*.lnk;*.LNK;*.com;*.COM;*.scr;*.SCR;*.cpl;*.CPL;*.vbs;*.VBS;*.cab;*.CAB</patterns>
 	<startup-notify/>
 	<other-files/>
 </action>
@@ -38,6 +41,54 @@
 	<description>Open the C:\ drive (Wine prefix) this Windows program uses</description>
 	<range></range>
 	<patterns>*.exe;*.EXE;*.msi;*.MSI;*.lnk;*.LNK</patterns>
+	<other-files/>
+</action>
+<action>
+	<icon>utilities-terminal</icon>
+	<name>Run with PowerShell</name>
+	<submenu></submenu>
+	<unique-id>1755000000000004-4</unique-id>
+	<command>lindos-run %f</command>
+	<description>Run this PowerShell script with PowerShell 7 (Lindos asks first; Windows-only commands will not work)</description>
+	<range></range>
+	<patterns>*.ps1;*.PS1</patterns>
+	<startup-notify/>
+	<other-files/>
+</action>
+<action>
+	<icon>package-x-generic</icon>
+	<name>Install into a C:\ drive (MSIX)</name>
+	<submenu></submenu>
+	<unique-id>1755000000000005-5</unique-id>
+	<command>lindos-run %f</command>
+	<description>Install this Windows app package into its own C:\ drive and add it to the Start Menu (Lindos asks first)</description>
+	<range></range>
+	<patterns>*.msix;*.MSIX;*.appx;*.APPX;*.msixbundle;*.MSIXBUNDLE;*.appxbundle;*.APPXBUNDLE;*.msixupload;*.appxupload;*.appinstaller;*.AppInstaller</patterns>
+	<startup-notify/>
+	<other-files/>
+</action>
+<action>
+	<icon>media-optical</icon>
+	<name>Mount disk image</name>
+	<submenu></submenu>
+	<unique-id>1755000000000006-6</unique-id>
+	<command>lindos-run %f</command>
+	<description>Open this disk image read-only like a DVD drive; Lindos offers to run its setup program</description>
+	<range></range>
+	<patterns>*.iso;*.ISO;*.img;*.IMG</patterns>
+	<startup-notify/>
+	<other-files/>
+</action>
+<action>
+	<icon>preferences-system</icon>
+	<name>Merge into a C:\ drive (.reg)</name>
+	<submenu></submenu>
+	<unique-id>1755000000000007-7</unique-id>
+	<command>lindos-run %f</command>
+	<description>Add these Windows registry settings to a program's C:\ drive (Lindos shows what will be deleted and asks first)</description>
+	<range></range>
+	<patterns>*.reg;*.REG</patterns>
+	<startup-notify/>
 	<other-files/>
 </action>
 </actions>

@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
 Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-gdkpixbuf-2.0, lindos-core, xdg-utils
-Recommends: lindos-compat, lindos-gaming, librsvg2-common
+Recommends: lindos-compat, lindos-gaming, lindos-transfer, librsvg2-common
 Suggests: lindos-settings, lindos-desktop
 Homepage: https://lindos.dev
 Description: Lindos first-boot setup (Out-Of-Box Experience)
@@ -16,7 +16,9 @@ Description: Lindos first-boot setup (Out-Of-Box Experience)
  redistribution), a dark or light theme, accent colour, wallpaper, taskbar
  alignment, optional apps (Windows app support through Wine/Proton, Steam,
  Roblox via Sober, Minecraft via Prism, Heroic, Lutris, Bottles, OnlyOffice,
- creative apps) and privacy preferences, then applies everything through
+ creative apps), an optional step to bring documents, bookmarks and more from
+ a Windows drive or transfer folder (nothing is copied until the Transfer
+ tool is opened), and privacy preferences, then applies everything through
  lindos-core with a single privileged helper call per group.
  .
  Run "lindos-setup --reconfigure" to go through the wizard again.

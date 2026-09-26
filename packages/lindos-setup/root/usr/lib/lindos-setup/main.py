@@ -11,7 +11,7 @@ Usage::
 * ``--dry-run``     no helper calls, nothing changed; the plan JSON is printed
                     to stdout and every step is only described.
 * ``--page ID``     start on a given page (welcome, mode, browser, personalize,
-                    apps, privacy, summary, apply, done).
+                    apps, privacy, transfer, summary, apply, done).
 
 Log: ``~/.local/state/lindos/setup.log``.
 """
@@ -30,7 +30,8 @@ if HERE not in sys.path:
 from lindos_setup import __version__  # noqa: E402
 from lindos_setup import core, i18n  # noqa: E402
 
-PAGE_IDS = ["welcome", "mode", "browser", "personalize", "apps", "privacy", "summary", "apply", "done"]
+PAGE_IDS = ["welcome", "mode", "browser", "personalize", "apps", "privacy", "transfer", "summary",
+           "apply", "done"]
 
 
 def build_parser() -> argparse.ArgumentParser:

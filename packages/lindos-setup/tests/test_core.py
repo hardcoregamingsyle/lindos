@@ -232,6 +232,55 @@ def test_threaded_live_applier_serialises_and_coalesces(monkeypatch, tmp_path):
     assert sync.set_accent("#F2C94C") is True and ("set_accent", "#F2C94C") in calls
 
 
+def test_transfer_sources_missing_binary(monkeypatch):
+    monkeypatch.setattr(core, "which", lambda cmd: None)
+    data = core.transfer_sources()
+    assert data == {"partitions": [], "bundles": [], "available": False,
+                    "note": "The Transfer tool (lindos-transfer) is not installed."}
+
+
+def test_transfer_sources_parses_json(monkeypatch):
+    monkeypatch.setattr(core, "which", lambda cmd: "/usr/bin/lindos-transfer" if cmd == "lindos-transfer" else None)
+    payload = {"partitions": [{"device": "/dev/sda2", "windows": True, "mountpoint": "/media/alice/OS"}],
+              "bundles": [{"path": "/media/USB/kit", "computer": "DESKTOP-1"}]}
+    import json as _json
+
+    def fake_run(argv, **kwargs):
+        assert argv == ["/usr/bin/lindos-transfer", "sources", "--json"]
+        return types.SimpleNamespace(returncode=0, stdout=_json.dumps(payload), stderr="")
+
+    data = core.transfer_sources(run=fake_run)
+    assert data["available"] is True and data["note"] == ""
+    assert data["partitions"][0]["device"] == "/dev/sda2"
+    assert data["bundles"][0]["computer"] == "DESKTOP-1"
+
+
+def test_transfer_sources_handles_bad_exit_and_json(monkeypatch):
+    monkeypatch.setattr(core, "which", lambda cmd: "/usr/bin/lindos-transfer")
+    bad_exit = lambda argv, **kw: types.SimpleNamespace(returncode=1, stdout="", stderr="boom")  # noqa: E731
+    data = core.transfer_sources(run=bad_exit)
+    assert data["available"] is False and "boom" in data["note"]
+    bad_json = lambda argv, **kw: types.SimpleNamespace(returncode=0, stdout="{not json", stderr="")  # noqa: E731
+    data2 = core.transfer_sources(run=bad_json)
+    assert data2["available"] is False and data2["partitions"] == []
+    raising = lambda argv, **kw: (_ for _ in ()).throw(OSError("no such file"))  # noqa: E731
+    data3 = core.transfer_sources(run=raising)
+    assert data3["available"] is False and "no such file" in data3["note"]
+
+
+def test_launch_transfer_gui(monkeypatch):
+    monkeypatch.setattr(core, "which", lambda cmd: None)
+    assert core.launch_transfer_gui() is False
+    calls = []
+    monkeypatch.setattr(core, "which", lambda cmd: "/usr/bin/lindos-transfer-gui")
+    monkeypatch.setattr(core.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    assert core.launch_transfer_gui("/media/alice/OS") is True
+    assert calls == [["/usr/bin/lindos-transfer-gui", "--from", "/media/alice/OS"]]
+    calls.clear()
+    assert core.launch_transfer_gui() is True
+    assert calls == [["/usr/bin/lindos-transfer-gui"]]
+
+
 def test_core_without_lindos_falls_back(monkeypatch, tmp_path):
     for name in list(sys.modules):
         if name == "lindos" or name.startswith("lindos."):

@@ -56,13 +56,20 @@ Lindos/
 │   ├── lindos-compat/          ← .exe/.msi runner, Wine/Proton/umu, Adobe recipes (§9)
 │   ├── lindos-gaming/          ← launchers, drivers, gamemode, MangoHud, controllers (§10)
 │   ├── lindos-tune/            ← RAM/perf tuning, zram, services, hardware control (§11)
-│   └── lindos-meta/            ← depends on all of the above
+│   ├── lindos-transfer/        ← Windows Easy Transfer-style migration + GUI (Addendum W §29)
+│   └── lindos-meta/            ← depends on all of the above (incl. lindos-transfer)
 ├── docs/                       ← BUILDING, ARCHITECTURE, COMPATIBILITY, MODES, RAM-BUDGET,
-│                                  KEYBOARD-SHORTCUTS, FAQ, HARDWARE-CONTROL, WINDOWS-APPS
+│                                  KEYBOARD-SHORTCUTS, FAQ, HARDWARE-CONTROL, WINDOWS-APPS,
+│                                  WINDOWS-FORMATS, WINGET, TRANSFER, DUALBOOT (Addendum W)
 ├── tests/                      ← run.sh (lint everything), pytest suites, conftest.py (gi stub)
 ├── .github/workflows/ci.yml    ← lint + pytest + build debs; ISO build = workflow_dispatch
 └── out/                        ← build products (git-ignored)
 ```
+
+Addendum K (kernel + compat-performance, §14), Addendum V (VM/WinApps/Proton-system/drivers/CI,
+§15) and Addendum W (every Windows format/Transfer/Play-anywhere, §16) each add their own packages
+(`lindos-kernel`; `lindos-vm`, `lindos-winapps`; `lindos-transfer`) and docs on top of this base
+layout — see their own specs for the full file lists.
 
 ### 1.1 Package format
 Each `packages/<name>/` contains:
@@ -565,3 +572,18 @@ system-wide Proton-GE + gamescope session, expanded driver automation (Broadcom/
 and real GitHub-Actions Linux builds (kernel/deb/ISO) are specified in [`SPEC-VM.md`](SPEC-VM.md)
 (§20–§26). Its §20 honesty rules (a VM is a truthful VM; no spoofing; no license bypass; user
 supplies Windows) are binding, extending §0.1 and §14.
+
+## 16. Addendum W — Every Windows format, Transfer, Play-anywhere
+
+Opening every common Windows file type Wine/Proton alone does not cover (MSIX/APPX packages and
+bundles, `.appinstaller`, `.msp`, `.reg`, `.ps1`, `.vbs`, `.url`, `.scr`, `.cpl`, `.inf`, `.cab`,
+disk images, ClickOnce, DOS and 16-bit Windows programs, `./setup.exe` from a terminal via
+`binfmt_misc`, and `winget install <id>`), a new `lindos-transfer` package (a read-only,
+Windows-Easy-Transfer-style migration tool with a Windows-side kit and GUI), and honest
+"play-anywhere" routes for games whose kernel-level anti-cheat cannot run on any Linux (official
+cloud streaming where a provider offers it, or a one-shot restart into the PC's own Windows
+installation via `lindos-dualboot` — never a VM route, an emulator or a spoofer) are specified in
+[`SPEC-WINDOWS.md`](SPEC-WINDOWS.md) (§27–§34). Its §27 honesty rules (no anti-cheat/attestation
+circumvention of any kind; every format handler states `works`/`partial`/`unsupported` and never
+tries a file anyway; transfer is read-only and never touches secrets; no licence bypass; routes are
+official and region-accurate) are binding, extending §0.1, §14 and §15.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import importlib
+import json
 import logging
 import os
 import posixpath
@@ -581,6 +582,61 @@ def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
 
+def transfer_sources(*, run: Callable[..., Any] = subprocess.run) -> Dict[str, Any]:
+    """``lindos-transfer sources --json`` (SPEC-WINDOWS §29.3), fully guarded: a missing binary,
+    a non-zero exit, a timeout or invalid JSON all degrade to an honest empty result with a
+    ``note`` -- this must never raise and never block the wizard's UI thread (call it from a
+    worker thread; see ``pages.TransferPage``).
+
+    Returns ``{"partitions": [...], "bundles": [...], "available": bool, "note": str}``.
+    """
+    exe = which("lindos-transfer")
+    if not exe:
+        return {"partitions": [], "bundles": [], "available": False,
+                "note": "The Transfer tool (lindos-transfer) is not installed."}
+    try:
+        proc = run([exe, "sources", "--json"], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("lindos-transfer sources failed: %s", exc)
+        return {"partitions": [], "bundles": [], "available": False,
+                "note": "lindos-transfer sources failed: %s" % exc}
+    if getattr(proc, "returncode", 1) != 0:
+        err = (getattr(proc, "stderr", "") or "").strip()
+        log.warning("lindos-transfer sources exited %s: %s", getattr(proc, "returncode", "?"), err)
+        return {"partitions": [], "bundles": [], "available": False,
+                "note": err or "lindos-transfer sources reported an error"}
+    try:
+        data = json.loads(getattr(proc, "stdout", "") or "{}")
+    except ValueError as exc:
+        log.warning("lindos-transfer sources returned invalid JSON: %s", exc)
+        return {"partitions": [], "bundles": [], "available": False,
+                "note": "lindos-transfer returned data Lindos Setup could not read (%s)" % exc}
+    parts = data.get("partitions") if isinstance(data, dict) else None
+    bundles = data.get("bundles") if isinstance(data, dict) else None
+    return {
+        "partitions": [p for p in (parts or []) if isinstance(p, dict)],
+        "bundles": [b for b in (bundles or []) if isinstance(b, dict)],
+        "available": True,
+        "note": "",
+    }
+
+
+def launch_transfer_gui(source: str = "") -> bool:
+    """Start ``lindos-transfer-gui [--from SOURCE]`` detached; False if it is not installed."""
+    exe = which("lindos-transfer-gui")
+    if not exe:
+        log.warning("lindos-transfer-gui not found in PATH")
+        return False
+    argv = [exe] + (["--from", source] if source else [])
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError as exc:
+        log.error("cannot start lindos-transfer-gui: %s", exc)
+        return False
+
+
 def launch_settings(page: Optional[str] = None) -> bool:
     """Start ``lindos-settings [page]`` detached; False if it is not installed."""
     exe = which("lindos-settings")
@@ -602,5 +658,5 @@ __all__ = [
     "log_file", "setup_done_exists", "in_xfce", "mark_setup_done", "load_modes", "RAM_HINTS",
     "browsers_table", "browser_installed", "is_online", "ram_total_mb", "list_wallpapers",
     "wallpaper_display_name", "LiveApplier", "make_real_executors", "launch_settings", "which",
-    "headless_dry_run",
+    "headless_dry_run", "transfer_sources", "launch_transfer_gui",
 ]

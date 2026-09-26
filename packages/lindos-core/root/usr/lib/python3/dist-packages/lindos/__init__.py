@@ -12,6 +12,8 @@ Linux-specific calls are guarded and executed lazily.  Sub-modules:
 ``theme``     dark/light, accent, wallpaper, fonts, taskbar (xfconf)
 ``compat``    Windows executable analysis, slugs, apps DB, runner choice
 ``ram``       RAM snapshot / report
+``dualboot``  honest "restart into Windows" (efibootmgr/GRUB one-shot, Secure Boot/TPM facts)
+``update``    Lindos's own apt-repo/sideload updates (SPEC-UPDATE.md §36) -- never mintupdate's job
 """
 
 from __future__ import annotations
@@ -24,5 +26,6 @@ PRODUCT = "Lindos"
 
 __all__ = [
     "__version__", "__codename__", "VERSION", "CODENAME", "PRODUCT",
-    "paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram",
+    "paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram", "dualboot",
+    "update",
 ]

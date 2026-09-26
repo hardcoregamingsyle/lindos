@@ -7,15 +7,26 @@ utilities may share the ``default`` prefix (``lindos-run --shared``).
 A tiny marker file ``.lindos.json`` inside each prefix remembers which runner
 (wine / umu / bottles) and architecture created it, so later launches stay
 consistent.
+
+Case-insensitive C:\\ drives (SPEC-WINDOWS §28.8): a **new** prefix gets an empty
+``drive_c`` *before* Wine populates it, and Lindos tries to mark it case-insensitive
+(ext4 casefold, ``chattr +F`` = ``FS_IOC_SETFLAGS`` with ``0x40000000``).  Wine notices the
+flag and skips its slow case-insensitive file search.  This only works on an ext4
+filesystem created with the ``casefold`` feature (``mkfs.ext4 -O casefold`` or an offline
+``tune2fs -O casefold``); everywhere else the attempt fails silently.  Lindos never runs
+``tune2fs``.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import shutil
+import struct
 import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -26,6 +37,13 @@ from . import CoreMissing, core, expand_user_path, get_logger, path_const, user_
 __all__ = [
     "MARKER_NAME",
     "SHARED_SLUG",
+    "EXT4_CASEFOLD_FL",
+    "FS_IOC_GETFLAGS",
+    "FS_IOC_SETFLAGS",
+    "CASEFOLD_STATES",
+    "set_casefold",
+    "is_casefolded",
+    "casefold_probe",
     "PrefixState",
     "prefixes_dir",
     "prefix_path",
@@ -84,11 +102,129 @@ class PrefixState:
     arch: str = "win64"
     marker: Dict[str, object] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    casefold: Optional[bool] = None  # None: not attempted (existing prefix / Bottles)
 
     def as_dict(self) -> Dict[str, object]:
         d = asdict(self)
         d["path"] = str(self.path)
         return d
+
+
+# ---------------------------------------------------------------------------
+# Case-insensitive C:\ drives (ext4 casefold, SPEC-WINDOWS §28.8)
+# ---------------------------------------------------------------------------
+
+#: ``EXT4_CASEFOLD_FL`` -- the ``chattr +F`` inode flag Wine checks for.
+EXT4_CASEFOLD_FL = 0x40000000
+
+
+def _ioc(direction: int, kind: int, nr: int, size: int) -> int:
+    """Linux ``_IOC()``: direction 1 = write, 2 = read."""
+    return (direction << 30) | (size << 16) | (kind << 8) | nr
+
+
+_LONG_SIZE = struct.calcsize("l")
+#: ``_IOR('f', 1, long)`` / ``_IOW('f', 2, long)`` (the kernel copies an ``int``).
+FS_IOC_GETFLAGS = _ioc(2, ord("f"), 1, _LONG_SIZE)
+FS_IOC_SETFLAGS = _ioc(1, ord("f"), 2, _LONG_SIZE)
+
+#: ``casefold_probe()["state"]`` values
+CASEFOLD_STATES = ("active", "not-enabled", "no-kernel-support", "unsupported", "error")
+_NOT_SUPPORTED_ERRNOS = {errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP), errno.ENOTTY, errno.EINVAL}
+
+IoctlFn = Callable[[int, int, bytes], bytes]
+
+
+def _default_ioctl() -> Optional[IoctlFn]:
+    try:
+        import fcntl  # Linux/Unix only
+    except ImportError:
+        return None
+    return fcntl.ioctl  # type: ignore[return-value]
+
+
+def _open_dir(directory: Path) -> int:
+    return os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+
+
+def is_casefolded(directory: Path, *, ioctl: Optional[IoctlFn] = None) -> Optional[bool]:
+    """True/False when the inode flags of ``directory`` can be read, else None."""
+    ioctl = ioctl or _default_ioctl()
+    if ioctl is None:
+        return None
+    try:
+        fd = _open_dir(directory)
+    except OSError:
+        return None
+    try:
+        raw = ioctl(fd, FS_IOC_GETFLAGS, struct.pack("I", 0))
+        return bool(struct.unpack("I", bytes(raw)[:4])[0] & EXT4_CASEFOLD_FL)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def set_casefold(directory: Path, *, ioctl: Optional[IoctlFn] = None) -> int:
+    """``chattr +F directory``.  Returns 0 on success (or already set), else the errno.
+
+    The kernel only allows this on an **empty** directory (ENOTEMPTY otherwise) of an
+    ext4 filesystem that has the casefold feature (EOPNOTSUPP otherwise).  ``ENOSYS`` means
+    "not a Linux host" (no ``fcntl``).
+    """
+    ioctl = ioctl or _default_ioctl()
+    if ioctl is None:
+        return errno.ENOSYS
+    try:
+        fd = _open_dir(directory)
+    except OSError as exc:
+        return exc.errno or errno.EIO
+    try:
+        raw = ioctl(fd, FS_IOC_GETFLAGS, struct.pack("I", 0))
+        flags = struct.unpack("I", bytes(raw)[:4])[0]
+        if flags & EXT4_CASEFOLD_FL:
+            return 0
+        ioctl(fd, FS_IOC_SETFLAGS, struct.pack("I", (flags | EXT4_CASEFOLD_FL) & 0xFFFFFFFF))
+        return 0
+    except OSError as exc:
+        return exc.errno or errno.EIO
+    finally:
+        os.close(fd)
+
+
+def casefold_probe(base: Path, *, ioctl: Optional[IoctlFn] = None, sys_root: str = "") -> Dict[str, object]:
+    """Can new C:\\ drives under ``base`` be case-insensitive?  (doctor, §28.8)
+
+    Decided by *trying* on a fresh empty directory -- ``/sys/fs/ext4/features/casefold``
+    only says the kernel could do it (CONFIG_UNICODE), not that this filesystem was made
+    with the casefold feature.  Returns ``{"state", "errno", "detail"}`` where state is one
+    of :data:`CASEFOLD_STATES`.
+    """
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = Path(tempfile.mkdtemp(prefix=".casefold-probe-", dir=str(base)))
+    except OSError as exc:
+        return {"state": "error", "errno": exc.errno or 0, "detail": f"cannot create a test folder in {base}: {exc}"}
+    try:
+        rc = set_casefold(probe, ioctl=ioctl)
+    finally:
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+    if rc == 0:
+        return {"state": "active", "errno": 0,
+                "detail": "active (new C:\\ drives are case-insensitive, so Wine finds files faster)"}
+    if rc == errno.ENOSYS:
+        return {"state": "unsupported", "errno": rc, "detail": "not available on this operating system"}
+    if rc in _NOT_SUPPORTED_ERRNOS:
+        kernel = os.path.exists((sys_root.rstrip("/\\") or "") + "/sys/fs/ext4/features/casefold")
+        if kernel:
+            return {"state": "not-enabled", "errno": rc,
+                    "detail": "not enabled on this filesystem (optional speed-up; needs mkfs/tune2fs -O casefold "
+                              "offline)"}
+        return {"state": "no-kernel-support", "errno": rc, "detail": "kernel lacks CONFIG_UNICODE"}
+    return {"state": "error", "errno": rc, "detail": f"could not test ({os.strerror(rc)})"}
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +375,26 @@ def base_wine_env(prefix: Path, *, arch: str = "win64", dll_overrides: Optional[
 # ---------------------------------------------------------------------------
 
 
+def _prepare_casefold_drive(drive_c: Path, casefold: Optional[Callable[[Path], int]] = None) -> Optional[bool]:
+    """Create the empty ``drive_c`` of a new prefix and try ``chattr +F`` on it (silent)."""
+    try:
+        drive_c.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.debug("cannot pre-create %s: %s", drive_c, exc)
+        return None
+    try:
+        if any(drive_c.iterdir()):
+            return is_casefolded(drive_c)  # not ours to flag: the kernel refuses non-empty dirs
+    except OSError:
+        return None
+    rc = (casefold or set_casefold)(drive_c)
+    if rc == 0:
+        log.debug("C:\\ drive %s is case-insensitive (casefold)", drive_c)
+        return True
+    log.debug("casefold not available for %s: %s", drive_c, os.strerror(rc) if rc > 0 else rc)
+    return False
+
+
 def backup_prefix(prefix: Path) -> Optional[Path]:
     """Move an existing prefix aside (``<slug>-old-<timestamp>``) instead of deleting it."""
     if not prefix.exists():
@@ -263,12 +419,16 @@ def ensure_prefix(
     on_progress: Optional[Callable[[str], None]] = None,
     log_file: Optional[Path] = None,
     recipe_id: Optional[str] = None,
+    casefold: Optional[Callable[[Path], int]] = None,
 ) -> PrefixState:
     """Make sure the prefix exists and (for the wine runner) is initialised.
 
     * ``wine``: runs ``wineboot -u`` when the prefix is new (creates C:\\ drive).
     * ``umu``: only creates the directory -- umu-run/Proton initialise it on first launch.
     * ``bottles``: nothing to do here (Bottles keeps its own bottles).
+
+    A **new** wine/umu prefix gets an empty ``drive_c`` first and :func:`set_casefold` is
+    tried on it (``casefold`` overrides that call in tests); failure is silent.
     """
     slug = safe_slug(slug)
     prefix = prefix_path(slug)
@@ -288,6 +448,8 @@ def ensure_prefix(
     if not existed:
         prefix.mkdir(parents=True, exist_ok=True)
         state.created = True
+        if runner in ("wine", "umu"):
+            state.casefold = _prepare_casefold_drive(prefix / "drive_c", casefold)
 
     if runner == "wine" and not (prefix / "system.reg").exists():
         wineboot = wine_tool("wineboot", which)
@@ -337,6 +499,8 @@ def ensure_prefix(
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "lindos": "1.0.0",
         }
+        if state.casefold is not None:
+            marker["casefold"] = state.casefold
         if recipe_id:
             marker["recipe"] = recipe_id
         try:

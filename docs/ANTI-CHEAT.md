@@ -134,9 +134,12 @@ Statuses change with a single publisher update, so **always verify before buying
    `compat-matrix.json` data). Treat it as a snapshot, cross-checked against the two sites above.
 
 If a game you want is listed as `not_possible`, that is the publisher's decision and there is no
-Lindos-side workaround — the honest options are a native or single-player alternative, cloud
-streaming in a browser (Xbox Cloud Gaming / GeForce NOW, where the title offers it), or a Windows
-dual-boot for that one game. Lindos will not pretend otherwise.
+Lindos-side workaround — the honest options are a native or single-player alternative, official
+cloud streaming (`lindos-game route <title>` — GeForce NOW's native Linux app, Xbox Cloud Gaming in
+Chrome/Edge, Boosteroid or Amazon Luna, whichever the title actually offers in your region), or a
+Windows dual-boot for that one game (`lindos-game play <title> --route windows`). Lindos will not
+pretend otherwise. See [GAMING.md §7](GAMING.md#7-play-anywhere--honest-routes-for-blocked-titles)
+for the full `lindos-game route/play/shortcut/cloud` command set.
 
 ## 6. See also
 

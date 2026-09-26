@@ -333,7 +333,16 @@
         "adobe",
         "office",
         "doctor",
-        "install a windows program"
+        "install a windows program",
+        "winget",
+        "msix",
+        "appx",
+        "reg",
+        "powershell",
+        "dos",
+        "transfer",
+        "migrate",
+        "easy transfer"
       ]
     },
     {
@@ -357,7 +366,12 @@
         "mangohud",
         "gamemode",
         "anti-cheat",
-        "refresh"
+        "refresh",
+        "dual boot",
+        "restart into windows",
+        "cloud gaming",
+        "geforce now",
+        "xbox cloud"
       ]
     },
     {
@@ -659,6 +673,28 @@
             "hwe"
           ]
         }
+      ]
+    },
+    {
+      "id": "updates",
+      "title": "Updates",
+      "icon": [
+        "system-software-update",
+        "lindos-start"
+      ],
+      "kind": "native",
+      "description": "Lindos component updates, kernel version, Secure Boot signing",
+      "keywords": [
+        "update",
+        "upgrade",
+        "apt",
+        "package",
+        "manager",
+        "mintupdate",
+        "lindos-update",
+        "kernel",
+        "secure boot",
+        "sideload"
       ]
     },
     {

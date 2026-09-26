@@ -1,7 +1,11 @@
 #!/bin/sh
 # postrm for lindos-compat — undo what postinst merged into shared config files.
-#  * removes our lindos-run.desktop entries from /etc/xdg/mimeapps.list
+#  * removes our lindos-run.desktop / lindos-open-image.desktop entries (and the text-editor
+#    defaults we set for our own .inf type and for .ps1) from /etc/xdg/mimeapps.list
 #  * removes our Thunar custom actions (matched by <unique-id>) from /etc/xdg/Thunar/uca.xml
+#  * unregisters the live binfmt_misc rule lindos-pe (echo -1 > /proc/sys/fs/binfmt_misc/lindos-pe;
+#    never 'systemctl restart systemd-binfmt'); purge also drops the /dev/null mask the helper
+#    may have created in /etc/binfmt.d
 #  * refreshes the MIME / desktop databases
 # User data (C:\ drives under ~/.local/share/lindos/prefixes, apps.json, Start Menu entries)
 # is never touched by the package: it belongs to the user.
@@ -10,11 +14,34 @@ set -e
 # (overridable through the environment so the cleanup logic can be tested against scratch files)
 LINDOS_MIMEAPPS_DST="${LINDOS_MIMEAPPS_DST:-/etc/xdg/mimeapps.list}"
 LINDOS_UCA_DST="${LINDOS_UCA_DST:-/etc/xdg/Thunar/uca.xml}"
-LINDOS_UCA_IDS="1755000000000001-1 1755000000000002-2 1755000000000003-3"
+LINDOS_UCA_IDS="1755000000000001-1 1755000000000002-2 1755000000000003-3 1755000000000004-4 1755000000000005-5 1755000000000006-6 1755000000000007-7"
 export LINDOS_MIMEAPPS_DST LINDOS_UCA_DST LINDOS_UCA_IDS
+
+BINFMT_ENTRY="${LINDOS_BINFMT_ENTRY:-/proc/sys/fs/binfmt_misc/lindos-pe}"
+BINFMT_MASK="${LINDOS_BINFMT_MASK:-/etc/binfmt.d/lindos-pe.conf}"
 
 log() {
     printf 'lindos-compat: %s\n' "$*" >&2
+}
+
+in_chroot() {
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        systemd-detect-virt --quiet --chroot && return 0
+    fi
+    return 1
+}
+
+unregister_binfmt() {
+    in_chroot && return 0                             # ISO build: never touch the build host
+    if [ -e "$BINFMT_ENTRY" ]; then
+        { echo -1 > "$BINFMT_ENTRY"; } 2>/dev/null || log "could not remove the binfmt rule lindos-pe (non-fatal)"
+    fi
+}
+
+remove_binfmt_mask() {
+    if [ -L "$BINFMT_MASK" ] && [ "$(readlink "$BINFMT_MASK")" = /dev/null ]; then
+        rm -f "$BINFMT_MASK"
+    fi
 }
 
 unmerge_mimeapps() {
@@ -24,7 +51,10 @@ unmerge_mimeapps() {
 import os, re
 
 dst = os.environ["LINDOS_MIMEAPPS_DST"]
-OURS = "lindos-run.desktop"
+OURS = ("lindos-run.desktop", "lindos-open-image.desktop")
+# defaults postinst set for other apps (text editor for our .inf type and for .ps1, like Windows)
+OUR_PAIRS = {("application/x-lindos-inf", "org.xfce.mousepad.desktop"),
+             ("application/x-powershell", "org.xfce.mousepad.desktop")}
 with open(dst, "r", encoding="utf-8", errors="replace") as fh:
     lines = fh.read().splitlines()
 
@@ -40,13 +70,13 @@ for raw in lines:
         key, value = line.split("=", 1)
         key, value = key.strip(), value.strip()
         if section == "Default Applications":
-            if value == OURS or value == OURS + ";":
+            if value.rstrip(";") in OURS or (key, value.rstrip(";")) in OUR_PAIRS:
                 changed = True
                 continue
         else:
             apps = [a for a in value.split(";") if a]
-            if OURS in apps:
-                apps = [a for a in apps if a != OURS]
+            if any(a in OURS for a in apps):
+                apps = [a for a in apps if a not in OURS]
                 changed = True
                 if not apps:
                     continue
@@ -121,6 +151,7 @@ PYEOF
 
 case "${1:-}" in
     remove|purge)
+        unregister_binfmt
         unmerge_mimeapps
         unmerge_thunar_actions
         if command -v update-mime-database >/dev/null 2>&1; then
@@ -134,6 +165,7 @@ case "${1:-}" in
         fi
         if [ "${1:-}" = "purge" ]; then
             rm -f /var/log/lindos/install-compat.log 2>/dev/null || true
+            remove_binfmt_mask
         fi
         ;;
     upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)

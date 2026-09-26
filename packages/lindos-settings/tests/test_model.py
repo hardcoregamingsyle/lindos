@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PKG_ROOT = os.path.normpath(os.path.join(HERE, "..", "root"))
 PAGES_JSON = os.path.join(PKG_ROOT, "usr", "share", "lindos", "settings", "pages.json")
 
-SPEC_ORDER = ["home", "system", "personalization", "apps", "windows-apps", "gaming", "hardware", "network", "accounts", "mode", "update", "about"]
+SPEC_ORDER = ["home", "system", "personalization", "apps", "windows-apps", "gaming", "hardware", "network", "accounts", "mode", "update", "updates", "about"]
 
 
 # --------------------------------------------------------------------------- registry
@@ -364,6 +364,116 @@ def test_driver_payload_and_status_summary():
     assert model.summarize_driver_status("nope") == ""
 
 
+# --------------------------------------------------------------------------- Windows apps: formats/binfmt/winget
+def test_windows_apps_and_gaming_keywords_cover_spec_terms():
+    """SPEC-WINDOWS §32 pages.json keywords."""
+    by_id = model.pages_by_id(model.builtin_pages())
+    wa_kw = " ".join(by_id["windows-apps"].keywords)
+    for term in ("winget", "msix", "appx", "msi", "reg", "powershell", "dos", "transfer", "migrate", "easy transfer"):
+        assert term in wa_kw, term
+    g_kw = " ".join(by_id["gaming"].keywords)
+    for term in ("dual boot", "restart into windows", "cloud gaming", "geforce now", "xbox cloud"):
+        assert term in g_kw, term
+
+
+def test_parse_formats_table():
+    data = [
+        {"id": "msi", "label": "Windows Installer", "suffixes": [".msi"], "mime": "application/x-msi",
+         "handler": "msiexec-install", "status": "works", "note": ""},
+        {"id": "arm-exe", "label": "ARM program", "suffixes": [".exe"], "handler": "explain",
+         "status": "unsupported", "note": "built for ARM Windows"},
+        {"id": "msp", "label": ".msp patch", "suffixes": ".msp", "handler": "msiexec-patch", "status": "partial", "note": "fixes the /i bug"},
+        "junk",
+    ]
+    rows = model.parse_formats_table(data)
+    assert [r["id"] for r in rows] == ["msi", "msp", "arm-exe"]  # works, partial, unsupported
+    assert rows[1]["suffixes"] == [".msp"]  # a bare string suffix is wrapped in a list
+    assert rows[2]["note"] == "built for ARM Windows"
+    # wrapped shape and odd status both degrade honestly
+    assert model.parse_formats_table({"formats": data[:1]})[0]["id"] == "msi"
+    assert model.parse_formats_table(None) == []
+    assert model.normalize_format_row({"id": "x", "status": "weird"})["status"] == "unsupported"
+    assert model.normalize_format_row({})["status"] == "unknown"
+
+
+def test_normalize_binfmt_status_and_summary():
+    st = model.normalize_binfmt_status({
+        "registered": True, "enabled": True, "masked": False,
+        "conflicts": [{"name": "qemu-x86_64", "interpreter": "/usr/bin/qemu-x86_64-static"}, "junk"],
+        "interpreter": "/usr/libexec/lindos/lindos-binfmt", "note": "",
+    })
+    assert st["conflicts"] == [{"name": "qemu-x86_64", "interpreter": "/usr/bin/qemu-x86_64-static"}]
+    summary = model.binfmt_summary(st)
+    assert "On" in summary and "qemu-x86_64" in summary and "does not change it" in summary
+    off = model.normalize_binfmt_status({"registered": False, "masked": True})
+    assert "Off" in model.binfmt_summary(off)
+    assert model.normalize_binfmt_status(None) == {
+        "registered": False, "enabled": False, "masked": False, "conflicts": [], "interpreter": "", "note": ""}
+
+
+def test_parse_winget_results():
+    data = [
+        {"id": "7zip.7zip", "name": "7-Zip", "version": "24.08", "moniker": "7zip", "match": "PackageIdentifier"},
+        {"id": "", "name": "no id"},  # dropped: no id
+        "junk",
+    ]
+    rows = model.parse_winget_results(data)
+    assert len(rows) == 1 and rows[0]["id"] == "7zip.7zip" and rows[0]["name"] == "7-Zip"
+    assert model.parse_winget_results({"not": "a list"}) == []
+
+
+# --------------------------------------------------------------------------- Gaming: routes / dual boot
+def test_normalize_game_route():
+    data = {
+        "title": "Valorant", "id": "valorant", "status": "not_possible", "anticheat": "Riot Vanguard",
+        "region": "US",
+        "routes": [
+            {"type": "cloud", "provider": "geforce-now", "label": "GeForce NOW", "available": False,
+             "why": "not in your library", "requires": [], "action": {"open_url": "https://x"}},
+            {"type": "windows", "label": "Restart into Windows", "available": True, "why": "",
+             "requires": ["secure-boot", "tpm2"], "action": {}},
+            "junk",
+        ],
+        "recommended": 1, "notes": ["Vanguard blocks VMs"],
+    }
+    route = model.normalize_game_route(data)
+    assert route["title"] == "Valorant" and route["anticheat"] == "Riot Vanguard"
+    assert len(route["routes"]) == 2 and route["recommended"] == 1
+    assert route["routes"][0]["provider"] == "geforce-now" and route["routes"][0]["available"] is False
+    assert route["routes"][1]["requires"] == ["secure-boot", "tpm2"]
+    assert route["notes"] == ["Vanguard blocks VMs"]
+    # odd recommended index / missing routes degrade honestly instead of raising
+    assert model.normalize_game_route({"recommended": 99, "routes": []})["recommended"] == 0
+    assert model.normalize_game_route(None) == {
+        "title": "", "id": "", "status": "", "anticheat": "", "region": "unknown",
+        "routes": [], "recommended": 0, "notes": []}
+
+
+def test_normalize_dualboot_status_and_summary():
+    st = model.normalize_dualboot_status({
+        "firmware": "uefi", "secure_boot": "enabled", "tpm": 2,
+        "windows_entries": [{"num": "0001", "label": "Windows Boot Manager", "partuuid": "abcd", "disk": "/dev/nvme0n1"}, "junk"],
+        "can_reboot_to_windows": True, "method": "bootnext", "why": "", "lindos_kernel_signed": True,
+        "bitlocker_hint": False,
+    })
+    assert st["windows_entries"] == [{"num": "0001", "label": "Windows Boot Manager", "partuuid": "abcd", "disk": "/dev/nvme0n1"}]
+    summary = model.dualboot_summary(st)
+    assert "Ready" in summary and "Secure Boot enabled" in summary and "TPM 2" in summary
+    blocked = model.normalize_dualboot_status({"can_reboot_to_windows": False, "why": "grubenv is read-only"})
+    assert "Not available" in model.dualboot_summary(blocked) and "grubenv" in model.dualboot_summary(blocked)
+    assert model.normalize_dualboot_status(None)["can_reboot_to_windows"] is False
+
+
+def test_region_choices_and_mapping():
+    ids = [i for i, _name in model.REGION_CHOICES]
+    assert ids[0] == "auto" and "US" in ids and "IN" in ids
+    assert model.region_combo_id("") == "auto"
+    assert model.region_combo_id("IN") == "IN"
+    assert model.region_config_value("auto") == ""
+    assert model.region_config_value("") == ""
+    assert model.region_config_value("IN") == "IN"
+
+
 # --------------------------------------------------------------------------- backend (no core, no GTK)
 def test_backend_imports_and_degrades_gracefully(tmp_path, monkeypatch):
     from lindos_settings import backend as be
@@ -387,6 +497,160 @@ def test_backend_imports_and_degrades_gracefully(tmp_path, monkeypatch):
     assert isinstance(b.recipes(), list)
     assert isinstance(b.apps_db_load(), list)
     assert b.which("definitely-not-a-program-xyz") is None
+
+
+# --------------------------------------------------------------------------- backend: Windows apps CLI wrappers
+def test_backend_formats_binfmt_winget_missing_cli(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    monkeypatch.setattr(b, "which", lambda cmd: None)
+    assert b.formats() == []
+    assert b.binfmt_status()["note"] == "lindos-compat is not installed"
+    res = b.set_binfmt(True)
+    assert res.ok is False and "not installed" in res.err
+    assert b.winget_search("firefox") == []
+    assert b.winget_install_argv("Mozilla.Firefox") == [
+        "lindos-compat", "winget", "install", "Mozilla.Firefox", "--accept-package-agreements"]
+    assert b.transfer_gui_available() is False
+    assert b.launch_transfer_gui() is False
+
+
+def test_backend_formats_binfmt_winget_parses_json(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    monkeypatch.setattr(b, "which", lambda cmd: f"/usr/bin/{cmd}")
+    calls = []
+
+    def fake_run(argv, timeout=20, env=None, cwd=None):
+        calls.append(list(argv))
+        rest = argv[1:]
+        if rest[:2] == ["formats", "--json"]:
+            return be.CmdResult(0, json.dumps([
+                {"id": "msi", "label": "Windows Installer", "suffixes": [".msi"], "status": "works", "note": ""}]))
+        if rest[:3] == ["binfmt", "status", "--json"]:
+            return be.CmdResult(0, json.dumps({"registered": True, "enabled": True, "masked": False,
+                                               "conflicts": [], "interpreter": "/usr/libexec/lindos/lindos-binfmt", "note": ""}))
+        if rest[:2] == ["binfmt", "enable"]:
+            return be.CmdResult(0, json.dumps({"ok": True, "action": "enable", "message": "turned on"}))
+        if rest[:2] == ["winget", "search"]:
+            return be.CmdResult(0, json.dumps([
+                {"id": "Mozilla.Firefox", "name": "Mozilla Firefox", "version": "130.0", "moniker": "firefox", "match": "Name"}]))
+        return be.CmdResult(1, "", "unexpected argv " + " ".join(argv))
+
+    monkeypatch.setattr(b, "run", fake_run)
+    rows = b.formats()
+    assert rows and rows[0]["id"] == "msi"
+    st = b.binfmt_status()
+    assert st["registered"] and st["enabled"]
+    res = b.set_binfmt(True)
+    assert res.ok and res.out == "turned on"
+    assert calls[-1] == ["lindos-compat", "binfmt", "enable", "--json"]
+    results = b.winget_search("firefox", limit=5)
+    assert results and results[0]["id"] == "Mozilla.Firefox"
+    assert ["lindos-compat", "winget", "search", "firefox", "--limit", "5", "--json"] in calls
+
+    # bad JSON degrades honestly instead of raising
+    monkeypatch.setattr(b, "run", lambda argv, **kw: be.CmdResult(0, "{not json"))
+    assert b.formats() == []
+    assert b.binfmt_status()["note"].startswith("lindos-compat returned")
+    assert b.winget_search("x") == []
+
+
+def test_backend_not_possible_games_filters_status(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    monkeypatch.setattr(b, "compat_matrix", lambda: [
+        {"name": "Roblox", "status": "works", "reason": "", "link": "", "how": "Sober"},
+        {"name": "Valorant", "status": "not-possible", "reason": "Vanguard", "link": "", "how": ""},
+        {"name": "Fortnite", "status": "not-possible", "reason": "EAC disabled by Epic", "link": "", "how": ""},
+    ])
+    games = b.not_possible_games()
+    assert [g["name"] for g in games] == ["Valorant", "Fortnite"]
+
+
+def test_backend_game_route_region_and_dualboot_missing_cli(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    assert b.region() == ""
+    assert b.set_region("IN") is True
+    assert b.region() == "IN"
+
+    monkeypatch.setattr(b, "which", lambda cmd: None)
+    route = b.game_route("Valorant")
+    assert route["title"] == "Valorant" and "not installed" in route["notes"][0]
+    assert b.game_route("   ") == model.normalize_game_route({})
+    res = b.install_geforce_now()
+    assert res.ok is False and "not installed" in res.err
+    dstatus = b.dualboot_status()
+    assert dstatus["can_reboot_to_windows"] is False and "not installed" in dstatus["why"]
+    res2 = b.reboot_to_windows()
+    assert res2.ok is False
+
+
+def test_backend_game_route_and_dualboot_parse_json(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    monkeypatch.setattr(b, "which", lambda cmd: f"/usr/bin/{cmd}")
+    calls = []
+
+    def fake_run(argv, timeout=20, env=None, cwd=None):
+        calls.append(list(argv))
+        if argv[:2] == ["lindos-game", "route"]:
+            return be.CmdResult(0, json.dumps({
+                "title": "Valorant", "id": "valorant", "status": "not_possible", "anticheat": "Riot Vanguard",
+                "region": "US", "routes": [{"type": "windows", "label": "Restart into Windows", "available": True,
+                                           "why": "", "requires": ["secure-boot", "tpm2"], "action": {}}],
+                "recommended": 0, "notes": []}))
+        if argv[:3] == ["lindos-game", "cloud", "install"]:
+            return be.CmdResult(0, "installed geforce-now")
+        if argv[:2] == ["lindos-dualboot", "status"]:
+            return be.CmdResult(0, json.dumps({
+                "firmware": "uefi", "secure_boot": "enabled", "tpm": 2, "windows_entries": [],
+                "can_reboot_to_windows": True, "method": "bootnext", "why": "", "lindos_kernel_signed": True,
+                "bitlocker_hint": False}))
+        if argv[:2] == ["lindos-dualboot", "reboot-to-windows"]:
+            return be.CmdResult(0, "rebooting")
+        return be.CmdResult(1, "", "unexpected argv " + " ".join(argv))
+
+    monkeypatch.setattr(b, "run", fake_run)
+    route = b.game_route("Valorant")
+    assert route["routes"][0]["type"] == "windows" and route["routes"][0]["available"] is True
+    assert route["routes"][0]["requires"] == ["secure-boot", "tpm2"]
+    res = b.install_geforce_now()
+    assert res.ok and "installed" in res.out
+    dstatus = b.dualboot_status()
+    assert dstatus["can_reboot_to_windows"] is True and dstatus["secure_boot"] == "enabled" and dstatus["tpm"] == 2
+    res2 = b.reboot_to_windows("0001")
+    assert res2.ok and ["lindos-dualboot", "reboot-to-windows", "--yes", "--entry", "0001"] in calls
+
+
+def test_backend_transfer_gui(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    monkeypatch.setattr(b, "which", lambda cmd: "/usr/bin/lindos-transfer-gui" if cmd == "lindos-transfer-gui" else None)
+    assert b.transfer_gui_available() is True
+    calls = []
+    monkeypatch.setattr(be.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    assert b.launch_transfer_gui() is True
+    assert calls == [["lindos-transfer-gui"]]
 
 
 def test_widgets_and_pages_import_without_real_gtk():
@@ -443,3 +707,44 @@ def test_backend_browsers_and_apps_page(tmp_path, monkeypatch):
     assert set(p._browser_cards) == {"edge", "chrome", "firefox"}
     p.on_show()
     p._refresh_browsers()
+
+
+def test_windows_apps_page_builds_new_sections(tmp_path, monkeypatch):
+    """SPEC-WINDOWS §32: formats/binfmt/winget/transfer sections build under the gi stub and
+    never touch the network (lindos-compat is simply absent on the test machine)."""
+    import types
+
+    from lindos_settings import backend as be
+    from lindos_settings.pages.windows_apps import WindowsAppsPage
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    page = model.pages_by_id(model.load_pages())["windows-apps"]
+    app = types.SimpleNamespace(backend=b, window=None, toast=lambda *_a, **_k: None)
+    p = WindowsAppsPage(app, page)
+    assert p.formats_card is not None
+    assert p.binfmt_card is not None
+    assert p.winget_entry is not None and p.winget_results is not None
+    assert p.transfer_card is not None
+    p.on_show()
+    p._winget_search()          # empty query -> placeholder, no crash, no subprocess
+
+
+def test_gaming_page_builds_needs_windows_section(tmp_path, monkeypatch):
+    """SPEC-WINDOWS §32: the 'Games that need Windows' card + region selector build under the
+    gi stub without lindos-game/lindos-dualboot installed."""
+    import types
+
+    from lindos_settings import backend as be
+    from lindos_settings.pages.gaming import GamingPage
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    page = model.pages_by_id(model.load_pages())["gaming"]
+    app = types.SimpleNamespace(backend=b, window=None, toast=lambda *_a, **_k: None)
+    p = GamingPage(app, page)
+    assert p.region_card is not None
+    assert p.needs_windows_section is not None
+    p.on_show()

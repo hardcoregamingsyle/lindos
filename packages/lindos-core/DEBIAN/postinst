@@ -5,8 +5,10 @@ set -e
 LOG_DIR="/var/log/lindos"
 HELPER="/usr/libexec/lindos/lindos-helper"
 INSTALL_BROWSER="/usr/libexec/lindos/install-browser.sh"
+UPDATE_NOTIFY="/usr/libexec/lindos/lindos-update-notify.sh"
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 SYSTEM_CONF="/etc/lindos/system.json"
+USER_TIMER_WANTS="/usr/lib/systemd/user/timers.target.wants"
 
 case "$1" in
     configure)
@@ -18,9 +20,20 @@ case "$1" in
 
         # helper + scripts must be executable (mkdeb fixes perms, but be safe on manual installs)
         chmod 0755 "$HELPER" "$INSTALL_BROWSER" 2>/dev/null || true
-        for cli in lindos-mode lindos-browser lindos-config lindos-ram; do
+        [ -f "$UPDATE_NOTIFY" ] && chmod 0755 "$UPDATE_NOTIFY" 2>/dev/null || true
+        for cli in lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot lindos-update; do
             [ -f "/usr/bin/$cli" ] && chmod 0755 "/usr/bin/$cli"
         done
+
+        # lindos-update-notify.timer (a systemd --user unit, SPEC-UPDATE.md §37): enable it by
+        # default for every user the same way a vendor default is normally expressed for user
+        # units -- a static ".wants" symlink -- since there is no logged-in user session at
+        # package-install time to run 'systemctl --user enable' against. Read-only/unprivileged
+        # either way: this only schedules lindos-update-notify.sh, which never elevates.
+        if [ -f /usr/lib/systemd/user/lindos-update-notify.timer ]; then
+            mkdir -p "$USER_TIMER_WANTS"
+            ln -sf ../lindos-update-notify.timer "$USER_TIMER_WANTS/lindos-update-notify.timer"
+        fi
 
         # default system config (conffile — only created when missing)
         if [ ! -f "$SYSTEM_CONF" ]; then
@@ -38,7 +51,8 @@ case "$1" in
         # the CLIs are python scripts without .py, compile them too
         if command -v python3 >/dev/null 2>&1; then
             python3 -m py_compile "$HELPER" /usr/bin/lindos-mode /usr/bin/lindos-browser \
-                /usr/bin/lindos-config /usr/bin/lindos-ram 2>/dev/null || true
+                /usr/bin/lindos-config /usr/bin/lindos-ram /usr/bin/lindos-dualboot \
+                /usr/bin/lindos-update 2>/dev/null || true
         fi
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)

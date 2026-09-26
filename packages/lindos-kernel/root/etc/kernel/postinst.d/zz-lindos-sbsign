@@ -1,0 +1,123 @@
+#!/bin/sh
+# zz-lindos-sbsign - sign the Lindos kernel for Secure Boot (SPEC-WINDOWS §31.3).
+#
+# Installed by the lindos-kernel package into /etc/kernel/postinst.d/, the standard Debian/
+# Ubuntu kernel-hook directory: whenever ANY linux-image-* package is installed or upgraded,
+# its own postinst runs every executable script there via run-parts, as:
+#     zz-lindos-sbsign <kernel-version> [<absolute-path-to-the-kernel-image>]
+# ($2 is normally /boot/vmlinuz-<kernel-version>; some kernel packaging omits it, so this
+# script derives it from $1 when missing.)
+#
+# It ONLY acts on Lindos-built kernels (localversion "-lindos") -- every other kernel
+# (including the stock Mint/Ubuntu one) is left completely untouched by this hook.
+#
+# It NEVER fails the kernel install: every problem (no sbsign, no MOK, sbsign itself failing)
+# is reported as plain-language guidance and the script always exits 0.  A kernel that could
+# not be signed here is still installed and still bootable -- it just will not be GRUB's
+# default choice while Secure Boot is on and unsigned (see lindos_kernel.grub in the
+# lindos-kernel package, and `lindos-kernel secureboot status`).
+#
+# Honesty (SPEC-WINDOWS §27, CONTINUATION.md §0): this only signs a real, unmodified kernel
+# image with a real key the user enrolled into their own firmware's MOK list. It never forges,
+# bypasses or disables a signature check, and never touches Windows' own boot chain.
+set -e
+
+VERSION="${1:-}"
+IMAGE="${2:-}"
+# LINDOS_TEST_CLI overrides the lindos-kernel CLI path for the hermetic test-suite only; a
+# real install never sets it, so production behaviour always targets /usr/bin/lindos-kernel.
+CLI="${LINDOS_TEST_CLI:-/usr/bin/lindos-kernel}"
+
+note() {
+    printf 'zz-lindos-sbsign: %s\n' "$*"
+}
+
+# only act on Lindos-built kernels; every other kernel (stock Mint/Ubuntu, a different distro
+# kernel, ...) is left alone.
+case "${VERSION}" in
+    *-lindos) ;;
+    *) exit 0 ;;
+esac
+
+if [ -z "${IMAGE}" ]; then
+    IMAGE="/boot/vmlinuz-${VERSION}"
+fi
+
+if [ ! -f "${IMAGE}" ]; then
+    note "kernel image not found: ${IMAGE} (nothing to sign)"
+    exit 0
+fi
+
+if ! command -v sbsign >/dev/null 2>&1; then
+    note "sbsign is not installed; ${IMAGE} was NOT signed for Secure Boot."
+    note "Install it with: sudo apt-get install sbsigntool"
+    exit 0
+fi
+
+# LINDOS_TEST_MOK_DIR overrides the MOK directory for the hermetic test-suite only; a real
+# install never sets it, so production behaviour is always /var/lib/shim-signed/mok.
+MOK_DIR="${LINDOS_TEST_MOK_DIR:-/var/lib/shim-signed/mok}"
+MOK_PRIV="${MOK_DIR}/MOK.priv"
+MOK_DER="${MOK_DIR}/MOK.der"
+
+if [ ! -f "${MOK_PRIV}" ] || [ ! -f "${MOK_DER}" ]; then
+    note "no Machine Owner Key found (${MOK_PRIV} / ${MOK_DER}); ${IMAGE} was NOT signed."
+    note "Create and enrol one, then reinstall this kernel package so it gets signed:"
+    note "  sudo update-secureboot-policy --new-key"
+    note "  sudo update-secureboot-policy --enroll-key"
+    note "  (confirm the enrolment in MokManager at the next reboot)"
+    exit 0
+fi
+
+if ! command -v openssl >/dev/null 2>&1; then
+    note "openssl is not installed; cannot convert MOK.der to PEM. ${IMAGE} was NOT signed."
+    exit 0
+fi
+
+PEM_FILE="$(mktemp /tmp/lindos-mok-XXXXXX.pem)" || {
+    note "could not create a temporary file for the MOK certificate; ${IMAGE} was NOT signed."
+    exit 0
+}
+# always clean up the temporary PEM, whatever happens below
+trap 'rm -f "${PEM_FILE}"' EXIT
+
+if ! openssl x509 -in "${MOK_DER}" -inform DER -out "${PEM_FILE}" 2>/dev/null; then
+    note "could not convert ${MOK_DER} (DER) to PEM; ${IMAGE} was NOT signed."
+    exit 0
+fi
+
+SIGNED_TMP="${IMAGE}.lindos-signed.tmp"
+SBSIGN_LOG="$(mktemp /tmp/lindos-sbsign-log-XXXXXX)" || SBSIGN_LOG=""
+if [ -n "${SBSIGN_LOG}" ]; then
+    trap 'rm -f "${PEM_FILE}" "${SBSIGN_LOG}"' EXIT
+fi
+
+if sbsign --key "${MOK_PRIV}" --cert "${PEM_FILE}" --output "${SIGNED_TMP}" "${IMAGE}" \
+        >"${SBSIGN_LOG:-/dev/null}" 2>&1; then
+    mv -f "${SIGNED_TMP}" "${IMAGE}"
+    note "signed ${IMAGE} for Secure Boot with the enrolled Lindos MOK."
+
+    # Recompute the Secure-Boot-aware default-kernel selection (SPEC-WINDOWS §31.3) and
+    # regenerate the boot menu now that this kernel is (newly) signed -- best-effort only,
+    # matching this hook's "never fails the kernel install" contract (docs/KERNEL.md §6.3-6.4).
+    # Without this, reinstalling the kernel after enrolling a MOK would leave GRUB_DEFAULT
+    # pointing away from the now-signed, now-safe Lindos kernel until the user runs
+    # `lindos-kernel secureboot apply-selection && update-grub` by hand: the lindos-kernel
+    # *package's* own postinst (which normally does this) is not re-run by a linux-image-*
+    # package install/reinstall, only this per-kernel-image hook is.
+    if [ -x "${CLI}" ] && command -v python3 >/dev/null 2>&1; then
+        "${CLI}" secureboot apply-selection >/dev/null 2>&1 || true
+    fi
+    if command -v update-grub >/dev/null 2>&1; then
+        update-grub >/dev/null 2>&1 || true
+    fi
+else
+    note "sbsign failed on ${IMAGE}; it was NOT signed for Secure Boot."
+    if [ -n "${SBSIGN_LOG}" ] && [ -s "${SBSIGN_LOG}" ]; then
+        note "details:"
+        sed 's/^/zz-lindos-sbsign:   /' "${SBSIGN_LOG}"
+    fi
+    rm -f "${SIGNED_TMP}"
+fi
+
+exit 0

@@ -12,16 +12,25 @@ duplicates them.
 Modules
 -------
 lnk       minimal Windows Shell Link (.lnk) parser
-prefix    Wine prefix management (per-app slug dirs under PREFIXES_DIR)
-runner    runner choice (umu / wine / bottles), environment + command building
+prefix    Wine prefix management (per-app slug dirs under PREFIXES_DIR, casefold C:\\ drives)
+runner    runner choice (umu / wine / bottles), environment + command building (Windows paths)
 scan      post-install scan (Program Files, Start Menu) and .desktop creation
 icons     icon extraction with wrestool/icotool
 recipes   recipe loading/validation/apply (Photoshop, Office, ...)
 doctor    ``lindos-compat doctor`` checks
 gui       zenity/yad/notify-send feedback when launched without a terminal
 installers ``install-umu`` (umu-launcher from GitHub) and ``install-bottles`` (Flatpak)
-cli_run   ``lindos-run`` main
+formats   Windows file-type registry, content classifier, per-format action plans (SPEC-WINDOWS §28.2)
+dos       DOSBox launcher and Wine WoW64-mode probe for 16-bit programs (§28.5)
+diskimage ISO/IMG read-only loop mount + autorun.inf (§28.6)
+binfmt    binfmt_misc status for ``./setup.exe`` in a terminal (§28.7)
+msix      MSIX/APPX/bundles/.appinstaller: classify, inspect, safe install (§28.4)
+winget    winget index + manifests (``lindos-compat winget``, §28.10)
+cli_run   ``lindos-run`` main (dispatches every Windows file type to its handler)
 cli_compat ``lindos-compat`` main
+
+The SPEC-WINDOWS modules are imported lazily by ``cli_run`` / ``doctor`` so that one
+missing or broken module only disables its own file types.
 """
 
 from __future__ import annotations

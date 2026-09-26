@@ -42,6 +42,43 @@ REQUIRED_KEYS: Tuple[str, ...] = (
     "CONFIG_FUTEX",
     "CONFIG_USER_NS",
     "CONFIG_CHECKPOINT_RESTORE",
+) + (
+    # --- Addendum W (SPEC-WINDOWS §31.1): Windows-format + transfer/play-anywhere plumbing ---
+    "CONFIG_NTFS3_FS",
+    "CONFIG_NTFS3_LZX_XPRESS",
+    "CONFIG_NTFS3_FS_POSIX_ACL",
+    "CONFIG_EXFAT_FS",
+    "CONFIG_UNICODE",
+    "CONFIG_BINFMT_MISC",
+    "CONFIG_EFIVAR_FS",
+    "CONFIG_DM_CRYPT",
+    "CONFIG_CRYPTO_USER_API_SKCIPHER",
+    "CONFIG_BLK_DEV_LOOP",
+    "CONFIG_ISO9660_FS",
+    "CONFIG_JOLIET",
+    "CONFIG_UDF_FS",
+    "CONFIG_FUSE_FS",
+    "CONFIG_LDM_PARTITION",
+)
+
+#: The subset of :data:`REQUIRED_KEYS` added by Addendum W (SPEC-WINDOWS §31.1), kept as a
+#: separate tuple purely so tests and docs can refer to "the Windows-format keys" by name.
+REQUIRED_KEYS_ADDENDUM_W: Tuple[str, ...] = (
+    "CONFIG_NTFS3_FS",
+    "CONFIG_NTFS3_LZX_XPRESS",
+    "CONFIG_NTFS3_FS_POSIX_ACL",
+    "CONFIG_EXFAT_FS",
+    "CONFIG_UNICODE",
+    "CONFIG_BINFMT_MISC",
+    "CONFIG_EFIVAR_FS",
+    "CONFIG_DM_CRYPT",
+    "CONFIG_CRYPTO_USER_API_SKCIPHER",
+    "CONFIG_BLK_DEV_LOOP",
+    "CONFIG_ISO9660_FS",
+    "CONFIG_JOLIET",
+    "CONFIG_UDF_FS",
+    "CONFIG_FUSE_FS",
+    "CONFIG_LDM_PARTITION",
 )
 
 #: Alternative groups: at least one symbol from each group must be present.
@@ -203,6 +240,6 @@ def required_symbols() -> List[str]:
 
 
 __all__ = [
-    "REQUIRED_KEYS", "REQUIRED_ANY", "REQUIRED_VALUES", "KConfigError", "KConfig",
-    "parse", "parse_file", "validate", "required_symbols",
+    "REQUIRED_KEYS", "REQUIRED_KEYS_ADDENDUM_W", "REQUIRED_ANY", "REQUIRED_VALUES", "KConfigError",
+    "KConfig", "parse", "parse_file", "validate", "required_symbols",
 ]

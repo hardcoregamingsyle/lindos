@@ -38,6 +38,7 @@ class BuildPlan:
     kdir: Optional[str]
     menuconfig: bool
     script: Optional[str]
+    base_config: str = "ubuntu"
 
     def argv(self) -> List[str]:
         """The argument vector passed to ``build-kernel.sh`` (script path excluded)."""
@@ -45,6 +46,8 @@ class BuildPlan:
         if self.version:
             args += ["--version", self.version]
         args += ["--config", self.config, "--localversion", self.localversion, "--out", self.out]
+        if self.base_config and self.base_config != "ubuntu":
+            args += ["--base-config", self.base_config]
         if self.jobs is not None:
             args += ["--jobs", str(self.jobs)]
         if self.kdir:
@@ -58,6 +61,7 @@ class BuildPlan:
         lines = [
             f"kernel version : {self.version or '(manifest recommended series, resolved by the script)'}",
             f"config fragment: {self.config}",
+            f"base config    : {self.base_config} (SPEC-WINDOWS §31.2)",
             f"localversion   : {self.localversion}",
             f"jobs           : {self.jobs if self.jobs is not None else 'nproc'}",
             f"output dir     : {self.out}",
@@ -100,7 +104,7 @@ def default_version() -> Optional[str]:
 def make_plan(version: Optional[str] = None, config: Optional[str] = None,
               localversion: str = "-lindos", jobs: Optional[int] = None,
               out: str = "out/kernel", kdir: Optional[str] = None,
-              menuconfig: bool = False) -> BuildPlan:
+              menuconfig: bool = False, base_config: str = "ubuntu") -> BuildPlan:
     return BuildPlan(
         version=version or default_version(),
         config=config or config_path(),
@@ -110,6 +114,7 @@ def make_plan(version: Optional[str] = None, config: Optional[str] = None,
         kdir=kdir,
         menuconfig=menuconfig,
         script=find_script(),
+        base_config=base_config,
     )
 
 

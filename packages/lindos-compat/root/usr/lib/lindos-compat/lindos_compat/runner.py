@@ -6,9 +6,14 @@ Runners
 * ``wine``    -- plain Wine (staging): installers, office/creative/utility apps
 * ``bottles`` -- Bottles (Flatpak com.usebottles.bottles) when a recipe asks for it, or on request
 
-Everything here is pure computation except :func:`run_plan` and the small
-"is X installed" probes, which take injectable ``which``/``run`` callables so the
+Everything here is pure computation except :func:`run_plan` / :func:`run_host` and the
+small "is X installed" probes, which take injectable ``which``/``run`` callables so the
 logic is unit-testable on any OS.
+
+Windows paths (SPEC-WINDOWS §28.1): every path handed to a Wine *tool* (``msiexec``,
+``cmd``, ``regedit`` ...) is a Windows path -- ``C:\\...`` inside the program's own C:\\
+drive, else ``Z:\\...`` (Wine maps ``Z:`` to ``/``).  Only the program itself may be given
+as a Unix path (Wine's loader converts it).
 """
 
 from __future__ import annotations
@@ -19,16 +24,18 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import CoreMissing, core, expand_user_path, get_logger, path_const, user_home
+from .lnk import unix_to_windows
 from .perf import GamescopeSpec, gamescope_wrap, perf_env
 from .prefix import SHARED_SLUG, base_wine_env, find_wine, prefix_path, read_marker
 
 __all__ = [
     "RUNNERS",
     "BOTTLES_APP_ID",
+    "MSP_PROPERTIES",
     "RunPlan",
     "choose_runner",
     "is_bottles_installed",
@@ -37,11 +44,13 @@ __all__ = [
     "proton_search_dirs",
     "umu_env",
     "wine_env",
+    "wine_path",
     "build_command",
     "build_plan",
     "log_path_for",
     "load_prefix_settings",
     "run_plan",
+    "run_host",
     "gpu_is_nvidia",
     "ensure_bottle",
 ]
@@ -52,6 +61,8 @@ RUNNERS = ("umu", "wine", "bottles")
 BOTTLES_APP_ID = "com.usebottles.bottles"
 GAME_KINDS = ("game", "unknown")
 WINE_KINDS = ("installer", "app", "msi")
+#: Windows Installer "small update" of an installed product (msiexec /p <patch> ...).
+MSP_PROPERTIES = ("REINSTALL=ALL", "REINSTALLMODE=omus")
 
 _GE_PROTON_RE = re.compile(r"^GE-Proton(\d+)-(\d+)$")
 
@@ -310,13 +321,59 @@ def umu_env(prefix: Path, slug: str, *, headless: bool = False, home: Optional[P
 # ---------------------------------------------------------------------------
 
 
+def wine_path(path: Path | str, prefix: Optional[Path] = None) -> str:
+    """The Windows path Wine should see for ``path``.
+
+    ``C:\\...`` when the file lies on ``prefix``'s C:\\ drive, otherwise ``Z:\\...`` (Wine's
+    default ``Z:`` -> ``/`` mapping).  Uses ``formats.to_windows_path`` (SPEC-WINDOWS §28.2)
+    when that module is available; the fallback below implements the same rule.
+    """
+    p = Path(path)
+    try:
+        from . import formats as _formats  # lazy: optional sibling module
+
+        conv = getattr(_formats, "to_windows_path", None)
+        if callable(conv):
+            text = str(conv(p, prefix))
+            if text:
+                return text
+    except Exception as exc:  # noqa: BLE001 - never let a helper break a launch
+        log.debug("formats.to_windows_path unavailable (%s); using the built-in rule", exc)
+    if prefix is not None:
+        inside = unix_to_windows(p, prefix)
+        if inside:
+            return inside
+    posix = p.as_posix()
+    if re.match(r"^[A-Za-z]:/", posix):  # already a Windows-style absolute path (non-Linux host)
+        return posix.replace("/", "\\")
+    if not posix.startswith("/"):
+        posix = PurePosixPath(os.path.abspath(posix)).as_posix()
+    return "Z:" + posix.replace("/", "\\")
+
+
 def _file_kind(exe: Path, kind: str) -> str:
     suffix = exe.suffix.lower()
     if suffix == ".msi":
         return "msi"
+    if suffix == ".msp":
+        return "msp"  # a patch: msiexec /p (never /i, which fails on a patch)
     if suffix in (".bat", ".cmd"):
         return "bat"
+    if suffix == ".mst":
+        return "mst"  # a transform is never run on its own (formats explains it)
     return kind
+
+
+def _tool_tail(fkind: str, exe: Path, prefix: Optional[Path]) -> List[str]:
+    """The Wine argv for a file that is opened by a Windows tool rather than run directly."""
+    win = wine_path(exe, prefix)
+    if fkind == "msi":
+        return ["msiexec", "/i", win]
+    if fkind == "msp":
+        return ["msiexec", "/p", win, *MSP_PROPERTIES]
+    if fkind == "bat":
+        return ["cmd", "/c", win]
+    return [str(exe)]
 
 
 def build_command(
@@ -325,6 +382,8 @@ def build_command(
     kind: str,
     *,
     args: Sequence[str] = (),
+    tail: Optional[Sequence[str]] = None,
+    prefix: Optional[Path] = None,
     which: Callable[[str], Optional[str]] = shutil.which,
     gamemode: bool = False,
     mangohud: bool = False,
@@ -333,27 +392,28 @@ def build_command(
 ) -> Tuple[List[str], List[str]]:
     """Return ``(argv, warnings)`` for the runner.
 
-    ``.msi`` → ``msiexec /i``, ``.bat`` → ``cmd /c`` (under wine or umu).  When
-    ``gamescope`` is enabled the whole command is wrapped in gamescope (outermost).
+    ``tail`` is the complete argv after ``wine``/``umu-run`` (from ``formats.plan_action``,
+    e.g. ``["regedit", "/S", "Z:\\x.reg"]``); ``args`` are appended after it.  Without a
+    tail the file kind decides: ``.msi`` → ``msiexec /i <win>``, ``.msp`` → ``msiexec /p
+    <win> REINSTALL=ALL REINSTALLMODE=omus``, ``.bat`` → ``cmd /c <win>``, anything else runs
+    directly.  When ``gamescope`` is enabled the whole command is wrapped in gamescope.
     """
     warnings: List[str] = []
     fkind = _file_kind(exe, kind)
+    body: List[str] = [str(t) for t in tail] if tail else _tool_tail(fkind, exe, prefix)
     argv: List[str] = []
     if runner == "umu":
         umu = which("umu-run")
         if not umu:
             raise FileNotFoundError("umu-run not found")
-        argv = [umu]
-        if fkind == "msi":
-            argv += ["msiexec", "/i", str(exe)]
-        elif fkind == "bat":
-            argv += ["cmd", "/c", str(exe)]
-        else:
-            argv += [str(exe)]
+        argv = [umu] + body
     elif runner == "bottles":
         flatpak = which("flatpak")
         if not flatpak:
             raise FileNotFoundError("flatpak not found")
+        # bottles-cli opens .exe/.msi/.bat itself; it cannot take a Wine tool command line
+        if tail:
+            warnings.append("Bottles cannot run this kind of file directly; it is opened as a program")
         argv = [flatpak, "run", "--command=bottles-cli", BOTTLES_APP_ID, "run", "-b", bottle or "Lindos", "-e", str(exe)]
         if args:
             argv += ["-a", " ".join(args)]
@@ -362,13 +422,7 @@ def build_command(
         wine = find_wine(which)
         if not wine:
             raise FileNotFoundError("wine not found")
-        argv = [wine]
-        if fkind == "msi":
-            argv += ["msiexec", "/i", str(exe)]
-        elif fkind == "bat":
-            argv += ["cmd", "/c", str(exe)]
-        else:
-            argv += [str(exe)]
+        argv = [wine] + body
     argv += [str(a) for a in args]
 
     if mangohud and runner != "umu":
@@ -447,13 +501,15 @@ def build_plan(
     hdr: bool = False,
     ntsync: Optional[bool] = None,
     gamescope: Optional[GamescopeSpec] = None,
+    tail: Optional[Sequence[str]] = None,
 ) -> RunPlan:
     """Assemble argv/env/cwd for a launch (no side effects).
 
     For the umu (Proton) runner the documented performance env (SPEC-KERNEL §17.1) is
     layered in: ntsync default, DXVK async and the NVIDIA-GPU flag are set only when the
     user has not already set them; ``--dxvk-async``/``--no-dxvk-async`` and a per-title
-    profile's ``env`` win.  wine/app launches are untouched.
+    profile's ``env`` win.  wine/app launches are untouched.  ``tail`` is passed through to
+    :func:`build_command` (a Wine tool command line such as ``msiexec /p ...``).
     """
     prefix = prefix_path(slug)
     environ = os.environ if environ is None else environ
@@ -486,8 +542,8 @@ def build_plan(
     else:
         env = wine_env(prefix, arch=arch, dll_overrides=dll_overrides, headless=headless, extra=extra_env)
 
-    argv, warnings = build_command(runner, exe, kind, args=args, which=which, gamemode=gamemode,
-                                   mangohud=mangohud, bottle=slug, gamescope=gamescope)
+    argv, warnings = build_command(runner, exe, kind, args=args, tail=tail, prefix=prefix, which=which,
+                                   gamemode=gamemode, mangohud=mangohud, bottle=slug, gamescope=gamescope)
     cwd = str(exe.parent) if exe.parent and str(exe.parent) not in ("", ".") else None
     plan = RunPlan(runner=runner, slug=slug, prefix=prefix, exe=exe, kind=kind, argv=argv, env=env, cwd=cwd,
                    log_path=log_path_for(slug), reason=reason, gamemode=gamemode, mangohud=mangohud,
@@ -554,20 +610,21 @@ def _write_header(fh, plan: RunPlan) -> None:  # type: ignore[no-untyped-def]
     fh.flush()
 
 
-def run_plan(plan: RunPlan, *, popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen,
-             on_started: Optional[Callable[[int], None]] = None) -> int:
-    """Launch the program, streaming its output to ``plan.log_path``.  Returns the exit code."""
-    env = dict(os.environ)
-    env.update(plan.env)
-    plan.log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(plan.log_path, "a", encoding="utf-8", errors="replace") as fh:
-        _write_header(fh, plan)
+def _run_logged(argv: List[str], *, env: Dict[str, str], cwd: Optional[str], log_path: Path,
+                write_header: Callable[[object], None],
+                popen: Callable[..., "subprocess.Popen[bytes]"],
+                on_started: Optional[Callable[[int], None]] = None) -> int:
+    full_env = dict(os.environ)
+    full_env.update(env)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8", errors="replace") as fh:
+        write_header(fh)
         try:
-            proc = popen(plan.argv, env=env, cwd=plan.cwd, stdin=subprocess.DEVNULL, stdout=fh,
+            proc = popen(argv, env=full_env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=fh,
                          stderr=subprocess.STDOUT)
         except OSError as exc:
             fh.write(f"failed to start: {exc}\n")
-            log.error("Could not start the Windows program: %s", exc)
+            log.error("Could not start %s: %s", os.path.basename(argv[0]) if argv else "the program", exc)
             return 127
         if on_started:
             try:
@@ -581,3 +638,33 @@ def run_plan(plan: RunPlan, *, popen: Callable[..., "subprocess.Popen[bytes]"] =
             rc = 130
         fh.write(f"----- exit code {rc} ({time.strftime('%Y-%m-%d %H:%M:%S')})\n")
     return int(rc)
+
+
+def run_plan(plan: RunPlan, *, popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen,
+             on_started: Optional[Callable[[int], None]] = None) -> int:
+    """Launch the program, streaming its output to ``plan.log_path``.  Returns the exit code."""
+    return _run_logged(plan.argv, env=plan.env, cwd=plan.cwd, log_path=plan.log_path,
+                       write_header=lambda fh: _write_header(fh, plan), popen=popen, on_started=on_started)
+
+
+def run_host(argv: Sequence[str], *, log_path: Path, cwd: Optional[str] = None,
+             env: Optional[Dict[str, str]] = None, what: str = "",
+             popen: Callable[..., "subprocess.Popen[bytes]"] = subprocess.Popen) -> int:
+    """Run a Linux helper program (DOSBox, pwsh, cabextract ...) with output in ``log_path``.
+
+    Same logging as :func:`run_plan` but without a Wine prefix.  Returns the exit code
+    (127 when it could not be started).
+    """
+    args = [str(a) for a in argv]
+
+    def header(fh) -> None:  # type: ignore[no-untyped-def]
+        fh.write(f"\n===== lindos-run {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+        if what:
+            fh.write(f"file   : {what}\n")
+        fh.write(f"cwd    : {cwd}\n")
+        if env:
+            fh.write("env    : " + " ".join(f"{k}={v}" for k, v in sorted(env.items())) + "\n")
+        fh.write("argv   : " + " ".join(args) + "\n-----\n")
+        fh.flush()
+
+    return _run_logged(args, env=dict(env or {}), cwd=cwd, log_path=log_path, write_header=header, popen=popen)

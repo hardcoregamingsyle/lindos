@@ -29,6 +29,7 @@ PAGE_CLASSES: dict[str, tuple[str, str]] = {
     "accounts": ("accounts", "AccountsPage"),
     "mode": ("mode", "ModePage"),
     "update": ("update", "UpdatePage"),
+    "updates": ("updates", "UpdatesPage"),
     "about": ("about", "AboutPage"),
 }
 

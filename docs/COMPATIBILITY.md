@@ -94,21 +94,146 @@ Runs, but with known limitations (missing features, unstable launcher, third-par
 
 | Game | How | Anti-cheat | Reason / notes | Link |
 |---|---|---|---|---|
-| **Apex Legends** | — | Easy Anti-Cheat (Linux support disabled) | Worked on Proton until November 2024, when EA/Respawn disabled Linux and Steam Deck support in the name of anti-cheat. Launching now fails or results in an error; do not attempt with a valued account. | [areweanticheatyet.com](https://areweanticheatyet.com/game/apex-legends) |
+| **Apex Legends** | — | Easy Anti-Cheat (Linux support disabled; switching to EA Javelin on 2026-09-29) | Worked on Proton until November 2024, when EA/Respawn disabled Linux and Steam Deck support in the name of anti-cheat. On 2026-09-29 Apex switches its PC anti-cheat to EA Javelin; EA has stated Secure Boot is NOT required for Apex specifically. Launching now fails or results in an error; do not attempt with a valued account. Honest route: NVIDIA GeForce NOW (EA app variant, free tier) — see 'lindos-game route apex'. | [areweanticheatyet.com](https://areweanticheatyet.com/game/apex-legends) |
 | **Battlefield 2042** | — | EA anticheat (kernel driver) | EA's kernel-level anti-cheat (added 2023) has no Linux build; the game refuses to start under Proton. | [protondb.com](https://www.protondb.com/app/1517290) |
 | **Battlefield 6** | — | EA Javelin (kernel driver, Secure Boot required) | Javelin is a Windows kernel driver that additionally requires Secure Boot/TPM attestation; EA has stated Linux and Steam Deck are not supported. | [protondb.com](https://www.protondb.com/app/2807960) |
 | **Call of Duty (Warzone / Black Ops 6 / Modern Warfare III)** | — | Ricochet (kernel driver) | Ricochet is a Windows kernel-mode driver; Activision does not support Linux and bans are reported for attempts. Applies to every current Call of Duty title on Steam and Battle.net. | [protondb.com](https://www.protondb.com/app/1938090) |
 | **Delta Force** | — | Anti-Cheat Expert / G-Presence (kernel driver) | Team Jade's kernel-level anti-cheat has no Linux component and the developers have said Linux/Steam Deck are not supported. | [protondb.com](https://www.protondb.com/app/2507950) |
 | **Destiny 2** | — | BattlEye (Linux support not enabled by Bungie) | Bungie explicitly forbids running Destiny 2 through Proton/Wine and threatens bans; the game detects Linux and refuses to start. | [areweanticheatyet.com](https://areweanticheatyet.com/game/destiny-2) |
-| **Escape from Tarkov** | — | BattlEye (Linux support not enabled by Battlestate) | The launcher and login can work under Wine, but raids require BattlEye's Linux runtime which Battlestate has not enabled — areweanticheatyet.com lists it as 'Planned', not working. Treat as not playable until that changes. | [areweanticheatyet.com](https://areweanticheatyet.com/game/escape-from-tarkov) |
-| **Fortnite** | — | Easy Anti-Cheat + BattlEye (Linux support disabled by Epic) | Both anti-cheats support Proton, but Epic has explicitly chosen not to enable them for Linux and has repeatedly said it will not. Only Xbox Cloud Gaming / GeForce NOW streaming works, in a browser. | [areweanticheatyet.com](https://areweanticheatyet.com/game/fortnite) |
+| **Escape from Tarkov** | — | BattlEye (Linux support not enabled by Battlestate) | The launcher and login can work under Wine, but raids require BattlEye's Linux runtime which Battlestate has not enabled — areweanticheatyet.com lists it as 'Planned', not working. Tarkov 1.0 released on Steam (app 3932890) on 2025-11-15; still not on any cloud service. Treat as not playable until BattlEye-Linux is enabled. | [areweanticheatyet.com](https://areweanticheatyet.com/game/escape-from-tarkov) |
+| **Fortnite** | — | Easy Anti-Cheat (BattlEye was removed in June 2024; Linux support stays disabled by Epic) | Both anti-cheats support Proton, but Epic has explicitly chosen not to enable EAC's Linux runtime for its own game and has repeatedly said it will not. Honest routes instead: NVIDIA GeForce NOW's official Linux app (free tier), Xbox Cloud Gaming in Chrome/Edge (free, no Game Pass needed), Boosteroid (EU/NA/BR) or Amazon Luna (not India) — see 'lindos-game route fortnite'. | [areweanticheatyet.com](https://areweanticheatyet.com/game/fortnite) |
 | **Grand Theft Auto Online** | — | BattlEye (kernel-level, Linux support not enabled by Rockstar) | Rockstar added BattlEye to GTA Online on 17 September 2024 without enabling its Linux/Proton support; Rockstar's FAQ states Steam Deck/Linux are not supported. Online has not worked since; Story Mode still does. Re-verify on areweanticheatyet.com — this is Rockstar's call, not a Lindos limitation. | [areweanticheatyet.com](https://areweanticheatyet.com/game/grand-theft-auto-v) |
 | **League of Legends** | — | Riot Vanguard (kernel driver) | Ran under Wine/Lutris until Riot made Vanguard mandatory in 2024; since then it does not run on any Linux. Same for Teamfight Tactics on PC. | [areweanticheatyet.com](https://areweanticheatyet.com/game/league-of-legends) |
 | **PUBG: Battlegrounds** | — | BattlEye + Zakynthos + Uncheater | Krafton uses several anti-cheats without Linux support; the game does not get past the anti-cheat check on Proton. | [protondb.com](https://www.protondb.com/app/578080) |
 | **Rainbow Six Siege** | — | BattlEye + FairFight (Linux support not enabled by Ubisoft) | Ubisoft has not enabled BattlEye's Proton support and Siege X's kernel anti-cheat requirements make it worse; the game does not run on any Linux. | [areweanticheatyet.com](https://areweanticheatyet.com/game/rainbow-six-siege) |
 | **Rust** | — | Easy Anti-Cheat (Linux support refused by Facepunch) | EAC supports Proton, but Facepunch stated (October 2022) they will not enable it for Linux/Steam Deck; the game kicks Linux clients from all official and most community servers. | [gamingonlinux.com](https://www.gamingonlinux.com/2022/10/facepunch-put-out-a-fresh-statement-on-rust-for-steam-deck-linux/) |
 | **Valorant** | — | Riot Vanguard (kernel driver) | Vanguard is a Windows kernel-mode driver with no Linux build and Riot has stated it will not support Linux. Does not run on any Linux distribution, including Lindos — no workaround, and attempts risk the account. | [areweanticheatyet.com](https://areweanticheatyet.com/game/valorant) |
-| **Xbox app / PC Game Pass** | — | n/a (UWP / Windows Store DRM) | The Xbox app and Microsoft Store game installs are Windows-only (UWP packaging, licensing) and cannot be installed under Wine. Xbox Cloud Gaming streaming works in a browser (Edge/Chrome/Firefox); Steam versions of the same games are usually fine. | [xbox.com](https://www.xbox.com/play) |
+| **Xbox app / PC Game Pass** | — | n/a (UWP / Windows Store DRM) | The Xbox app and Microsoft Store game installs are Windows-only (UWP packaging, licensing) and cannot be installed under Wine. Xbox Cloud Gaming streaming works in Chrome or Edge (never Firefox; Linux is not officially listed) but needs a Game Pass Essential/Premium/Ultimate subscription — PC Game Pass alone does NOT include cloud gaming. Steam versions of the same games are usually fine. | [xbox.com](https://www.xbox.com/play) |
+
+## Other ways to play
+
+Every **Not possible** title above still has the honest routes Lindos knows about: official cloud streaming — only where the provider actually carries that title and only when it is offered in your region — and a one-click restart into a Windows install already on the machine. **Never** a spoofer, and **never** the Lindos VM: every anti-cheat below also blocks virtual machines, so a VM would not make the game work, only risk a hardware ban (see [ANTI-CHEAT.md](ANTI-CHEAT.md)). Region comes from your locale, timezone or `~/.config/lindos/config.json`, or an explicit `--region` — **never** IP geolocation. Run `lindos-game route <title>` for a live check against your own machine (installed clients, dual-boot / Secure-Boot / TPM status).
+
+**Cloud providers Lindos knows about** (official apps/pages only; a provider's own real Linux support is shown as-is, never oversold):
+
+| Provider | Linux support | Availability | Subscription |
+|---|---|---|---|
+| [Amazon Luna](https://luna.amazon.com/) | Chrome/Edge in a browser — Linux not officially listed | Everywhere except IN | — |
+| [Boosteroid](https://boosteroid.com/downloads/) | Official Linux app/client | Only EU, NA, BR | — |
+| [NVIDIA GeForce NOW](https://www.nvidia.com/en-us/geforce-now/) | Official Linux app/client | No region restriction recorded | Free (1-h sessions) / Performance / Ultimate (100 h/month) |
+| [Xbox Cloud Gaming](https://www.xbox.com/play) | Chrome/Edge in a browser — Linux not officially listed | No region restriction recorded | Game Pass Essential/Premium/Ultimate (5/10/15 h/month from Nov 2026); NOT included with PC Game Pass; some free-to-play titles (Fortnite) need no Game Pass at all |
+
+### Apex Legends
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — EA app variant only (no Steam variant listed). Re-verify after 2026-09-29, when Apex switches to EA Javelin anti-cheat.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Battlefield 2042
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — EA app and Steam variants.
+- **Xbox Cloud Gaming** (premium): [www.xbox.com/en-US/play/games/battlefield-2042-xbox-series-x%7Cs/9P0T51BDDWVT](https://www.xbox.com/en-US/play/games/battlefield-2042-xbox-series-x%7Cs/9P0T51BDDWVT) — Needs Xbox Game Pass Ultimate plus a game purchase.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Battlefield 6
+
+- **Restart into Windows** — needs secure-boot, tpm2 enabled in Windows. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (premium): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Needs a paid Performance or Ultimate membership; EA app and Steam.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Call of Duty (Warzone / Black Ops 6 / Modern Warfare III)
+
+- **Restart into Windows** — needs secure-boot, tpm2 enabled in Windows. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Steam, Battle.net and Xbox-app/PC-Game-Pass variants all work.
+- **Xbox Cloud Gaming** (premium): [www.xbox.com/en-US/play/games/call-of-duty-black-ops-7---cross-gen-bundle/9N8KMNW6942X](https://www.xbox.com/en-US/play/games/call-of-duty-black-ops-7---cross-gen-bundle/9N8KMNW6942X) — Black Ops 7 needs Game Pass Ultimate, or a purchase to stream on Essential/Premium; Warzone/Black Ops 6/MWIII need any tier.
+- **Boosteroid** (free): [boosteroid.com/games/](https://boosteroid.com/games/) — Steam/Battle.net/Xbox variants; not available in India.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Delta Force
+
+- **Restart into Windows** — needs secure-boot, tpm2 enabled in Windows. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Steam variant.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Destiny 2
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Epic and Steam variants both work; requires the owned game.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Escape from Tarkov
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- No cloud-streaming route known for this title.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Fortnite
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Own Epic account; play through the native Linux app (not a browser).
+- **Xbox Cloud Gaming** (free): [www.xbox.com/en-US/play/games/fortnite/BT5P2X999VH2](https://www.xbox.com/en-US/play/games/fortnite/BT5P2X999VH2) — Free, up to 1-hour sessions; no Game Pass needed — only a free Microsoft account (with an Xbox profile) and a linked Epic account.
+- **Boosteroid** (free): [boosteroid.com/games/](https://boosteroid.com/games/) — Free in Boosteroid's Library; Europe/North America/Brazil only.
+- **Amazon Luna** (free): [luna.amazon.com/game/fortnite](https://luna.amazon.com/game/fortnite) — Included in Luna Standard (bundled with Prime); not available in India.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Grand Theft Auto Online
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- No cloud-streaming route known for this title.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### League of Legends
+
+- **Restart into Windows** — needs tpm2 enabled in Windows. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- No cloud-streaming route known for this title.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### PUBG: Battlegrounds
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- No cloud-streaming route known for this title.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Rainbow Six Siege
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (free): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Ubisoft Connect and Steam variants both work.
+- **Xbox Cloud Gaming** (free): [www.xbox.com/en-US/play/games/tom-clancy's-rainbow-six-siege---free-access/9P4837D6TSFD](https://www.xbox.com/en-US/play/games/tom-clancy's-rainbow-six-siege---free-access/9P4837D6TSFD) — Free Access is cloud-playable with any Game Pass tier once claimed.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Rust
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **NVIDIA GeForce NOW** (premium): [www.nvidia.com/en-us/geforce-now/games/](https://www.nvidia.com/en-us/geforce-now/games/) — Needs a paid Performance or Ultimate membership.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Valorant
+
+- **Restart into Windows** — needs secure-boot, tpm2 enabled in Windows. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- No cloud-streaming route known for this title.
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
+
+### Xbox app / PC Game Pass
+
+- **Restart into Windows**. Boots only a Windows Boot Manager entry the firmware already has (`lindos-dualboot`); never edits Windows, BCD, Secure-Boot keys or firmware settings.
+- **Xbox Cloud Gaming** (premium): [www.xbox.com/en-US/play](https://www.xbox.com/en-US/play) — Needs Game Pass Essential, Premium or Ultimate — PC Game Pass alone does NOT include cloud gaming. Some titles are also on GeForce NOW's XBOX-store variant once you link an Xbox account (e.g. Call of Duty).
+- The Lindos Windows VM is never offered here (`vm: false`).
+- _Routes verified 2026-09-26._
 
 ## How to read a status that is not listed here
 

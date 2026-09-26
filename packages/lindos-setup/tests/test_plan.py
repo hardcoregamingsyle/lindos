@@ -67,6 +67,37 @@ def test_selections_roundtrip_and_unknown_keys():
     assert back.apps is not sel.apps  # copied
 
 
+def test_transfer_selection_defaults_validate_and_roundtrip():
+    sel = Selections()
+    assert sel.transfer == {"enabled": False, "source_type": "", "source": ""}
+    sel.validate()
+    sel.transfer = {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
+    sel.validate()
+    d = sel.as_dict()
+    assert d["transfer"] == {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
+    back = Selections.from_dict(d)
+    assert back == sel and back.transfer is not sel.transfer  # copied, not shared
+
+
+@pytest.mark.parametrize("bad", [
+    {"enabled": "yes", "source_type": "", "source": ""},
+    {"enabled": True, "source_type": "usb", "source": ""},
+    {"enabled": True, "source_type": "partition", "source": 5},
+])
+def test_transfer_selection_rejects_bad_values(bad):
+    sel = Selections(transfer=bad)
+    with pytest.raises(ValueError):
+        sel.validate()
+
+
+def test_transfer_from_dict_ignores_junk():
+    sel = Selections.from_dict({"transfer": "not-a-dict"})
+    assert sel.transfer == {"enabled": False, "source_type": "", "source": ""}
+    sel2 = Selections.from_dict({"transfer": {"enabled": True, "source_type": "bundle",
+                                              "source": "/media/USB/kit", "extra": 1}})
+    assert sel2.transfer == {"enabled": True, "source_type": "bundle", "source": "/media/USB/kit"}
+
+
 def test_set_theme_follows_default_wallpaper():
     sel = Selections()
     sel.set_theme("light")
@@ -409,7 +440,11 @@ def test_summarize_rows(catalog: Catalog):
     assert rows["Taskbar"] == "Center"
     assert "Steam" in rows["Apps"] and "Windows app support" in rows["Apps"]
     assert rows["Location services"] == "Off" and rows["Crash reports"] == "Off"
+    assert rows["Bring your files from Windows"] == "Not now"
     assert dict(summarize(Selections()))["Apps"] == "None"
+    sel.transfer = {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
+    rows2 = dict(summarize(sel, catalog))
+    assert "Transfer tool" in rows2["Bring your files from Windows"]
 
 
 def test_plan_module_has_no_gtk_or_lindos_imports():
@@ -516,7 +551,7 @@ def test_main_parser_flags_match_spec():
     args = parser.parse_args(["--reconfigure"])
     assert args.reconfigure and not args.first_run
     assert main.PAGE_IDS == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
-                             "summary", "apply", "done"]
+                             "transfer", "summary", "apply", "done"]
     with pytest.raises(SystemExit):
         parser.parse_args(["--first-run", "--reconfigure"])   # mutually exclusive
     with pytest.raises(SystemExit):
@@ -568,7 +603,7 @@ def test_ui_modules_import_with_gi_stub():
     _ensure_gi()
     from lindos_setup import app, pages, widgets
     assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
-                                "summary", "apply", "done"]
+                                "transfer", "summary", "apply", "done"]
     assert [p.id for p in pages.make_pages()] == pages.PAGE_ORDER
     assert (app.CARD_W, app.CARD_H) == (900, 620)
     assert (widgets.THUMB_W, widgets.THUMB_H) == (192, 108)
@@ -602,3 +637,91 @@ def test_page_context_connectivity_state(monkeypatch):
         online=True, dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
         live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {})
     assert ctx2.online_known is True and ctx2.ensure_online_known() is True
+
+
+def _make_ctx(**kw):
+    from lindos_setup import core, pages
+    defaults = dict(selections=Selections(), catalog=Catalog([]), accents=[], modes={}, browsers={},
+                    online=True, dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
+                    live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {})
+    defaults.update(kw)
+    return pages.PageContext(**defaults)
+
+
+def test_transfer_page_lists_sources_and_records_selection():
+    """SPEC-WINDOWS §32: the 'transfer' page never blocks on the CLI and records
+    Selections.transfer; the special 'skip' card is always offered and selected by default."""
+    _ensure_gi()
+    from lindos_setup import pages
+
+    ctx = _make_ctx()
+    page = pages.TransferPage()
+    page.build(ctx)
+    data = {"available": True, "note": "", "partitions": [
+        {"device": "/dev/sda2", "label": "OS", "windows": True, "mountpoint": "/media/alice/OS", "note": ""},
+        {"device": "/dev/sda3", "label": "Data", "windows": False, "mountpoint": "/media/alice/Data"},
+    ], "bundles": [{"path": "/media/USB/kit", "computer": "DESKTOP-1", "user": "alice", "created": "2026-09-26"}]}
+    page._loaded_cb(data)
+    # non-Windows partitions are not offered; the Windows one and the bundle are, plus 'skip'
+    assert set(page._sources) == {"skip", "part:/dev/sda2", "bundle:/media/USB/kit"}
+    assert page.group.selected == "skip"
+    assert ctx.selections.transfer == {"enabled": False, "source_type": "", "source": ""}
+
+    page._changed("part:/dev/sda2")
+    assert ctx.selections.transfer == {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
+    page._changed("bundle:/media/USB/kit")
+    assert ctx.selections.transfer == {"enabled": True, "source_type": "bundle", "source": "/media/USB/kit"}
+    page._changed("skip")
+    assert ctx.selections.transfer == {"enabled": False, "source_type": "", "source": ""}
+
+    # re-entering the page with a prior choice re-selects the matching card
+    ctx.selections.transfer = {"enabled": True, "source_type": "bundle", "source": "/media/USB/kit"}
+    page._loaded_cb(data)
+    assert page.group.selected == "bundle:/media/USB/kit"
+
+
+def test_transfer_page_handles_missing_cli_and_no_sources():
+    _ensure_gi()
+    from lindos_setup import pages
+
+    ctx = _make_ctx()
+    page = pages.TransferPage()
+    page.build(ctx)
+    page._loaded_cb({"available": False, "note": "The Transfer tool (lindos-transfer) is not installed.",
+                     "partitions": [], "bundles": []})
+    assert set(page._sources) == {"skip"}
+    assert page.group.selected == "skip"
+    # available but nothing found: no crash, 'skip' still the only (selectable) option
+    page._loaded_cb({"available": True, "note": "", "partitions": [], "bundles": []})
+    assert set(page._sources) == {"skip"}
+    assert page.group.selected == "skip"
+
+
+def test_done_page_launches_transfer_gui_once_when_chosen(monkeypatch):
+    _ensure_gi()
+    from lindos_setup import core, pages
+
+    ctx = _make_ctx(dry_run=False)
+    ctx.selections.transfer = {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
+    page = pages.DonePage()
+    page.build(ctx)
+    calls = []
+    monkeypatch.setattr(core, "launch_transfer_gui", lambda source="": (calls.append(source), True)[1])
+    page.on_enter(ctx)
+    page.on_enter(ctx)  # a second visit must not launch it again
+    assert calls == ["/media/alice/OS"]
+    assert ctx.transfer_launched is True
+
+
+def test_done_page_skips_transfer_gui_when_not_chosen(monkeypatch):
+    _ensure_gi()
+    from lindos_setup import core, pages
+
+    ctx = _make_ctx(dry_run=False)
+    page = pages.DonePage()
+    page.build(ctx)
+    calls = []
+    monkeypatch.setattr(core, "launch_transfer_gui", lambda source="": calls.append(source))
+    page.on_enter(ctx)
+    assert calls == []
+    assert ctx.transfer_launched is False

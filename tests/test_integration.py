@@ -242,7 +242,7 @@ def _shipped_executables() -> Set[str]:
 def test_referenced_lindos_commands_and_libexec_scripts_are_shipped():
     shipped = _shipped_executables()
     cli_re = re.compile(r"\blindos-(run|compat|proton|drivers|game|tune|mode|browser|config|ram|compositor|"
-                        r"helper|mangohud|setup|settings)\b")
+                        r"helper|mangohud|setup|settings|dualboot|transfer|transfer-gui)\b")
     libexec_re = re.compile(r"/usr/libexec/lindos/([A-Za-z0-9._-]+)")
     for pkg in os.listdir(PKGS):
         for dp, _dn, fn in os.walk(_root(pkg)):
@@ -403,3 +403,131 @@ def test_maintainer_scripts_are_posix_sh_with_set_e(pkg):
         assert text.startswith("#!/bin/sh\n"), f"{pkg}/{name}: must start with #!/bin/sh"
         assert re.search(r"^set -e\b", text, re.M), f"{pkg}/{name}: missing set -e"
         assert "\r" not in text
+
+
+# --------------------------------------------------------------------------- #
+# Addendum W (SPEC-WINDOWS.md) cross-component checks — W-I integration
+# --------------------------------------------------------------------------- #
+#: every id in the SPEC-WINDOWS §28.3 format table (binding; order does not matter)
+SPEC_WINDOWS_FORMAT_IDS = {
+    "exe", "dotnet-exe", "win16-exe", "dos-exe", "dos-com", "arm-exe", "dll", "msi", "msp", "mst",
+    "msix", "msix-bundle", "msix-upload", "msix-encrypted", "msixvc", "appinstaller", "bat", "ps1",
+    "vbs", "reg", "lnk", "url", "scr", "cpl", "inf", "cab", "msu", "iso", "clickonce",
+}
+
+#: every action the SPEC-WINDOWS §30.4 table adds to lindos.helper.ACTIONS
+SPEC_WINDOWS_HELPER_ACTIONS = {"reboot-to-windows", "firmware-setup", "import-wifi", "set-binfmt"}
+
+#: SPEC-WINDOWS §33.1 "cross-component call map" — CLI names other components call
+SPEC_WINDOWS_CLIS = {
+    "lindos-run": ("lindos-compat", "usr", "bin", "lindos-run"),
+    "lindos-compat": ("lindos-compat", "usr", "bin", "lindos-compat"),
+    "lindos-game": ("lindos-gaming", "usr", "bin", "lindos-game"),
+    "lindos-dualboot": ("lindos-core", "usr", "bin", "lindos-dualboot"),
+    "lindos-transfer": ("lindos-transfer", "usr", "bin", "lindos-transfer"),
+    "lindos-transfer-gui": ("lindos-transfer", "usr", "bin", "lindos-transfer-gui"),
+}
+
+
+def test_addendum_w_format_ids_match_spec_table():
+    """Every id SPEC-WINDOWS §28.3 defines exists in formats.FORMATS, and vice versa."""
+    from lindos_compat import formats
+
+    shipped_ids = {f.id for f in formats.FORMATS}
+    assert shipped_ids == SPEC_WINDOWS_FORMAT_IDS, (
+        f"formats.FORMATS ids vs SPEC-WINDOWS §28.3: "
+        f"missing={SPEC_WINDOWS_FORMAT_IDS - shipped_ids} extra={shipped_ids - SPEC_WINDOWS_FORMAT_IDS}"
+    )
+    # every handler used is one of the binding HANDLERS, and every plan actually validates
+    plan_targets = [(f.id, f.handler, f.status) for f in formats.FORMATS]
+    for fid, handler, status in plan_targets:
+        assert handler in formats.HANDLERS, f"{fid}: handler {handler!r} not in formats.HANDLERS"
+        assert status in formats.STATUSES, f"{fid}: status {status!r} not in formats.STATUSES"
+
+
+def test_addendum_w_helper_actions_present():
+    """SPEC-WINDOWS §30.4's four new privileged actions exist with a real handler."""
+    from lindos import helper
+
+    assert SPEC_WINDOWS_HELPER_ACTIONS <= set(helper.ACTIONS)
+    src = _read(_root("lindos-core", "usr", "libexec", "lindos", "lindos-helper"))
+    for action in SPEC_WINDOWS_HELPER_ACTIONS:
+        assert f'"{action}":' in src, f"lindos-helper has no handler for {action}"
+
+
+def test_addendum_w_transfer_calls_import_wifi_via_stdin():
+    """lindos-transfer's Wi-Fi importer must use the stdin_payload contract (SPEC-WINDOWS §27.3/§30.4):
+    a Wi-Fi password must never be placed on a command line or in a log."""
+    src = _read(_root("lindos-transfer", "usr", "lib", "lindos-transfer", "lindos_transfer", "wifi.py"))
+    assert 'run_privileged("import-wifi"' in src or "run_privileged('import-wifi'" in src
+    assert "stdin_payload=True" in src, "wifi.py must pass stdin_payload=True to helper.run_privileged"
+
+
+def test_addendum_w_game_route_calls_dualboot():
+    """lindos-game's Windows route must go through lindos-dualboot, never edit Windows itself."""
+    src = _read(_root("lindos-gaming", "usr", "bin", "lindos-game"))
+    assert "lindos-dualboot" in src
+
+
+def test_addendum_w_clis_exist_and_are_executable_scripts():
+    """Every CLI named in the SPEC-WINDOWS §33.1 cross-component call map is shipped and is a
+    real python3/bash entry point (a valid shebang), independent of the checked-out exec bit."""
+    shipped = _shipped_executables()
+    for name, parts in SPEC_WINDOWS_CLIS.items():
+        assert name in shipped, f"{name} referenced in SPEC-WINDOWS §33.1 but not shipped"
+        path = _root(*parts)
+        assert os.path.isfile(path), f"{name}: expected at {path}"
+        first_line = _read(path).splitlines()[0]
+        assert first_line.startswith("#!/usr/bin/env python3") or first_line.startswith("#!/usr/bin/python3") \
+            or first_line.startswith("#!/bin/bash") or first_line.startswith("#!/bin/sh"), \
+            f"{name}: unexpected shebang {first_line!r}"
+
+
+def test_addendum_w_run_desktop_mime_types_are_all_known():
+    """Every MIME type lindos-run.desktop claims is either newly defined by lindos-windows.xml or
+    named in that file's own header as an existing shared-mime-info 2.4 type (SPEC-WINDOWS §28.9)
+    — never a type that is silently undefined."""
+    desktop = _read(_root("lindos-compat", "usr", "share", "applications", "lindos-run.desktop"))
+    m = re.search(r"^MimeType=(.*)$", desktop, re.M)
+    assert m, "lindos-run.desktop has no MimeType= line"
+    types = [t for t in m.group(1).split(";") if t]
+    assert types, "lindos-run.desktop MimeType= is empty"
+
+    mime_xml = _read(_root("lindos-compat", "usr", "share", "mime", "packages", "lindos-windows.xml"))
+    comment_end = mime_xml.index("-->")
+    header, body = mime_xml[:comment_end], mime_xml[comment_end:]
+    known = set(re.findall(r"\b(?:application|text)/[A-Za-z0-9_.+-]+", header))
+    known |= set(re.findall(r'type="((?:application|text)/[^"]+)"', body))
+    missing = [t for t in types if t not in known]
+    assert not missing, f"lindos-run.desktop MimeType(s) not defined anywhere: {missing}"
+
+
+def test_addendum_w_lindos_meta_depends_on_transfer():
+    """SPEC-WINDOWS §33: lindos-meta Depends lindos-transfer (= 1.0.0)."""
+    ctl = _read(os.path.join(PKGS, "lindos-meta", "DEBIAN", "control"))
+    dep_line = next(ln for ln in ctl.splitlines() if ln.startswith("Depends:"))
+    assert "lindos-transfer (= 1.0.0)" in dep_line
+
+
+def test_addendum_w_deb_order_installs_transfer_before_setup():
+    """SPEC-WINDOWS §33: 30-lindos-debs.sh installs lindos-transfer before lindos-setup."""
+    for path in (
+        os.path.join(REPO, "build", "chroot", "30-lindos-debs.sh"),
+        os.path.join(REPO, "build", "config.env"),
+    ):
+        text = _read(path)
+        m = re.search(r"LINDOS_DEB_ORDER:?=([a-z0-9 _-]+)", text)
+        assert m, f"{path}: no LINDOS_DEB_ORDER default found"
+        order = m.group(1).split()
+        assert "lindos-transfer" in order, f"{path}: lindos-transfer missing from LINDOS_DEB_ORDER"
+        assert order.index("lindos-transfer") < order.index("lindos-setup"), \
+            f"{path}: lindos-transfer must install before lindos-setup"
+
+
+def test_addendum_w_transfer_package_is_lib_dir_discovered():
+    """lindos_testsupport must put lindos_transfer on sys.path like every other package (either via
+    the explicit LIB_DIRS list or the packages/*/root/usr/lib/lindos-* glob fallback)."""
+    transfer_lib = os.path.join(PKGS, "lindos-transfer", "root", "usr", "lib", "lindos-transfer")
+    assert os.path.isdir(transfer_lib)
+    assert transfer_lib in (lindos_testsupport.LIB_DIRS + lindos_testsupport._extra_lib_dirs())
+    import lindos_transfer  # noqa: F401  must import cleanly once sys.path is set up

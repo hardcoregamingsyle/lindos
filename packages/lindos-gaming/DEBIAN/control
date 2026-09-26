@@ -20,6 +20,12 @@ Description: Lindos gaming stack — launchers, Proton-GE, GPU drivers, GameMode
   * lindos-drivers — GPU detection (lspci), driver status, NVIDIA/AMD/Intel driver
                      installation via ubuntu-drivers, nvidia-drm modeset, optional
                      xpadneo/xone controller drivers.
+  * lindos-game route/play/shortcut/cloud — honest routes for the 15 titles a
+                     kernel-level anti-cheat blocks on any Linux: official cloud
+                     streaming (NVIDIA GeForce NOW, Xbox Cloud Gaming, Boosteroid,
+                     Amazon Luna — only where the title and your region actually
+                     support it) or a one-click restart into an existing Windows
+                     install; never the Lindos VM and never a spoofer.
   * GameMode config (/etc/gamemode.ini) that pauses the compositor while gaming,
     MangoHud defaults (/etc/xdg/MangoHud/MangoHud.conf, Shift_R+F12),
     controller udev rules, vm.max_map_count sysctl, launcher catalogue and the
