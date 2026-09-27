@@ -90,43 +90,48 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
 
 ## 3. Current state
 
-- **2026-09-26 (this session — Addendum W/U pushed, repo made public, real CI/boot-test run
-  5 times on branch `feature/windows-transfer-updates-boottest`):** Full detail in `CI-LOGS.md`;
-  summary here. The repo was flipped **public** (user-approved, after a clean git-history secret
-  scan) so GitHub Actions minutes are free — it had been silently failing every dispatch with a
-  billing error before that. Real Linux CI then ran for the first time ever on this branch:
-  - `lint-test` / `pytest-windows` / `debs`: **green**, after fixing 3 host-state-dependent test
-    bugs (same class as the original 6 from 2026-08-16) — see `CI-LOGS.md` round 1.
-  - `iso`: **green**, after moving `xfce4-docklike-plugin` from `Depends` to `Recommends` in
-    `lindos-desktop`'s control file — it turned out not to be packaged for Ubuntu 24.04 "noble" at
-    all (confirmed against packages.ubuntu.com), which made the whole first-ever ISO build fail to
-    install its own `.deb`s. See `CI-LOGS.md` round 2.
-  - `boot-test`: **the ISO booted under QEMU for the first time ever, real KVM acceleration works
-    (after `sudo chmod 0666 /dev/kvm` in ci.yml — the device exists but the runner's kvm-group
-    membership doesn't apply to the already-running job shell), and 9 of the 10 shipped CLI smoke
-    checks pass for real**, including `lindos-update check`'s designed `EXIT_NOTHING=3` now being
-    correctly recognized as success. **Still failing:** `lindos-compat doctor --json` fails one
-    `required`-level check beyond the (correctly-excused) missing DISPLAY, and the root cause is
-    **not yet identified** — the doctor's own JSON output isn't part of the uploaded artifact, only
-    `serial.log`/`desktop.png` are. The 4-fix-and-rerun-round cap for this task was reached before
-    it could be diagnosed. See `CI-LOGS.md`'s round 5 for leading candidates (`wine` not actually
-    found, or `prefixes-dir` not writable) and the concrete next step (make the smoke test echo the
-    failing check ids on failure, not just a bare rc). The live-desktop screenshot has been black
-    (cursor blink only, `is_system_running=initializing`) on every run so far — informational only,
-    never gates the job, but the boot-test has never yet visually confirmed a rendered desktop.
-  - Along the way, real bugs were found and fixed on real Linux that Windows-only testing
-    structurally could not have caught: a missing `conffiles` entry, a test-unfriendly default
-    parameter in `lindos-game` that silently used the real (unpatched) `shutil.which` instead of
-    the test-patched module-level one, a test-isolation gap in `build/tests/test_build_kernel.py`
-    that only worked because a Windows host never has a real `apt-cache`, and — the most
-    instructive one — a POSIX `if cond; then ...; fi` with no `else` silently reporting exit status
-    0 for the untaken branch, which had been masking two smoke-test check results. Added 3 new
-    hermetic tests for `ci-boot-smoke-test.sh` (`build/tests/test_boot_test_qa.py`), which had zero
-    test coverage before beyond `bash -n`/shellcheck.
-  - The kernel-build job (`build_kernel=true`) has **not** been dispatched yet on this branch —
-    per the task plan it only happens once the no-kernel loop is green, which it is not yet.
+- **2026-09-27 (this session, continued — self-diagnosis, real-desktop wait, merged
+  `feature/preinstall-essentials`, first `build_kernel=true` runs):** Full detail in `CI-LOGS.md`;
+  summary here.
+  - The **no-kernel loop is now fully green** (`36288980753`): all 10 shipped CLI smoke checks
+    pass for real, including `lindos-compat doctor` (its one previously-unexplained required-check
+    failure turned out to be a POSIX `if`-with-no-`else` bug clobbering `$?` back to 0, which also
+    hid `lindos-update-check`'s designed `rc=3`; both now fixed and self-diagnosing). A detached
+    desktop-readiness watcher was added (`LINDOS_DESKTOP_READY`/`_TIMEOUT`, via `systemd-run
+    --no-block`) so `boot_test.py` waits for the real desktop before screenshotting — it reliably
+    *starts* (confirmed via a new `LINDOS_DESKTOP_WATCH_STARTED` marker) but has never yet reached
+    its own final line on any run so far; non-blocking (never gates pass/fail), still unresolved.
+  - Merged `feature/preinstall-essentials` (Chrome auto-install on the *installed* system's first
+    boot only, laptop firmware/audio/Bluetooth/microcode/printing essentials, Bluetooth no longer
+    disabled) — clean merge, no conflicts. Added the same live-session guard to
+    `lindos-driver-firstboot.service` that the incoming `lindos-browser-firstboot.service` has.
+  - **`build_kernel=true` has now run 2 times on this branch — both still failing, in the kernel
+    job itself** (never-before-exercised build-dependency gaps on this runner image): first missing
+    `debhelper` (fixed), then missing `libdw-dev` for `gendwarfksyms`/`dwarf.h` (found, **not yet
+    fixed** — the 2-round fix cap for that task was reached first). Every OTHER job passes,
+    including the smoke-test layer inside boot-test (`LINDOS_SMOKE_DONE rc=0`, all 10 checks OK);
+    boot-test's overall FAIL is *only* because no Lindos kernel was built to boot
+    (`uname -r=6.14.0-29-generic`, correctly detected and reported by `--require-kernel-suffix`).
+    Also fixed along the way: a real argparse gotcha (`--require-kernel-suffix -lindos`'s value
+    starts with `-`, so argparse refused to consume it — needed `=` form — this flag had never
+    been exercised before since it's only appended when `build_kernel=true`), and a test bug from
+    the merged branch (`_firstboot_sandbox()`'s fake `id` binary had no `chmod(0o755)` — invisible
+    on Windows, breaks on real Linux where a non-executable PATH match is skipped).
+  - The live-desktop screenshot is still black (cursor blink, `is_system_running=initializing`) on
+    every run so far, real KVM or not — informational only, never gates the job.
+  - Along the way (this and the prior sub-session), real bugs were found and fixed on real Linux
+    that Windows-only testing structurally could not have caught: a missing `conffiles` entry, a
+    test-unfriendly default parameter in `lindos-game` that silently used the real (unpatched)
+    `shutil.which`, a `build/tests/test_build_kernel.py` isolation gap that only worked because a
+    Windows host never has a real `apt-cache`, the `xfce4-docklike-plugin` packaging gap (moved
+    Depends→Recommends — it isn't on Ubuntu 24.04 noble at all), the POSIX if-without-else `$?`
+    bug, a stdout/stderr race in doctor's own JSON output, the fake-`id`-chmod test bug, the
+    missing-`debhelper`/`libdw-dev` kernel build deps, and the `--require-kernel-suffix` argparse
+    gotcha. Added ~15 new hermetic tests total across `build/tests/test_boot_test_qa.py` for
+    everything above; `ci-boot-smoke-test.sh` and `boot_test.py` had zero test coverage before this
+    session beyond `bash -n`/shellcheck.
   - Local gate stayed green throughout: `bash tests/run.sh --quick` (0 failures) and the full
-    pytest suite (3115→3118 passed as tests were added, 4 pre-existing Windows-only skips) before
+    pytest suite (3115→3153 passed as tests were added, 4 pre-existing Windows-only skips) before
     every commit in this sequence.
 - **2026-09-26 (Addendum U, as originally written/merged into the above):** `SPEC-UPDATE.md` adds
   a 13th component, `lindos-update` (in `lindos-core`): checks/applies updates to Lindos's own 12
@@ -152,13 +157,17 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
 
 1. **~~Dispatch the full Linux build on CI~~ — done, on `feature/windows-transfer-updates-boottest`
    (not yet merged to `main`).** `lint-test`/`pytest-windows`/`debs`/`iso` are all green (real
-   Linux, 5 runs, fixes documented in `CI-LOGS.md`). `boot_test=true build_kernel=false` has run 5
-   times; the ISO now boots, real KVM works, 9/10 smoke checks pass for real. **Remaining before
-   this branch's no-kernel gate is fully green:** `lindos-compat doctor --json` fails one
-   `required`-level check beyond the expected/excused missing-DISPLAY one, root cause not yet
-   found (see `CI-LOGS.md` round 5 — the 4-round fix cap for that task was reached first). Once
-   that's fixed and green, dispatch once more with `build_kernel=true` (never yet run on this
-   branch) before merging:
+   Linux). The **no-kernel loop is fully green** (run `36288980753`): all 10 smoke checks pass for
+   real. **`build_kernel=true` has run twice and both times failed in the kernel job itself**
+   (never-before-exercised build-dep gaps): first missing `debhelper` (fixed), then missing
+   `libdw-dev` for `gendwarfksyms`/`dwarf.h` — **found but not yet fixed** (2-round fix cap for
+   that task reached first; see `CI-LOGS.md`'s "Round 3" for the exact error and the almost-
+   certainly-right next step: add `libdw-dev` to ci.yml's "Install kernel build dependencies"
+   step, next to the already-present `dwarves`, then re-verify — kernel 6.14's full build-dep
+   surface still hasn't been exercised to completion on this runner image). Once the kernel job
+   succeeds, boot-test should pass end-to-end (the smoke-test layer has been fully green for two
+   consecutive runs already; the only open question is whether `uname -r` then correctly ends in
+   `-lindos`). Re-dispatch after that fix:
    ```bash
    gh workflow run CI --ref feature/windows-transfer-updates-boottest -f build_kernel=true -f build_iso=true -f boot_test=true
    ```
@@ -173,13 +182,19 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
    `systemd.run=` (runs alongside the normal boot, never delays/replaces the real desktop),
    and asserts every shipped CLI (`lindos-mode`, `lindos-tune`, `lindos-compat doctor`,
    `lindos-game`, `lindos-transfer`, `lindos-dualboot`, `lindos-update`, a plain `python3 -c
-   "import lindos"`) actually runs, plus captures a screenshot of the live desktop via the QEMU
-   monitor's `screendump`. **Now run for real 5 times** — see `CI-LOGS.md` for the full history:
-   9/10 checks genuinely pass; `lindos-compat-doctor` still genuinely fails (item 1); the
+   "import lindos"`) actually runs, self-diagnoses any failure (per-check log tails, and
+   per-required-check detail for `lindos-compat doctor`), waits for a detached watcher's
+   `LINDOS_DESKTOP_READY` signal, then captures a screenshot via the QEMU monitor's `screendump`.
+   **All 10 checks now genuinely pass** on every run since the `$?`-clobbering bug was fixed. The
+   desktop-ready watcher reliably *starts* (`LINDOS_DESKTOP_WATCH_STARTED` confirms it) but has
+   never once reached its own final `LINDOS_DESKTOP_READY`/`_TIMEOUT` line — **still unresolved**;
+   candidates worth checking next: whether this runner's systemd still ties a `systemd-run
+   --no-block` transient unit to the calling unit's cgroup lifecycle, or whether
+   `systemctl is-system-running`/`pgrep` themselves hang partway through the watcher's loop. The
    screenshot has been black (`is_system_running=initializing`, cursor blink only) on every run so
-   far — informational only (never gates the job — see `boot_test.py`'s `take_screenshot()`), but
-   worth a longer `--grace` period or a proper "wait for Xorg" signal to actually see the desktop
-   render. Manual interactive boot-testing (`make qemu` / `build/test-qemu.sh`) or real hardware is
+   far regardless — informational only (never gates the job — see `boot_test.py`'s
+   `take_screenshot()`). Manual interactive boot-testing (`make qemu` / `build/test-qemu.sh`) or
+   real hardware is
    still worth doing separately for a visual/hands-on check.
 3. **Real-Linux GTK visual pass** for `lindos-setup` (OOBE) and `lindos-settings` — they are only
    import-smoke-tested against the gi stub; construct/paint them under a real GTK + display.

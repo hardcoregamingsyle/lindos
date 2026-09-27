@@ -240,18 +240,142 @@ Windows-only skips) were run before every commit in this sequence.
 
 ---
 
+## 2026-09-27 — self-diagnosis, real-desktop wait, merge, and the first `build_kernel=true` runs
+
+### Round: self-diagnosing smoke test (`36286387867` ✅, then `36288980753` ✅)
+
+Two asks: make a failing `lindos-compat-doctor` check say *why* (not just a bare rc — the CI
+artifact only ever carries `serial.log`, never the guest's own `/tmp`), and get a screenshot of
+the *actual rendered desktop* instead of mid-boot black.
+
+- `check()` (the generic per-CLI check helper) now tails the last 10 lines of a failing check's
+  own captured output straight to the console, prefixed `LINDOS_FAIL_LOG <name>: `.
+- `check_compat_doctor()` parses the doctor JSON on failure and prints one
+  `LINDOS_DOCTOR_FAIL id=<id> msg=<detail> (fix: <fix>)` line per `required`-level check that
+  failed for a real reason (excusing only the expected missing-DISPLAY one — this smoke test runs
+  as an early-boot `systemd.run=` oneshot, outside any logged-in desktop session).
+- Added `start_desktop_watch()`: a **detached** watcher (launched via `systemd-run --no-block`,
+  since this script is itself part of `default.target`'s own start-job graph — waiting for
+  `is-system-running` in-line here would deadlock boot forever) that prints
+  `LINDOS_DESKTOP_READY` once `systemctl is-system-running` reports running/degraded *and* a real
+  X/lightdm/Xwayland process exists, or `LINDOS_DESKTOP_READY_TIMEOUT` after its own bound.
+  `boot_test.py` waits up to `--desktop-timeout` (default 180s) for that sentinel before its
+  existing `--grace` + screendump, still screenshotting on timeout for debugging.
+- Run `36286387867` surfaced two real bugs found via the new diagnostics themselves: (1)
+  `lindos-config get --json` called with no `key` (fixed to `show --json`) — no longer relevant,
+  superseded by later findings; (2) a **POSIX `if cond; then ok; fi` with no `else` reports the
+  *if statement's own* exit status (0) when the condition is false**, clobbering `$?` right
+  before `local rc=$?` could read the real (non-zero) code — every failing check had been
+  silently recording `rc=0`. Fixed by running the command as its own statement and reading `$?`
+  immediately after, never through an if-without-else. Also found: `logging.StreamHandler()`
+  defaults to stderr and flushes every record immediately, while `doctor --json`'s payload is
+  plain `print()`ed to stdout, which Python fully block-buffers once it isn't a TTY — merged via
+  `2>&1`, a log record could land *before* the buffered JSON, corrupting the start of the file
+  ("Expecting value: line 1 column 1 (char 0)" even though the tail was well-formed JSON). Fixed
+  by capturing doctor's stdout/stderr to **separate** files; only the pure-stdout one is parsed.
+- Run `36288980753`: fully green, including `boot-test`. All 10 checks genuinely OK (including
+  `lindos-update-check=OK rc=3`, the designed "nothing to update" result). The desktop-ready
+  watcher's own `systemd-run` dispatch succeeded (`rc=0 out=Running as unit:
+  lindos-desktop-watch.service`) but neither `LINDOS_DESKTOP_READY` nor its own `_TIMEOUT`
+  sentinel ever appeared — added one more diagnostic (`LINDOS_DESKTOP_WATCH_STARTED`, printed as
+  the watcher's very first action) rather than burn a full kernel+ISO+boot-test cycle guessing
+  blind, since this is non-blocking (never gates pass/fail).
+- Added 12 new hermetic tests across these two rounds in `build/tests/test_boot_test_qa.py`
+  (`check()`'s FAIL_LOG tail, `check_compat_doctor()`'s DOCTOR_FAIL lines + parse-error fallback +
+  the stdout/stderr-race regression itself, the desktop-watch script's ready/timeout paths run
+  standalone against faked `systemctl`/`pgrep`, and `parse_report`/`tail_for_desktop_ready`
+  coverage) — this script had *zero* test coverage before beyond `bash -n`/shellcheck, which is
+  exactly how the `$?`-clobbering bug shipped unnoticed.
+
+### Merge: `feature/preinstall-essentials` → this branch (clean, no conflicts)
+
+A parallel agent's branch (Chrome auto-install on the *installed* system's first boot only —
+never baked into the ISO, per Google's redistribution terms; laptop firmware/audio/Bluetooth/
+microcode/printing essentials via a new `LAPTOP_ESSENTIALS` list; Bluetooth no longer disabled by
+debloat) merged cleanly. Follow-up: `lindos-driver-firstboot.service` had no live-session guard
+unlike the new `lindos-browser-firstboot.service` — added the same
+`ConditionKernelCommandLine=!boot=casper` (a boot-test/live-USB session would otherwise run full
+hardware autodetect every single boot, since it can never persist its done-marker to a live
+session's non-persistent `/var/lib`).
+
+### Round 1 of the post-merge final run (`36294817595` ❌ lint-test, ❌ never reached kernel/boot-test)
+
+`lint-test` failed 4 tests in `packages/lindos-core/tests/test_core.py`
+(`test_browser_firstboot_*`), all with `"...must run as root"` instead of their intended
+behavior. Root cause: `_firstboot_sandbox()`'s fake `id` binary (simulates root for
+`browser-firstboot.sh`'s `[ "$(id -u)" != 0 ]` check) was written via `Path.write_text()` with
+**no `.chmod(0o755)`**. Windows/git-bash never notices (NTFS has no POSIX exec bit, a shebang
+script "just runs"), but real Linux skips a non-executable match during `PATH` search and falls
+through to the *real* `/usr/bin/id`, which reports the CI runner's actual non-root uid. The fake
+`install-browser.sh` had the same gap (harmless only because every failure happened before
+reaching it). Fixed both with `.chmod(0o755)`.
+
+### Round 2 (`36295427771` ❌ kernel job, ❌ boot-test — different failures each)
+
+- **Kernel job**: `dpkg-checkbuilddeps: error: Unmet build dependencies: debhelper-compat (= 12)`.
+  The "Install kernel build dependencies" ci.yml step never included `debhelper`. Added it.
+- **boot-test**: crashed before producing *any* artifact —
+  `boot_test.py: error: argument --require-kernel-suffix: expected one argument`. `ci.yml` passed
+  `--require-kernel-suffix -lindos` as two argv tokens; since the value itself starts with `-`,
+  argparse mistakes it for another option and refuses to consume it — a textbook gotcha, fixed
+  with the `--opt=value` form (`--require-kernel-suffix=-lindos`), which is unambiguous regardless
+  of what the value looks like. This flag is only ever appended when `build_kernel=true`, so it
+  had literally never been exercised before this run (first time that combination ran on this
+  branch, or possibly ever in this repo's history). Added a regression test using the real
+  argparse parser via `boot_test.main()`.
+
+### Round 3 (`36297620250` ❌ kernel job — new dependency; boot-test — expected downstream failure only)
+
+This was the **cap** (2 fix-and-rerun rounds for this final run) — stopped here rather than
+attempting a 4th fix round; reporting root causes for whoever picks this up next.
+
+- **Kernel job**, new failure (progress — got past `debhelper`, into the actual compile):
+  `scripts/gendwarfksyms/gendwarfksyms.h:6:10: fatal error: dwarf.h: No such file or directory` →
+  `dpkg-buildpackage: error: make -f debian/rules binary subprocess returned exit status 2`.
+  Kernel 6.14's build needs `libdw-dev` (provides `dwarf.h`) for `gendwarfksyms`, a DWARF-based
+  symbol-versioning tool — **not** the same package as the already-installed `dwarves` (which
+  provides `pahole`). **Not yet fixed** (out of round budget) — the fix is almost certainly just
+  adding `libdw-dev` to ci.yml's "Install kernel build dependencies" step, but that is unverified
+  since the round cap was hit first.
+- **boot-test**: the argparse fix from round 2 is confirmed working (no more crash, an artifact
+  was produced). The smoke test itself is **fully green** —
+  `LINDOS_SMOKE_DONE rc=0`, all 10 `LINDOS_CHECK`s `OK` (including `lindos-update-check=OK rc=3`).
+  The job still reports overall FAIL solely because `--require-kernel-suffix=-lindos` correctly
+  detected that the booted kernel (`uname -r=6.14.0-29-generic`) is the **stock** kernel, not
+  Lindos's — the exact, expected, consistent downstream consequence of the kernel job failing
+  above (no `lindos-kernel-debs` artifact existed for `35-kernel.sh`/`build-iso.sh`'s
+  `sync_casper_kernel()` to install and promote into `casper/vmlinuz`). Not a new/independent bug.
+  `desktop_watch_started=True` (the new `LINDOS_DESKTOP_WATCH_STARTED` marker confirms the watcher
+  process really does start), but neither `LINDOS_DESKTOP_READY` nor its own `_TIMEOUT` sentinel
+  ever appeared, same as the previous round — **still unresolved and undiagnosed further** (round
+  cap reached before this could be investigated deeper); the live-desktop screenshot is still
+  black (`is_system_running=initializing`) on every run so far, informational only (never gates
+  pass/fail — see `boot_test.py`'s `take_screenshot()`).
+
+**Local verification for every round above:** `bash tests/run.sh --quick` (0 failures, shellcheck
+clean) and the full `pytest` suite (3128 → 3153 passed as tests were added across rounds, 4
+pre-existing Windows-only skips) were run before every commit in this sequence.
+
+---
+
 ## Next CI step (not yet run)
 
-The kernel-build job (`build_kernel=true`) has still never run on this branch — per the original
-task plan, dispatch it only after the no-kernel loop is fully green (still pending, see above):
+The kernel job has never successfully compiled on this branch. Next step for whoever picks this
+up: add `libdw-dev` to `.github/workflows/ci.yml`'s "Install kernel build dependencies" step
+(alongside the existing `dwarves`), verify the kernel job gets past `gendwarfksyms` this time (it
+may or may not hit further missing deps — kernel 6.14's build-dep surface hasn't been exercised to
+completion on this runner image yet), then re-dispatch:
 
 ```bash
-gh workflow run CI --ref feature/windows-transfer-updates-boottest -f build_iso=true -f boot_test=true -f build_kernel=true
+gh workflow run CI --ref feature/windows-transfer-updates-boottest -f build_kernel=true -f build_iso=true -f boot_test=true
 gh run list --workflow CI --branch feature/windows-transfer-updates-boottest --limit 1 --json databaseId
 gh run watch <run-id> --exit-status   # not through tail
 ```
 
-Expect the same kind of first-time-on-real-Linux shake-out documented above. Artifacts land under
-the run: `lindos-debs`, `lindos-kernel-debs`, `lindos-iso` (+ `.sha256`, `build.log`),
-`lindos-boot-test` (serial log + screenshot; `boot_test=true build_kernel=true` also asserts the
-booted kernel version ends in `-lindos`).
+Once the kernel job succeeds, boot-test should pass end-to-end (the smoke-test layer is already
+fully green and has been for two consecutive runs) — the only remaining question is whether
+`uname -r` then correctly ends in `-lindos`. Separately, the desktop-ready watcher issue (starts,
+never finishes) is worth a fresh look with a clean round budget: candidates to check are whether
+`systemd-run`'s transient unit is somehow still tied to the calling unit's cgroup lifecycle on
+this runner's systemd version, or whether `systemctl is-system-running`/`pgrep` themselves hang
+partway through the 150-iteration loop under this specific guest environment.
