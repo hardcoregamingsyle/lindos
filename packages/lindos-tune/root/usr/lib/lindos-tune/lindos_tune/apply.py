@@ -86,8 +86,9 @@ MODE_DEFAULTS: Dict[str, Dict[str, Any]] = {
              "services_enable": [], "sched": "none", "thp": "madvise", "mglru": "on"},
 }
 PRESET_ENABLE = ["earlyoom.service", "fstrim.timer", "zramswap.service", "cups.socket", "cups.path", "avahi-daemon.service",
-                 "lindos-sensors-detect.service"]
-PRESET_DISABLE = ["bluetooth.service", "ModemManager.service", "cups.service", "cups-browsed.service",
+                 "lindos-sensors-detect.service", "bluetooth.service", "lindos-driver-firstboot.service",
+                 "lindos-browser-firstboot.service"]
+PRESET_DISABLE = ["ModemManager.service", "cups.service", "cups-browsed.service",
                   "NetworkManager-wait-online.service", "apport.service", "whoopsie.service",
                   "kerneloops.service", "brltty.service", "speech-dispatcher.service",
                   "ubuntu-report.service", "motd-news.timer", "apt-daily.timer", "apt-daily-upgrade.timer"]
@@ -454,7 +455,8 @@ def step_services(ctx: Context, s: Dict[str, Any], report: Report) -> None:
 
 def step_autostart(ctx: Context, s: Dict[str, Any], report: Report) -> None:
     disabled = set(lservices.normalize_unit(u) for u in s.get("services_disable", []))
-    # units already disabled on the system also count (e.g. bluetooth disabled by the preset)
+    # units already disabled on the system also count (e.g. bluetooth disabled by Lite mode's
+    # own tune.d/mode.json services_disable — bluetooth stays ENABLED by the preset otherwise)
     for unit in ("bluetooth.service",):
         if unit in disabled or not ctx.can_systemctl or (ctx.root and not ctx.commands_allowed):
             continue

@@ -35,12 +35,12 @@
     },
     {
       "id": "bluetooth-off",
-      "name": "bluetooth.service disabled + blueman-applet hidden",
+      "name": "Lite only: bluetooth.service disabled + blueman-applet hidden",
       "kind": "ram",
-      "modes": ["everyday", "gaming", "work", "creator", "lite"],
+      "modes": ["lite"],
       "saves_mb": [15, 25],
-      "how": "systemd preset 90-lindos.preset (disable bluetooth.service, SPEC §8 'disable, not purge') + autostart-hide.list (blueman-applet if-disabled=bluetooth.service).",
-      "explanation": "bluetoothd ~5-8 MB, blueman-applet (python3 + GTK) ~12-18 MB. Disabled in every mode by the preset (the ISO build does the same); the package stays installed, so headsets/mice work again after a single enable command (see 'reversible').",
+      "how": "Lite mode's own /etc/lindos/tune.d/lite.conf SERVICES_DISABLE (and mode.json) + autostart-hide.list (blueman-applet if-disabled=bluetooth.service). The systemd preset 90-lindos.preset ENABLES bluetooth.service by default (SPEC §8) because laptops need Bluetooth headphones/mice; it is cheap when idle.",
+      "explanation": "bluetoothd ~5-8 MB, blueman-applet (python3 + GTK) ~12-18 MB. Only Lite mode (aimed at ≤4 GB RAM / old PCs) trades Bluetooth away for the saving; every other mode keeps it on by default, and the package stays installed so a single command restores it (see 'reversible').",
       "reversible": "lindos-tune services enable bluetooth.service"
     },
     {

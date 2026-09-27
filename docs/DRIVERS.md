@@ -69,6 +69,14 @@ Because it only *offers* the install, proprietary drivers are never pulled in be
 confirm through the first-boot prompt or the OOBE. On an OEM image the offer is deferred to the end
 user's own first boot.
 
+**Enabled by default.** `lindos-driver-firstboot.service` is explicitly listed in
+`packages/lindos-tune/root/usr/lib/systemd/system-preset/90-lindos.preset`'s enable list
+(applied by `lindos-tune apply` at ISO build time, SPEC §8, §11) — this was made explicit rather
+than relying on the ambient systemd default-enable policy for a unit with no matching preset
+entry, and is now covered by a regression test (`packages/lindos-tune/tests/test_data.py`'s
+preset test). `lindos-drivers install --auto` (what a confirmed offer runs) already resolves the
+NVIDIA package via `ubuntu-drivers devices` — see §2.
+
 ## 4. Non-free repositories and metadata
 
 Some of these drivers are proprietary or firmware blobs that live in Ubuntu's `restricted` /

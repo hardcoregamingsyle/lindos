@@ -162,11 +162,17 @@ def test_shipped_preset_matches_renderer_and_spec_lists() -> None:
     entries = apply.parse_preset(shipped)
     disabled = {u for v, u in entries if v == "disable"}
     enabled = {u for v, u in entries if v == "enable"}
-    for unit in ("bluetooth.service", "ModemManager.service", "cups-browsed.service", "NetworkManager-wait-online.service",
+    for unit in ("ModemManager.service", "cups-browsed.service", "NetworkManager-wait-online.service",
                  "apport.service", "whoopsie.service", "kerneloops.service", "brltty.service", "speech-dispatcher.service"):
         assert unit in disabled, unit
     assert {"earlyoom.service", "fstrim.timer", "cups.socket", "avahi-daemon.service"} <= enabled
     assert "avahi-daemon.service" not in disabled  # SPEC §8: keep for printers
+    # Bluetooth is cheap when idle and useful for laptops (headphones/mice) — enabled by
+    # default; only the Lite mode's own services_disable turns it off (see MODE_DEFAULTS).
+    assert "bluetooth.service" in enabled and "bluetooth.service" not in disabled
+    # First-boot oneshots (driver autodetect/offer, Chrome from Google) must actually be
+    # enabled at build time — never left to the ambient systemd default policy.
+    assert {"lindos-driver-firstboot.service", "lindos-browser-firstboot.service"} <= enabled
 
 
 def test_preset_applied_once_and_only_for_present_units(staging: Path, make_ctx, recorder) -> None:

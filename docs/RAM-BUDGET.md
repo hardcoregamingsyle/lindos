@@ -42,27 +42,34 @@ vs. discrete GPU — the driver alone moves the figure by 30–80 MB).
   Celluloid, Drawing are **kept**; mintwelcome is kept as a package (only its autostart is
   hidden — the OOBE replaces it); network and printing basics are never purged (a safety net in
   the hook refuses).
-* **Disabled, never purged** (`DEBLOAT_DISABLE_SERVICES`): `bluetooth.service
-  ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service
-  speech-dispatcher.service NetworkManager-wait-online.service`.
+* **Disabled, never purged** (`DEBLOAT_DISABLE_SERVICES`): `ModemManager.service
+  apport.service whoopsie.service kerneloops.service brltty.service
+  speech-dispatcher.service NetworkManager-wait-online.service`. `bluetooth.service` is
+  deliberately **not** in this list — see the note below.
 * **Autostarts hidden** (`NotShowIn=XFCE;` added, marker `X-Lindos-Hidden=true`, reverted
   exactly by lindos-tune): `mintwelcome`, `mintreport`, `apport`, `whoopsie`,
-  `blueman-applet` (only while `bluetooth.service` is disabled), `orca-autostart`,
-  `onboard-autostart` (`/usr/share/lindos/tune/autostart-hide.list`); `10-debloat.sh` also hides
-  `update-notifier`.
+  `blueman-applet` (only while `bluetooth.service` is disabled — Lite mode only, see below),
+  `orca-autostart`, `onboard-autostart` (`/usr/share/lindos/tune/autostart-hide.list`);
+  `10-debloat.sh` also hides `update-notifier`.
 * **systemd preset** `/usr/lib/systemd/system-preset/90-lindos.preset` (applied by
   `lindos-tune apply` at image build and on the first apply): enable `earlyoom.service
   fstrim.timer zramswap.service cups.socket cups.path avahi-daemon.service
-  lindos-sensors-detect.service`; disable `bluetooth.service ModemManager.service cups.service
+  lindos-sensors-detect.service bluetooth.service lindos-driver-firstboot.service
+  lindos-browser-firstboot.service`; disable `ModemManager.service cups.service
   cups-browsed.service NetworkManager-wait-online.service apport.service whoopsie.service
   kerneloops.service brltty.service speech-dispatcher.service ubuntu-report.service
   motd-news.timer apt-daily.timer apt-daily-upgrade.timer`. cups stays socket/path-activated
   (starts on the first print job); avahi-daemon stays on for printer discovery.
 
-  *Note:* the shipped preset (and the ISO build) disables `bluetooth.service` for **every**
-  mode (SPEC §8: disable, not purge). If you use Bluetooth headsets/mice, re-enable it once:
+  *Note:* **Bluetooth stays enabled by default in every mode** (SPEC §8) — laptops need it for
+  Bluetooth headphones/mice, and `bluetoothd` is cheap when idle and nothing is paired
+  (~5-8 MB). Only **Lite** mode (aimed at ≤ 4 GB RAM / very old hardware) trades it away for the
+  RAM saving, via its own `/etc/lindos/tune.d/lite.conf` (`SERVICES_DISABLE=` includes
+  `bluetooth.service`) and `modes/lite/mode.json`. Switch back with
   `lindos-tune services enable bluetooth.service` (then Lindos Settings → System → Bluetooth &
-  devices opens Blueman); the blueman tray reappears at the next login.
+  devices opens Blueman); the blueman tray reappears at the next login. This reverses the
+  behaviour of an earlier build where the preset disabled Bluetooth unconditionally — see the
+  `bluetooth-off` row in §5, now scoped to Lite only.
 
 ## 4. Base tune (`lindos-tune apply`, all modes)
 
@@ -84,7 +91,7 @@ vs. discrete GPU — the driver alone moves the figure by 30–80 MB).
 |---|---|---|---|---|---|---|---|
 | `xfce-not-cinnamon` | XFCE session instead of Cinnamon | ram | all | 150–250 | Base is Linux Mint XFCE (xfwm4 + xfce4-panel), not Cinnamon/muffin + nemo-desktop. | Cinnamon idles around 800-950 MB, XFCE around 600-750 MB on the same Mint release. Already part of the base image; listed so the comparison to 'Mint' is fair. | n/a (base choice) |
 | `no-picom-lite` | No compositor in Lite (no picom, xfwm compositing off) | ram | lite | 25–35 | lindos-compositor honours COMPOSITOR=none from /etc/lindos/tune.d/lite.conf; xfwm4 use_compositing=false. | picom (glx backend) holds ~20-30 MB plus GPU buffers per window; xfwm4 compositing another few MB. Also removes vsync latency on very old GPUs. | lindos-mode set everyday (or Lindos Settings > Home > Compositor) |
-| `bluetooth-off` | bluetooth.service disabled + blueman-applet hidden | ram | all | 15–25 | systemd preset 90-lindos.preset (disable bluetooth.service, SPEC §8 'disable, not purge') + autostart-hide.list (blueman-applet if-disabled=bluetooth.service). | bluetoothd ~5-8 MB, blueman-applet (python3 + GTK) ~12-18 MB. Disabled in every mode by the preset (the ISO build does the same); the package stays installed, so headsets/mice work again after a single enable command (see 'reversible'). | lindos-tune services enable bluetooth.service |
+| `bluetooth-off` | Lite only: bluetooth.service disabled + blueman-applet hidden | ram | lite | 15–25 | Lite mode's own tune.d/lite.conf + mode.json SERVICES_DISABLE (not the preset — the preset ENABLES bluetooth.service by default, SPEC §8) + autostart-hide.list (blueman-applet if-disabled=bluetooth.service). | bluetoothd ~5-8 MB, blueman-applet (python3 + GTK) ~12-18 MB. Only Lite (≤4 GB RAM / old PCs) trades Bluetooth away; every other mode keeps it on, and the package stays installed so a single command restores it (see 'reversible'). | lindos-tune services enable bluetooth.service |
 | `cups-socket-activated` | CUPS socket/path activated instead of always-on; cups-browsed disabled | ram | all | 8–14 | preset: disable cups.service, enable cups.socket + cups.path; disable cups-browsed.service. | cupsd (~8-10 MB) starts on the first print job through cups.socket, cups-browsed (~4 MB, network printer discovery via avahi) is off; avahi-daemon itself stays on so printers are still found when you open the printer dialog. | lindos-tune services enable cups.service cups-browsed.service |
 | `modemmanager-off` | ModemManager disabled | ram | all | 6–10 | preset: disable ModemManager.service. | Only needed for built-in WWAN/3G/4G modems. Users with a mobile modem re-enable it (Lindos Settings > Network shows the hint). | lindos-tune services enable ModemManager.service |
 | `avahi-kept` | avahi-daemon KEPT enabled (documented, not a saving) | note | all | 0–4 | preset: enable avahi-daemon.service (SPEC §8: keep for printer discovery). | avahi uses ~3-4 MB; disabling it would save that but break network printer and .local discovery, so Lindos keeps it. Listed for transparency. | lindos-tune services disable avahi-daemon.service (not recommended) |
@@ -122,3 +129,53 @@ enable|disable <unit>` toggles them (through the polkit helper when not root); `
 0` turns zram off; `systemctl disable --now earlyoom` disables earlyoom; deleting the drop-ins
 listed in §4 restores the distribution defaults; `lindos-mode set everyday` restores the default
 mode. Nothing here is hidden or irreversible.
+
+## 8. Laptop hardware-enablement packages (`build/config.env` `LAPTOP_ESSENTIALS`)
+
+Added to the ISO by `build/chroot/20-base.sh` (best effort — a package missing on a stripped
+mirror is skipped with a warning, never fails the build) so a laptop works out of the box:
+
+| Package(s) | Why |
+|---|---|
+| `linux-firmware` | broad hardware firmware; usually already pulled in by `linux-image-generic`, listed explicitly for certainty (no-op if already present) |
+| `firmware-sof-signed` | Intel SOF audio DSP firmware, Secure-Boot-signed variant (modern Intel laptop speakers/mics) |
+| `alsa-ucm-conf` | ALSA Use Case Manager configs many laptops' audio routing needs |
+| `pipewire-audio`, `wireplumber`, `pipewire-pulse` | Mint 22 / Ubuntu 24.04's own default audio stack — listed only as a safety net (a no-op if already installed, so it can never fight Mint's own audio configuration; verified against Mint 22's known defaults before adding) |
+| `bluez`, `blueman` | Bluetooth stack + GUI manager (kept enabled by default — see §3) |
+| `intel-microcode`, `amd64-microcode` | CPU microcode updates (security fixes, stability) for both vendors |
+| `ubuntu-drivers-common` | `ubuntu-drivers devices` — used by `lindos-drivers`/`lindos-driver-firstboot` (see below) |
+| `fwupd` | firmware updates (`fwupdmgr`) for UEFI/BIOS, some peripherals |
+| `printer-driver-gutenprint`, `ipp-usb` | a moderate-size universal print driver (covers many non-driverless printers) + driverless USB printing; `cups` itself is already kept (SPEC §8) |
+
+**Estimated added ISO size:** roughly **60-110 MB** compressed (`printer-driver-gutenprint`'s PPA
+data is the largest single piece at ~30-45 MB; the firmware/microcode/audio/Bluetooth packages
+are each a few hundred KB to a few MB). This has not been measured against a real build in this
+session (no Linux build host here) — treat it as an estimate the same way every RAM figure above
+is, until logged in §6 or a build log's `filesystem.size` is compared before/after.
+
+**Deliberately not added** — `printer-driver-all` (pulls gutenprint + hpcups + samsung + several
+hundred MB of PPD/foomatic data) and `hplip` (a multi-hundred-MB Python/HPLIP stack mostly useful
+for HP AIO scan/fax features): both are too large for a default laptop image. `cups` +
+`ipp-usb` + `printer-driver-gutenprint` already cover driverless network/USB printers and most
+older ones without their size cost; a user with a specific unsupported printer installs the
+matching driver from Lindos Settings → System → Printers (`system-config-printer`) as usual.
+
+**Multimedia codecs** follow Linux Mint's own approach, unchanged by the Lindos remaster:
+patent-encumbered codecs (MP3, some video codecs) are **not** baked into the ISO. Linux Mint's own
+installer (Ubiquity, `packages/…` untouched — `10-debloat.sh`'s protected list refuses to purge
+`ubiquity`/`ubiquity-frontend-gtk`/`ubiquity-casper`, and `build-iso.sh` keeps the base ISO's own
+`preseed/*.seed` file byte-for-byte) still shows its "Install multimedia codecs" checkbox, which
+installs Mint's `mint-meta-codecs` metapackage during the copy-files stage exactly as it does on
+stock Mint. This was verified structurally (the installer, its preseed and its protected packages
+are all untouched by any Lindos hook); an actual end-to-end install run to watch the checkbox
+fire was not possible in this Windows-only session — see `CONTINUATION.md` item 6 for the standing
+"needs a real Linux/hardware pass" list this falls under.
+
+**NVIDIA/proprietary GPU drivers** are still never preinstalled on the ISO (SPEC §8, §24): the
+existing `lindos-driver-firstboot.service` (from `lindos-gaming`) now ships enabled by default
+(added to `90-lindos.preset`'s enable list — previously it relied on the ambient systemd preset
+policy applying to a unit with no explicit preset entry, which this pass made explicit and
+tested), so on first boot of the installed system it runs `lindos-drivers autodetect`, and, when
+online and not an OEM image, offers the install (never installs silently — SPEC-VM §24 consent
+gate) through `lindos-drivers install --auto`, which already resolves NVIDIA's package via
+`ubuntu-drivers devices`.

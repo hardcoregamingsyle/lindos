@@ -162,7 +162,7 @@ class Selections:
     """Everything the user chose in the wizard.  Defaults mirror SPEC §4.2."""
 
     mode: str = "everyday"
-    browser: str = "firefox"
+    browser: str = "chrome"
     theme: str = "dark"
     accent: str = DEFAULT_ACCENT
     wallpaper: str = DEFAULT_WALLPAPER

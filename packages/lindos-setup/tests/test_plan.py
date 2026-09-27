@@ -30,7 +30,7 @@ def catalog() -> Catalog:
 def test_defaults_match_spec():
     sel = Selections()
     assert sel.mode == "everyday"
-    assert sel.browser == "firefox"
+    assert sel.browser == "chrome"
     assert sel.theme == "dark" and sel.dark
     assert sel.accent == DEFAULT_ACCENT == "#60CDFF"
     assert sel.wallpaper == DEFAULT_WALLPAPER == "/usr/share/backgrounds/lindos/aurora-dark.svg"
@@ -190,7 +190,7 @@ def test_build_plan_each_mode(mode, catalog: Catalog):
     assert ids[0] == "write-config"
     assert ids[-1] == "set-default-browser"
     assert plan.get("apply-mode").payload["mode"] == mode
-    assert plan.get("write-system-config").payload == {"mode": mode, "browser": "firefox"}
+    assert plan.get("write-system-config").payload == {"mode": mode, "browser": "chrome"}
     assert plan.get("write-config").payload["mode"] == mode
     # kinds valid, ids unique
     assert all(s.kind in ("user", "system") for s in plan.steps)
@@ -212,8 +212,9 @@ def test_build_plan_each_mode(mode, catalog: Catalog):
         assert "install-gaming" not in sys_actions
         assert "install-packages" not in sys_actions
         assert "install-flatpaks" not in sys_actions
-    # firefox: nothing to download
-    assert "install-browser" not in sys_actions
+    # chrome is the default and we're online: downloaded from Google's apt repo
+    assert "install-browser" in sys_actions
+    assert plan.get("install-browser").payload == {"browser": "chrome"}
     # user/system split
     assert {s.action for s in plan.user_steps()} == {
         "write-config", "set-theme", "set-accent", "set-wallpaper", "set-taskbar-alignment",
@@ -232,8 +233,9 @@ def test_apps_grouping_one_call_per_action(catalog: Catalog):
                            "onlyoffice", "creative", "steam"])  # duplicate on purpose
     plan = build_plan(sel, catalog)
     payloads = dict(plan.system_payloads())
-    assert set(payloads) == {"write-system-config", "apply-mode", "install-packages",
+    assert set(payloads) == {"write-system-config", "apply-mode", "install-browser", "install-packages",
                              "install-flatpaks", "install-compat", "install-gaming"}
+    assert payloads["install-browser"] == {"browser": "chrome"}
     assert payloads["install-gaming"]["items"] == ["steam", "sober", "prism", "heroic", "lutris", "bottles"]
     assert payloads["install-compat"]["items"] == ["wine", "umu"]
     assert payloads["install-packages"]["packages"] == ["gimp", "krita", "kdenlive"]
@@ -241,12 +243,16 @@ def test_apps_grouping_one_call_per_action(catalog: Catalog):
     assert plan.selections.apps.count("steam") == 1  # de-duplicated
     # system_payloads order follows SPEC grouping order
     order = [a for a, _p in plan.system_payloads()]
-    assert order == ["write-system-config", "apply-mode", "install-packages", "install-flatpaks",
-                     "install-compat", "install-gaming"]
+    assert order == ["write-system-config", "apply-mode", "install-browser", "install-packages",
+                     "install-flatpaks", "install-compat", "install-gaming"]
 
 
 def test_no_apps_no_install_steps():
+    # default browser (chrome) is downloaded from Google's apt repo when online (the default)
     plan = build_plan(Selections(apps=[]))
+    assert [a for a, _p in plan.system_payloads()] == ["write-system-config", "apply-mode", "install-browser"]
+    # firefox: nothing to download, so no install-browser step
+    plan = build_plan(Selections(apps=[], browser="firefox"))
     assert [a for a, _p in plan.system_payloads()] == ["write-system-config", "apply-mode"]
 
 

@@ -19,7 +19,8 @@ mintreport
 # Ubuntu-style crash/telemetry helpers (no telemetry in Lindos)
 apport
 whoopsie
-# Bluetooth tray only while the bluetooth service is disabled (everyday/lite presets)
+# Bluetooth tray only while the bluetooth service is disabled (Lite mode only — every other
+# mode keeps bluetooth.service enabled by default, SPEC §8)
 blueman-applet if-disabled=bluetooth.service
 # Accessibility screen reader autostart (start it from Settings → Accessibility if needed)
 orca-autostart

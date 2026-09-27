@@ -177,7 +177,7 @@ def load_user_config() -> Any:
 # Mirror of SPEC §4.2 defaults (used only if lindos-core config cannot be loaded).
 _CONFIG_DEFAULTS = {
     "mode": "everyday",
-    "browser": "firefox",
+    "browser": "chrome",
     "theme": "dark",
     "accent": "#60CDFF",
     "setup_done": False,

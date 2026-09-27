@@ -6,9 +6,12 @@
 #    * purge the (tiny) DEBLOAT_PURGE list from build/config.env, one package
 #      at a time with '|| true' semantics — an absent package is not an error
 #    * disable (never purge) background services from DEBLOAT_DISABLE_SERVICES
-#      (bluetooth, ModemManager, apport, whoopsie, kerneloops, brltty,
-#      speech-dispatcher, NetworkManager-wait-online).  cups stays enabled
-#      (socket-activated) and avahi-daemon stays enabled for printer discovery.
+#      (ModemManager, apport, whoopsie, kerneloops, brltty, speech-dispatcher,
+#      NetworkManager-wait-online).  cups stays enabled (socket-activated) and
+#      avahi-daemon stays enabled for printer discovery.  bluetooth.service is
+#      deliberately NOT disabled here — it is cheap when idle and laptops need
+#      it (Bluetooth headphones/mice); only Lite mode's own tune.d/lite.conf
+#      turns it off (lindos-tune apply --mode lite), see docs/RAM-BUDGET.md.
 #    * mintwelcome is KEPT (its autostart is hidden by lindos-tune's base
 #      tune / lindos-desktop, so it can still be opened from the menu).
 #    * never touches network/printing basics.
@@ -21,7 +24,7 @@ set -Eeuo pipefail
 hook_begin "debloat"
 
 : "${DEBLOAT_PURGE:=hexchat rhythmbox hypnotix onboard gnome-calendar}"
-: "${DEBLOAT_DISABLE_SERVICES:=bluetooth.service ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service speech-dispatcher.service NetworkManager-wait-online.service}"
+: "${DEBLOAT_DISABLE_SERVICES:=ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service speech-dispatcher.service NetworkManager-wait-online.service}"
 
 # Safety net: refuse to purge anything from this list even if config says so.
 PROTECTED="network-manager network-manager-gnome cups cups-browsed system-config-printer avahi-daemon \

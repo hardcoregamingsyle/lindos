@@ -1,19 +1,29 @@
 #!/bin/bash
 # install-browser.sh — install Microsoft Edge / Google Chrome / Mozilla Firefox (SPEC §4.4, §13).
 #
-# Called as root by the lindos helper action 'install-browser' (pkexec) and by build hooks.
+# Called as root by the lindos helper action 'install-browser' (pkexec), by build hooks, and by
+# lindos-browser-firstboot.service (chrome, on the installed system's first boot).
 # Edge and Chrome are NOT on the ISO (their licences forbid redistribution): this script adds
 # the vendor's official apt repository (keyring in /etc/apt/keyrings) and installs the package
 # from there.  Firefox is Mint's .deb (no snap) — 'apt-get install firefox'.
 #
-# Usage: install-browser.sh <edge|chrome|firefox> [--dry-run] [--no-update]
-# Exit codes: 0 installed (or already installed) · 1 failure · 2 usage / not root · 3 offline
+# Usage: install-browser.sh <edge|chrome> [--repo-only] [--dry-run] [--no-update]
+#        install-browser.sh firefox [--dry-run] [--no-update]
+#   --repo-only   only add the vendor's apt repository + signing key (no 'apt-get install').
+#                 Used by build/chroot/00-repos.sh to pre-stage Chrome's repo/key on the ISO
+#                 (same pattern as the WineHQ/Steam repos there) WITHOUT ever installing the
+#                 google-chrome-stable package at build time — that would be redistribution.
+#                 Reusing this script (not duplicating the repo/key logic in 00-repos.sh) keeps
+#                 there being exactly one place that knows Chrome's key URL / repo line.
+# Exit codes: 0 installed (or already installed / repo staged) · 1 failure · 2 usage / not root
+#             · 3 offline
 set -Eeuo pipefail
 
 PROG="install-browser"
 LOG_FILE="${LINDOS_ROOT:-}/var/log/lindos/install-browser.log"
 DRY_RUN=0
 NO_UPDATE=0
+REPO_ONLY=0
 BROWSER=""
 
 # --- vendor metadata (must match lindos/browsers.py BROWSERS) ---------------------------------
@@ -48,7 +58,7 @@ die() {
 }
 
 usage() {
-    printf 'Usage: %s <edge|chrome|firefox> [--dry-run] [--no-update]\n' "${PROG}" >&2
+    printf 'Usage: %s <edge|chrome|firefox> [--repo-only] [--dry-run] [--no-update]\n' "${PROG}" >&2
     exit 2
 }
 
@@ -149,6 +159,19 @@ apt_install() {
 install_vendor() {
     # install_vendor <package> <key_url> <keyring> <list> <repo-line> <name>
     local package="$1" key_url="$2" keyring="$3" list="$4" repo="$5" name="$6"
+    if [[ "${REPO_ONLY}" -eq 1 ]]; then
+        # Pre-stage the repo + signing key only — never 'apt-get install' the package.  Used at
+        # ISO build time (build/chroot/00-repos.sh) so Chrome's repo/key are on the image exactly
+        # like the WineHQ/Steam repos, without ever installing google-chrome-stable there.
+        if [[ "${DRY_RUN}" -eq 0 ]]; then
+            online || die "offline: cannot stage ${name}'s apt repository/key without internet" 3
+        fi
+        fetch_key "${key_url}" "${LINDOS_ROOT:-}${keyring}"
+        write_list "${LINDOS_ROOT:-}${list}" "${repo}"
+        apt_update_list "${list}"
+        log "${name} apt repository staged (--repo-only: ${package} not installed)"
+        return 0
+    fi
     # In --dry-run, always print the full plan (keyring + .list + apt) so it is
     # visible regardless of what the *host* already has installed; only a real
     # run short-circuits when the package is present.
@@ -185,6 +208,7 @@ main() {
     for arg in "$@"; do
         case "${arg}" in
             edge|chrome|firefox) BROWSER="${arg}" ;;
+            --repo-only) REPO_ONLY=1 ;;
             --dry-run) DRY_RUN=1 ;;
             --no-update) NO_UPDATE=1 ;;
             -h|--help) usage ;;
@@ -192,11 +216,15 @@ main() {
         esac
     done
     [[ -n "${BROWSER}" ]] || usage
+    if [[ "${REPO_ONLY}" -eq 1 && "${BROWSER}" == "firefox" ]]; then
+        printf '%s: --repo-only is not meaningful for firefox (no separate vendor repo)\n' "${PROG}" >&2
+        usage
+    fi
     if [[ "${DRY_RUN}" -eq 0 && "$(id -u)" -ne 0 ]]; then
         die "must run as root (the lindos helper calls this through pkexec)" 2
     fi
     export DEBIAN_FRONTEND=noninteractive
-    log "install ${BROWSER}${DRY_RUN:+ (dry-run=${DRY_RUN})}"
+    log "install ${BROWSER}${DRY_RUN:+ (dry-run=${DRY_RUN})}${REPO_ONLY:+ (repo-only=${REPO_ONLY})}"
     case "${BROWSER}" in
         edge)    install_vendor "${EDGE_PACKAGE}" "${EDGE_KEY_URL}" "${EDGE_KEYRING}" "${EDGE_LIST}" "${EDGE_REPO}" "Microsoft Edge" ;;
         chrome)  install_vendor "${CHROME_PACKAGE}" "${CHROME_KEY_URL}" "${CHROME_KEYRING}" "${CHROME_LIST}" "${CHROME_REPO}" "Google Chrome" ;;
