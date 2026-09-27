@@ -27,8 +27,11 @@ system, not of this test harness.
 
 Usage:
     python3 build/qa/boot_test.py --iso out/lindos-*.iso --out-dir out/qemu-boot-test
-        [--timeout 600] [--grace 90] [--ram 4096] [--cpus 2]
-        [--require-kernel-suffix -lindos]
+        [--timeout 600] [--desktop-timeout 180] [--grace 90] [--ram 4096] [--cpus 2]
+        [--require-kernel-suffix=-lindos]
+
+    Note the '=' form for --require-kernel-suffix: since the value itself starts with '-',
+    argparse would otherwise mistake it for another option and refuse to consume it.
 
 Exit codes: 0 pass · 1 boot/smoke-test failure · 2 usage/environment error.
 """

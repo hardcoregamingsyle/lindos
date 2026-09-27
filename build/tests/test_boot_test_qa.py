@@ -316,6 +316,19 @@ def test_main_no_iso_match_is_usage_error(tmp_path, capsys):
     assert "no ISO matched" in capsys.readouterr().err
 
 
+def test_main_accepts_require_kernel_suffix_with_leading_dash_value(tmp_path, capsys):
+    """Regression: argparse mistakes a bare '-lindos' (no '=') for another option and raises its
+    OWN usage error ("expected one argument") -- a SystemExit straight out of parse_args(),
+    before this function's own "no ISO matched" check ever runs. Seen for real in CI the first
+    time build_kernel=true + boot_test=true ran together (this flag had never been exercised
+    before that); ci.yml now passes --require-kernel-suffix=-lindos. Asserting we reach the
+    normal "no ISO matched" return (not a parser-raised SystemExit) proves parsing succeeded."""
+    rc = boot_test.main(["--iso", str(tmp_path / "no-such-*.iso"), "--out-dir", str(tmp_path / "out"),
+                        "--require-kernel-suffix=-lindos"])
+    assert rc == 2
+    assert "no ISO matched" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------- #
 # ci-boot-smoke-test.sh's check() / check_compat_doctor() -- the guest-side
 # helpers this same file's serial-log parser above consumes. Sourced from the

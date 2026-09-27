@@ -215,7 +215,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dpkg-dev build-essential \
-            libncurses-dev rsync cpio kmod xz-utils dwarves
+            libncurses-dev rsync cpio kmod xz-utils dwarves debhelper
 
       - name: Resolve kernel version from the manifest
         id: ver
@@ -392,7 +392,11 @@ jobs:
         run: |
           extra=()
           if [ "${{ inputs.build_kernel }}" = "true" ]; then
-            extra+=(--require-kernel-suffix -lindos)
+            # Must be the --opt=value form: argparse treats a following token that starts with
+            # '-' as looking like another option, not this one's value, and refuses to consume
+            # it ("expected one argument") -- seen for real in CI the first time build_kernel=true
+            # and boot_test=true ever ran together (this flag was never exercised before that).
+            extra+=(--require-kernel-suffix=-lindos)
           fi
           python3 build/qa/boot_test.py --iso 'out/lindos-*.iso' --out-dir out/qemu-boot-test \
             --timeout 600 --grace 90 "${extra[@]}"
