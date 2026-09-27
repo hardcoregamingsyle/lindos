@@ -165,6 +165,41 @@ def test_ci_kernel_job_installs_dwarves() -> None:
     )
 
 
+# --- libdw-dev/dwarf.h (regression, CI run 36297620250) ------------------------------------
+# Kernel 6.14's `scripts/gendwarfksyms` (a DWARF-based symbol-versioning tool, part of the same
+# CONFIG_DEBUG_INFO_BTF story as pahole above) `#include`s <dwarf.h>, provided by `libdw-dev` --
+# a *different* package from `dwarves` (which only provides the `pahole` binary). Without it the
+# kernel job got past dpkg-checkbuilddeps and into the actual compile before failing:
+# "scripts/gendwarfksyms/gendwarfksyms.h:6:10: fatal error: dwarf.h: No such file or directory".
+def test_check_deps_requires_libdw_dev() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"check_deps\(\) \{(.*?)\n\}\n", text, re.DOTALL)
+    assert match, "could not locate check_deps() body in build-kernel.sh"
+    body = match.group(1)
+    loop = re.search(r"for pkg in ([^;]+); do", body)
+    assert loop, "could not locate the dpkg-query'd package loop inside check_deps()"
+    checked_pkgs = loop.group(1).split()
+    assert "libdw-dev" in checked_pkgs, (
+        "check_deps() must verify `libdw-dev` (provides dwarf.h) is installed, or "
+        "scripts/gendwarfksyms fails deep inside the actual kernel compile with no earlier, "
+        "clearer build-time signal (CI run 36297620250)"
+    )
+
+
+def test_ci_kernel_job_installs_libdw_dev() -> None:
+    ci_yml = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    assert ci_yml.is_file(), ci_yml
+    text = ci_yml.read_text(encoding="utf-8")
+    match = re.search(r"\n  kernel:\n.*?(?=\n  [A-Za-z_-]+:\n)", text, re.DOTALL)
+    assert match, "could not locate the 'kernel' job in .github/workflows/ci.yml"
+    kernel_job = match.group(0)
+    assert "libdw-dev" in kernel_job, (
+        "the 'kernel' CI job must install `libdw-dev` (provides dwarf.h, needed by "
+        "scripts/gendwarfksyms) alongside the other kernel build dependencies "
+        "(CI run 36297620250)"
+    )
+
+
 # --- fetch_kernel() completeness marker (regression, correct-platform:F5) -------------------
 # fetch_kernel() used to reuse ANY existing out/kernel-src/linux-<ver> directory purely
 # because it existed, with no completeness check -- e.g. a tree left behind by an

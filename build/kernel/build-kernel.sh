@@ -150,16 +150,21 @@ check_deps() {
     done
     command -v dpkg-buildpackage >/dev/null 2>&1 || command -v dpkg-deb >/dev/null 2>&1 || missing+=("dpkg-dev")
     if command -v dpkg-query >/dev/null 2>&1; then
-        for pkg in libssl-dev libelf-dev; do
+        # libdw-dev provides dwarf.h, needed by scripts/gendwarfksyms (this kernel series' DWARF-
+        # based symbol-versioning tool, itself part of the same CONFIG_DEBUG_INFO_BTF/pahole
+        # story above) -- distinct from `dwarves`, which only provides `pahole` itself. Missing
+        # it fails the build deep inside the compile (`gendwarfksyms.h: fatal error: dwarf.h: No
+        # such file or directory`), not at this upfront check, unless it's listed here too.
+        for pkg in libssl-dev libelf-dev libdw-dev; do
             dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed" \
                 || missing+=("${pkg}")
         done
     else
-        warn "dpkg-query unavailable — cannot verify libssl-dev/libelf-dev; assuming present"
+        warn "dpkg-query unavailable — cannot verify libssl-dev/libelf-dev/libdw-dev; assuming present"
     fi
     if [ "${#missing[@]}" -gt 0 ]; then
         die "missing build dependencies: ${missing[*]}
-Install them with:  sudo apt-get install bison flex libssl-dev libelf-dev bc dpkg-dev build-essential dwarves" 2
+Install them with:  sudo apt-get install bison flex libssl-dev libelf-dev libdw-dev bc dpkg-dev build-essential dwarves debhelper" 2
     fi
 }
 check_deps

@@ -45,6 +45,8 @@ LINDOS_INFO failed_units=1
 LINDOS_FAILED_UNIT some.service loaded failed failed Some Service
 LINDOS_INFO is_system_running=degraded
 LINDOS_DESKTOP_WATCH_STARTED
+LINDOS_DESKTOP_DIAG is-system-running: running
+LINDOS_DESKTOP_DIAG lightdm: Active: active (running)
 LINDOS_DESKTOP_READY
 LINDOS_SMOKE_DONE rc=1
 """
@@ -69,6 +71,10 @@ def test_parse_report_full(tmp_path):
     ]
     assert report["desktop_ready_line"] == "LINDOS_DESKTOP_READY"
     assert report["desktop_watch_started"] is True
+    assert report["desktop_diag"] == [
+        "is-system-running: running",
+        "lightdm: Active: active (running)",
+    ]
 
 
 def test_parse_report_desktop_ready_timeout_sentinel(tmp_path):
@@ -89,6 +95,7 @@ def test_parse_report_no_desktop_ready_line(tmp_path):
     assert report["desktop_watch_started"] is False
     assert report["doctor_fails"] == []
     assert report["fail_logs"] == []
+    assert report["desktop_diag"] == []
 
 
 def test_parse_report_all_ok(tmp_path):
@@ -214,6 +221,13 @@ def test_build_qemu_argv_shape(tmp_path):
     # quoting for systemd.run= is not something to rely on; see boot_test.py docstring)
     run_token = [t for t in append.split() if t.startswith("systemd.run=")][0]
     assert " " not in run_token
+    # Regression: systemd's kernel-command-line generator defaults systemd.run='s unit to
+    # SuccessAction=exit/FailureAction=exit (systemd >= 240), i.e. it powers the whole VM off the
+    # instant the smoke-test command finishes -- which was the real reason the live desktop (and
+    # the detached desktop-ready watcher) never got a chance to be seen; see boot_test.py's
+    # build_qemu_argv() comment. Both must be explicitly disabled so the guest keeps running.
+    assert "systemd.run_success_action=none" in append
+    assert "systemd.run_failure_action=none" in append
 
 
 def test_build_qemu_argv_monitor_and_serial_paths(tmp_path):
@@ -596,7 +610,12 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
     fake_bin = tmp_path / "fakebin"
     fake_bin.mkdir()
     (fake_bin / "systemctl").write_text(
-        '#!/bin/bash\nif [ "$1" = "is-system-running" ]; then echo running; exit 0; fi\n',
+        '#!/bin/bash\n'
+        'case "$1" in\n'
+        '  is-system-running) echo running; exit 0 ;;\n'
+        '  status) echo "Active: active (running)"; exit 0 ;;\n'
+        '  *) exit 0 ;;\n'
+        'esac\n',
         encoding="utf-8",
     )
     (fake_bin / "systemctl").chmod(0o755)
@@ -605,6 +624,14 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
         '#!/bin/bash\n[ "$2" = "lightdm" ] && exit 0\nexit 1\n', encoding="utf-8",
     )
     (fake_bin / "pgrep").chmod(0o755)
+    (fake_bin / "loginctl").write_text(
+        '#!/bin/bash\necho "1 1000 testuser seat0"\n', encoding="utf-8",
+    )
+    (fake_bin / "loginctl").chmod(0o755)
+    (fake_bin / "fgconsole").write_text('#!/bin/bash\necho 1\n', encoding="utf-8")
+    (fake_bin / "fgconsole").chmod(0o755)
+    (fake_bin / "lsmod").write_text('#!/bin/bash\necho "bochs_drm 12345 0"\n', encoding="utf-8")
+    (fake_bin / "lsmod").chmod(0o755)
     watch_file = tmp_path / "watch.sh"
     watch_file.write_text(watcher, encoding="utf-8")
     env = dict(os.environ)
@@ -615,6 +642,14 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
     assert "LINDOS_DESKTOP_WATCH_STARTED" in res.stdout
     assert "LINDOS_DESKTOP_READY" in res.stdout
     assert "LINDOS_DESKTOP_READY_TIMEOUT" not in res.stdout
+    # diag() diagnostics (LINDOS_DESKTOP_DIAG task 2): printed once, right before the sentinel.
+    assert "LINDOS_DESKTOP_DIAG is-system-running: running" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG lightdm: Active: active (running)" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG session: 1 1000 testuser seat0" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG fgconsole: 1" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG lsmod: bochs_drm 12345 0" in res.stdout
+    assert (res.stdout.index("LINDOS_DESKTOP_DIAG is-system-running")
+            < res.stdout.index("LINDOS_DESKTOP_READY"))
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available on this host")
@@ -628,12 +663,23 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     fake_bin = tmp_path / "fakebin"
     fake_bin.mkdir()
     (fake_bin / "systemctl").write_text(
-        '#!/bin/bash\nif [ "$1" = "is-system-running" ]; then echo starting; exit 1; fi\n',
+        '#!/bin/bash\n'
+        'case "$1" in\n'
+        '  is-system-running) echo starting; exit 1 ;;\n'
+        '  status) echo "Active: activating (start)"; exit 3 ;;\n'
+        '  *) exit 1 ;;\n'
+        'esac\n',
         encoding="utf-8",
     )
     (fake_bin / "systemctl").chmod(0o755)
     (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
     (fake_bin / "pgrep").chmod(0o755)
+    (fake_bin / "loginctl").write_text('#!/bin/bash\nexit 0\n', encoding="utf-8")
+    (fake_bin / "loginctl").chmod(0o755)
+    (fake_bin / "fgconsole").write_text('#!/bin/bash\necho 1\n', encoding="utf-8")
+    (fake_bin / "fgconsole").chmod(0o755)
+    (fake_bin / "lsmod").write_text('#!/bin/bash\necho "virtio_gpu 45056 1"\n', encoding="utf-8")
+    (fake_bin / "lsmod").chmod(0o755)
     watch_file = tmp_path / "watch.sh"
     watch_file.write_text(watcher, encoding="utf-8")
     env = dict(os.environ)
@@ -643,3 +689,9 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     assert res.returncode == 0, res.stderr
     assert "LINDOS_DESKTOP_WATCH_STARTED" in res.stdout
     assert "LINDOS_DESKTOP_READY_TIMEOUT" in res.stdout
+    # diag() must still run on the timeout path -- this is the ONLY case that ever mattered in
+    # every real CI run so far (the watcher has never once reached LINDOS_DESKTOP_READY).
+    assert "LINDOS_DESKTOP_DIAG is-system-running: starting" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG lsmod: virtio_gpu 45056 1" in res.stdout
+    assert (res.stdout.index("LINDOS_DESKTOP_DIAG is-system-running")
+            < res.stdout.index("LINDOS_DESKTOP_READY_TIMEOUT"))

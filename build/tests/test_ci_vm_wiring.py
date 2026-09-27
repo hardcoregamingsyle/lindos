@@ -68,7 +68,11 @@ def test_kernel_job_present_and_triggered() -> None:
 
 def test_kernel_job_installs_toolchain() -> None:
     t = _text(CI_YML)
-    for pkg in ("bc", "bison", "flex", "libssl-dev", "libelf-dev", "dpkg-dev"):
+    # libdw-dev (provides dwarf.h) is required by scripts/gendwarfksyms on this kernel series --
+    # missing it fails the build deep inside the compile, not at any earlier dependency check
+    # (regression: run 36297620250, "gendwarfksyms.h: fatal error: dwarf.h: No such file or
+    # directory"). Distinct from `dwarves` (provides `pahole`, checked separately elsewhere).
+    for pkg in ("bc", "bison", "flex", "libssl-dev", "libelf-dev", "libdw-dev", "dpkg-dev"):
         assert pkg in t, f"kernel job does not install {pkg}"
 
 

@@ -152,12 +152,46 @@ exec >/dev/console 2>&1
 # the exec redirect, /dev/console access) vs. got stuck somewhere inside the loop itself
 # (systemctl/pgrep hanging) or its final echo not propagating.
 echo "LINDOS_DESKTOP_WATCH_STARTED"
+
+diag() {
+    # Compact, self-contained diagnostics printed right before either sentinel below, so a
+    # black-screen/never-ready run is diagnosable straight from serial.log instead of another
+    # blind CI round. Every command is best-effort: this runs very early relative to a normal
+    # interactive session, so a missing tool or an empty result is itself useful information,
+    # never a reason to abort the rest (no set -e in this script; each line stands on its own).
+    echo "LINDOS_DESKTOP_DIAG is-system-running: $(systemctl is-system-running 2>&1)"
+    systemctl list-jobs --no-legend 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG list-jobs: ${line}"
+    done
+    systemctl --failed --no-legend --plain 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG failed: ${line}"
+    done
+    systemctl status lightdm --no-pager -n 20 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG lightdm: ${line}"
+    done
+    grep -E '\(EE\)|\(WW\)' /var/log/Xorg.0.log 2>/dev/null | tail -n 20 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG xorg: ${line}"
+    done
+    loginctl list-sessions --no-legend 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG session: ${line}"
+    done
+    echo "LINDOS_DESKTOP_DIAG fgconsole: $(fgconsole 2>&1)"
+    for f in /sys/class/drm/*/status; do
+        [ -e "${f}" ] || continue
+        echo "LINDOS_DESKTOP_DIAG drm: ${f}=$(cat "${f}" 2>&1)"
+    done
+    lsmod 2>&1 | grep -E 'bochs|drm|virtio' | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG lsmod: ${line}"
+    done
+}
+
 i=0
 while [ "${i}" -lt 150 ]; do
     state="$(systemctl is-system-running 2>/dev/null || true)"
     if [ "${state}" = "running" ] || [ "${state}" = "degraded" ]; then
         if pgrep -x Xorg >/dev/null 2>&1 || pgrep -x lightdm >/dev/null 2>&1 \
            || pgrep -x Xwayland >/dev/null 2>&1; then
+            diag
             echo "LINDOS_DESKTOP_READY"
             exit 0
         fi
@@ -165,6 +199,7 @@ while [ "${i}" -lt 150 ]; do
     sleep 1
     i=$((i + 1))
 done
+diag
 echo "LINDOS_DESKTOP_READY_TIMEOUT"
 WATCH_EOF
     chmod +x "${watch_script}"

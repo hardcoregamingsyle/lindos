@@ -62,6 +62,9 @@ FAIL_LOG_RE = re.compile(r"^LINDOS_FAIL_LOG (.+)$")
 DESKTOP_READY_RE = re.compile(r"^LINDOS_DESKTOP_READY$")
 DESKTOP_READY_TIMEOUT_RE = re.compile(r"^LINDOS_DESKTOP_READY_TIMEOUT$")
 DESKTOP_WATCH_STARTED_RE = re.compile(r"^LINDOS_DESKTOP_WATCH_STARTED$")
+# Printed by the same watcher, right before either sentinel above, so a black/never-ready
+# screenshot is diagnosable from serial.log alone (see start_desktop_watch()'s diag() helper).
+DESKTOP_DIAG_RE = re.compile(r"^LINDOS_DESKTOP_DIAG ?(.*)$")
 MONITOR_PROMPT = b"(qemu) "
 
 
@@ -146,7 +149,21 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
                     ram_mb: int, cpus: int) -> List[str]:
     append = (
         "boot=casper username=mint hostname=mint quiet splash "
-        f"console=ttyS0,115200n8 systemd.run={SMOKE_SCRIPT_PATH} --"
+        f"console=ttyS0,115200n8 systemd.run={SMOKE_SCRIPT_PATH} "
+        # systemd's kernel-command-line generator defaults systemd.run='s unit to
+        # SuccessAction=exit / FailureAction=exit (systemd >= 240) -- i.e. it shuts the whole
+        # machine down the instant the smoke-test command finishes, exactly like a `--` end-of-
+        # test action. That is the real cause the live desktop was never seen: the smoke-test
+        # script (a handful of quick CLI checks) completes in well under a second, so the guest
+        # started powering off before LightDM/XFCE (and the detached desktop-ready watcher's own
+        # 150s loop) ever got anywhere near finishing -- confirmed in serial.log, where "Stopping
+        # lindos-desktop-watch.service" appears as part of a full shutdown.target teardown
+        # (triggered by "casper.service - Shuts down the 'live' preinstalled system cleanly")
+        # moments after LINDOS_SMOKE_DONE, with is_system_running still =initializing. This is a
+        # test-harness artefact of how this script invokes systemd.run=, not a Lindos bug -- a
+        # real boot never passes systemd.run= at all. Explicitly disabling both actions keeps the
+        # VM running so the normal boot (and this script's own desktop-ready wait) can proceed.
+        "systemd.run_success_action=none systemd.run_failure_action=none --"
     )
     return [
         "qemu-system-x86_64",
@@ -211,6 +228,7 @@ def parse_report(serial_log: Path) -> dict:
     smoke_rc: Optional[int] = None
     desktop_ready_line: Optional[str] = None
     desktop_watch_started = False
+    desktop_diag: List[str] = []
     for raw in text.splitlines():
         line = raw.strip()
         m = CHECK_RE.match(line)
@@ -242,10 +260,14 @@ def parse_report(serial_log: Path) -> dict:
             continue
         if DESKTOP_WATCH_STARTED_RE.match(line):
             desktop_watch_started = True
+            continue
+        m = DESKTOP_DIAG_RE.match(line)
+        if m:
+            desktop_diag.append(m.group(1))
     return {"checks": checks, "info": info, "failed_units": failed_units, "smoke_rc": smoke_rc,
             "booted": "LINDOS_SMOKE_START" in text, "doctor_fails": doctor_fails,
             "fail_logs": fail_logs, "desktop_ready_line": desktop_ready_line,
-            "desktop_watch_started": desktop_watch_started}
+            "desktop_watch_started": desktop_watch_started, "desktop_diag": desktop_diag}
 
 
 def take_screenshot(monitor_sock: Path, out_png: Path) -> bool:
@@ -373,6 +395,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"    {line}")
     print(f"  desktop watch started: {report['desktop_watch_started']}")
     print(f"  desktop ready: {report['desktop_ready_line'] or 'never seen (timeout)'}")
+    if report["desktop_diag"]:
+        print("  desktop-watch diagnostics (LINDOS_DESKTOP_DIAG):")
+        for line in report["desktop_diag"]:
+            print(f"    {line}")
     print(f"  screenshot: {'captured' if took_shot else 'NOT captured'}")
 
     ok = True
