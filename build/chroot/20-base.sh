@@ -16,6 +16,9 @@
 #  a second best-effort pass installs "nice to have" packages one by one so a
 #  missing package on a mirror can never abort the build.  EXTRA_PACKAGES
 #  from build/config.env is appended to the required list.
+#  A third best-effort pass installs LAPTOP_ESSENTIALS (build/config.env): firmware, audio
+#  UCM configs, Bluetooth, driver metadata, fwupd and a print driver — see the block below and
+#  docs/RAM-BUDGET.md for the estimated added size and the printer-driver-all/hplip trade-off.
 # ============================================================================
 set -Eeuo pipefail
 # shellcheck source=build/chroot/lib.sh
@@ -132,15 +135,31 @@ NICE=(
     baobab
     gnome-disk-utility
     pavucontrol
-    blueman
     gufw
     timeshift
     mugshot
-    ubuntu-drivers-common
     plymouth-themes
     plymouth-label
 )
 apt_try_install "${NICE[@]}"
+
+# ---------------------------------------------------------------------------
+# Laptop hardware-enablement packages (SPEC §8; build/config.env LAPTOP_ESSENTIALS) — best
+# effort, same as NICE above.  Covers firmware (linux-firmware, Intel SOF audio DSP + its
+# Secure-Boot-signed variant, Intel/AMD microcode), the audio stack's UCM configs, Bluetooth
+# (bluez + the blueman GUI — moved here from NICE, single source of truth), driver metadata
+# (ubuntu-drivers-common, also moved here — used by lindos-drivers/lindos-driver-firstboot),
+# firmware updates (fwupd) and a moderate-size universal print driver + driverless-USB-printing
+# helper.  PipeWire packages are listed only as a safety net: Mint 22 / Ubuntu 24.04 already
+# default to PipeWire, and apt_try_install is a no-op for anything already installed, so this can
+# never fight Mint's own audio configuration.  See docs/RAM-BUDGET.md for why printer-driver-all
+# and hplip are deliberately NOT here (size).
+: "${LAPTOP_ESSENTIALS:=linux-firmware firmware-sof-signed alsa-ucm-conf pipewire-audio wireplumber pipewire-pulse bluez blueman intel-microcode amd64-microcode ubuntu-drivers-common fwupd printer-driver-gutenprint ipp-usb}"
+LAPTOP_LIST=()
+read -r -a LAPTOP_LIST <<< "${LAPTOP_ESSENTIALS}"
+apt_try_install "${LAPTOP_LIST[@]}"
+# mesa-vulkan-drivers (64-bit) is in NICE above; the i386 half + libgl1-mesa-dri:i386 is already
+# installed unconditionally by 70-gaming.sh (SPEC §8) whenever i386 is enabled — not repeated here.
 
 # ---------------------------------------------------------------------------
 # Flathub remote (in case flatpak was only installed just now)
@@ -159,7 +178,8 @@ fi
 # ---------------------------------------------------------------------------
 # Small sanity summary
 # ---------------------------------------------------------------------------
-for p in xfce4-docklike-plugin xfce4-panel-profiles picom systemd-zram-generator earlyoom gamemode mangohud flatpak; do
+for p in xfce4-docklike-plugin xfce4-panel-profiles picom systemd-zram-generator earlyoom gamemode mangohud flatpak \
+         bluez blueman fwupd ubuntu-drivers-common linux-firmware; do
     if pkg_installed "${p}"; then
         log "ok: ${p} $(dpkg-query -W -f='${Version}' "${p}" 2>/dev/null)"
     else

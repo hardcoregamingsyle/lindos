@@ -37,7 +37,7 @@ DEFAULT_TIMEOUT = 20
 # SPEC §4.2 defaults (used only when lindos-core is unavailable)
 CONFIG_DEFAULTS: dict[str, Any] = {
     "mode": "everyday",
-    "browser": "firefox",
+    "browser": "chrome",
     "theme": "dark",
     "accent": "#60CDFF",
     "wallpaper": "/usr/share/backgrounds/lindos/aurora-dark.svg",

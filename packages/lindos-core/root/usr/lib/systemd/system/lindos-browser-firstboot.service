@@ -1,0 +1,30 @@
+[Unit]
+Description=Lindos: install Google Chrome from Google's official apt repository (installed system only)
+Documentation=man:lindos-browser(1)
+# Google's licence forbids redistributing Chrome inside the ISO (SPEC §0.1), so it is never on
+# the live/build image: this oneshot downloads it from Google on the INSTALLED system's first
+# boot, via the same install-browser.sh helper the OOBE and 'lindos-browser install chrome' use.
+# It must never run in the live/ISO session: ConditionKernelCommandLine refuses to start while
+# 'boot=casper' is on the kernel command line (casper is Mint/Ubuntu's live-session bootstrap —
+# present only when booted straight off the ISO, never on an installed system).
+# Guarded by a marker file so it only ever runs to completion once; when offline (or the vendor
+# repository is briefly unreachable) it exits WITHOUT writing the marker, so systemd retries it
+# again on the next boot once network-online.target is reached. Firefox stays the offline
+# fallback (already on the ISO); the user can still pick Edge/Firefox any time in Lindos Settings.
+ConditionKernelCommandLine=!boot=casper
+ConditionPathExists=!/var/lib/lindos/browser-firstboot.done
+ConditionVirtualization=!container
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/lindos/browser-firstboot.sh
+# Best effort: never block or delay reaching the desktop.
+TimeoutStartSec=600
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

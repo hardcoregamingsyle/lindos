@@ -28,7 +28,7 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
 | Windows VM (optional) | `lindos-vm`: an **honest** KVM/QEMU + libvirt Windows VM (q35, OVMF/UEFI, virtio) with **optional GPU passthrough** — for the Windows software Wine/Proton cannot run. It ships **no** spoofing/hypervisor-hiding and does **not** defeat VM-blocking anti-cheat; you supply a licensed Windows. See [docs/VM.md](docs/VM.md). |
 | Windows apps over RDP (optional) | `lindos-winapps`: run individual Windows programs (Photoshop, Office) as **seamless windows** on the Lindos desktop, streamed over RDP from a Windows backend you supply. Lindos never enters your credentials or bypasses licensing. See [docs/WINAPPS.md](docs/WINAPPS.md). |
 | RAM / performance | `lindos-tune`: zram (zstd), earlyoom, systemd presets that disable what a desktop does not need, journald cap, `/tmp` on tmpfs, sysctl base tune, per-mode governor / zram / earlyoom overrides, fan profiles (nbfc-linux / thinkpad_acpi), power profiles. `lindos-tune status` measures idle RAM against the target. See [docs/RAM-BUDGET.md](docs/RAM-BUDGET.md) and [docs/HARDWARE-CONTROL.md](docs/HARDWARE-CONTROL.md). |
-| Browser | Firefox is on the ISO. Microsoft Edge and Google Chrome are **downloaded during setup** from Microsoft's / Google's official apt repositories (their licences forbid shipping them on the ISO). |
+| Browser | Firefox is on the ISO. Google Chrome is the default (Microsoft Edge is also available) and is **downloaded** from Microsoft's / Google's official apt repositories — during setup, or automatically on the installed system's first boot if setup was skipped or offline (their licences forbid shipping them on the ISO). |
 
 ## Reality check — please read before you flash the ISO (SPEC §0.1)
 
@@ -64,8 +64,10 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
   after login into XFCE with no apps open. `lindos-tune status` prints exactly that verdict.
   Until the reference measurements are published, the per-measure savings in
   [docs/RAM-BUDGET.md](docs/RAM-BUDGET.md) are estimates and are marked as such.
-* **Edge / Chrome** are never on the ISO; the OOBE installs them from the vendors' repositories
-  when online, otherwise falls back to Firefox and tells you how to install them later
+* **Edge / Chrome** are never on the ISO; Chrome is the OOBE/system default and is installed from
+  Google's official apt repository — during OOBE, or by `lindos-browser-firstboot.service` on the
+  installed system's first boot if OOBE was skipped or offline (never in the live/ISO session).
+  Offline, everything falls back to Firefox and tells you how to install Edge/Chrome later
   (Settings › Apps › Web browsers, or `lindos-browser install edge --set-default`).
 * No telemetry, no ads, no crash uploads (apport/whoopsie/kerneloops are disabled).
 * **No kernel-level anti-cheat circumvention, ever.** Lindos ships nothing that emulates, forges

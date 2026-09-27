@@ -97,13 +97,19 @@ def test_ananicy_rules_are_json_lines_and_types_resolve() -> None:
 
 
 # --- preset / whitelist / lists -------------------------------------------------------------------------
+#: one-shot autodetect/first-boot units: not meant to be toggled by users through the generic
+#: services wrapper (they are managed by their own systemd Condition*=/marker files instead).
+_PRESET_NOT_WHITELISTED = {"lindos-sensors-detect.service", "lindos-driver-firstboot.service",
+                           "lindos-browser-firstboot.service"}
+
+
 def test_preset_units_are_valid_and_whitelisted_where_toggleable() -> None:
     entries = apply.parse_preset(_lf(ROOT / "usr/lib/systemd/system-preset/90-lindos.preset"))
     assert entries, "preset must have entries"
     wl = set(services.parse_whitelist(_lf(tl.SHARE / "services-whitelist.txt")))
     for verb, unit in entries:
         assert services.valid_unit_name(unit)
-        if unit != "lindos-sensors-detect.service":
+        if unit not in _PRESET_NOT_WHITELISTED:
             assert unit in wl, f"{unit} in preset but not toggleable via the whitelist"
 
 

@@ -5,6 +5,7 @@ set -e
 LOG_DIR="/var/log/lindos"
 HELPER="/usr/libexec/lindos/lindos-helper"
 INSTALL_BROWSER="/usr/libexec/lindos/install-browser.sh"
+BROWSER_FIRSTBOOT="/usr/libexec/lindos/browser-firstboot.sh"
 UPDATE_NOTIFY="/usr/libexec/lindos/lindos-update-notify.sh"
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 SYSTEM_CONF="/etc/lindos/system.json"
@@ -20,6 +21,7 @@ case "$1" in
 
         # helper + scripts must be executable (mkdeb fixes perms, but be safe on manual installs)
         chmod 0755 "$HELPER" "$INSTALL_BROWSER" 2>/dev/null || true
+        [ -f "$BROWSER_FIRSTBOOT" ] && chmod 0755 "$BROWSER_FIRSTBOOT" 2>/dev/null || true
         [ -f "$UPDATE_NOTIFY" ] && chmod 0755 "$UPDATE_NOTIFY" 2>/dev/null || true
         for cli in lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot lindos-update; do
             [ -f "/usr/bin/$cli" ] && chmod 0755 "/usr/bin/$cli"
@@ -38,7 +40,7 @@ case "$1" in
         # default system config (conffile — only created when missing)
         if [ ! -f "$SYSTEM_CONF" ]; then
             mkdir -p /etc/lindos
-            printf '{\n  "browser": "firefox",\n  "mode": "everyday",\n  "oem": false\n}\n' > "$SYSTEM_CONF"
+            printf '{\n  "browser": "chrome",\n  "mode": "everyday",\n  "oem": false\n}\n' > "$SYSTEM_CONF"
         fi
         chmod 0644 "$SYSTEM_CONF"
 

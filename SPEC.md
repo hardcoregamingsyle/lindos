@@ -24,9 +24,16 @@ later in **Lindos Settings**.
   depend on the developer enabling anti-cheat for Proton — link to areweanticheatyet.com and
   protondb.com. Adobe: CC 2019–2021 era Photoshop/Illustrator work through Wine recipes; newer
   releases are unreliable — mark **partial**.
-- Edge and Chrome licences forbid redistribution inside the ISO. Firefox is on the ISO;
-  Edge/Chrome are downloaded from Microsoft/Google's official apt repositories during OOBE (with
-  a clean offline fallback to Firefox + "install later" notice).
+- Edge and Chrome licences forbid redistribution inside the ISO — the ISO/live image must never
+  contain the browser binary itself, and building the ISO on CI counts as redistribution too, so
+  neither is ever installed at **build** time. Only their official apt repository + signing
+  keyring (freely redistributable pointers, same as the WineHQ/Steam repos) may be pre-staged on
+  the image. Firefox is on the ISO. Chrome is the OOBE/system default: it is downloaded from
+  Google's official apt repository either during OOBE or — if OOBE was skipped or was offline —
+  by `lindos-browser-firstboot.service` on the **installed** system's first boot (never in the
+  live/ISO session, never blocks boot, retries later if offline). Edge/Firefox remain selectable
+  in OOBE/Settings any time. Both Edge and Chrome have a clean offline fallback to Firefox +
+  "install later" notice.
 - RAM: idle target is measured as `free -m` "used" after login into XFCE with no apps open. State
   the target as **350–500 MB** and ship the measurement tool (`lindos-tune status`).
 
@@ -117,7 +124,9 @@ Five modes. Exactly these ids and display names:
 | `lite` | Lite | ≤ 4 GB RAM / old PCs | no compositor, no picom, no animations, zram 100 %, minimal tray, `earlyoom` aggressive |
 
 Storage:
-- System default: `/etc/lindos/system.json` → `{"mode": "everyday", "browser": "firefox", "oem": false}`
+- System default: `/etc/lindos/system.json` → `{"mode": "everyday", "browser": "chrome", "oem": false}`
+  (Chrome is downloaded from Google's apt repo — SPEC §0.1, §4.4, §6; Firefox is the always-on-ISO
+  fallback)
 - User: `~/.config/lindos/config.json` (see §4.2). User mode overrides system mode.
 - Mode definitions: `/usr/share/lindos/modes/<id>/`
   - `mode.json` — `{ "id", "name", "description", "icon", "packages": [..apt..], "flatpaks": [..],
@@ -165,7 +174,7 @@ All are overridable via env `LINDOS_ROOT` (prefix for system paths, used by test
 
 ### 4.2 Config (`lindos/config.py`)
 ```python
-DEFAULTS = {"mode":"everyday","browser":"firefox","theme":"dark","accent":"#60CDFF",
+DEFAULTS = {"mode":"everyday","browser":"chrome","theme":"dark","accent":"#60CDFF",
             "wallpaper":"/usr/share/backgrounds/lindos/aurora-dark.svg","setup_done":False,
             "gamemode_auto":True,"mangohud":False,"telemetry":False,"schema":1}
 class Config:            # user config; dict-like .get/.set/.save()/.load(); atomic write
@@ -206,6 +215,26 @@ def install(bid, log=print) -> bool     # via helper 'install-browser'
 def set_default(bid) -> bool           # xdg-settings set default-web-browser + xfconf helper
 def online() -> bool
 ```
+`install()`/the helper's `install-browser` action both shell out to the single script
+`/usr/libexec/lindos/install-browser.sh <edge|chrome|firefox> [--repo-only] [--dry-run]
+[--no-update]` (SPEC §13) — it owns the repo/key/apt logic for every caller (OOBE, Lindos
+Settings, `lindos-browser install`, `build/chroot/30-lindos-debs.sh` at ISO build time via
+`--repo-only`, and `lindos-browser-firstboot.service` at first boot), so Chrome's key URL and
+repo line exist in exactly one place. `--repo-only` adds the vendor's apt repository + signing
+key without ever running `apt-get install` — used to pre-stage Chrome's repo on the ISO (§8)
+without installing the package there (§0.1: that would be redistribution).
+
+**First-boot install (installed system only):** `/usr/lib/systemd/system/
+lindos-browser-firstboot.service` (oneshot, `ConditionKernelCommandLine=!boot=casper` — refuses
+to run in the live/ISO session — `ConditionPathExists=!/var/lib/lindos/browser-firstboot.done`,
+`After=network-online.target`) runs `/usr/libexec/lindos/browser-firstboot.sh` on first boot of
+the *installed* system: if `/etc/lindos/system.json`'s `browser` is `chrome` (the default), it
+calls `install-browser.sh chrome`; on success it also sets Chrome as the system-wide default
+browser for new users (`/etc/xdg/mimeapps.list`'s `[Default Applications]`, the standard xdg
+fallback — never touches an existing user's own `~/.config/mimeapps.list` choice) and writes the
+marker. Offline or a failed install leaves the marker unwritten so a later boot retries
+automatically; every exit path is 0 (never blocks or fails the boot). Enabled by default via
+`90-lindos.preset` (lindos-tune, §11).
 
 ### 4.5 Hardware (`lindos/hardware.py`)
 `cpu_info()`, `gpu_info()` (parse `lspci -nn` / sysfs; vendor in {"nvidia","amd","intel","other"}),
@@ -314,7 +343,11 @@ Ships:
   → `apply` → `done`.
   - `mode`: 5 cards (icon, name, one-line description, RAM hint), default Everyday.
   - `browser`: 3 cards (Edge, Chrome, Firefox) with note "Edge/Chrome download from vendor";
-    disabled with explanation when offline (Firefox pre-selected).
+    **Chrome pre-selected by default** when online (`Selections.browser` default, `lindos_setup/
+    plan.py`); Edge/Firefox remain one click away. Edge/Chrome cards disabled with explanation
+    when offline, and the selection automatically falls back to Firefox (pre-selected) in that
+    case — the same fallback applies if Chrome was never installed by the first-boot service
+    (offline at every boot so far): Settings → Apps → Web browsers installs it later.
   - `personalize`: Dark/Light toggle (default Dark), accent swatches (8), wallpaper thumbnails,
     taskbar alignment Center/Left.
   - `apps`: checkboxes — "Windows app support (Wine + Proton)" (on), "Steam" (on in gaming),
@@ -395,24 +428,42 @@ binds even on failure. Support `--skip-download`, `--no-cleanup`, `--only-debs`,
 Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempotent:
 - `00-repos.sh` — add WineHQ (noble), Steam (Valve repo, i386 enabled), Mozilla apt repo (pin
   firefox .deb from Mozilla or keep Mint's), Flathub remote (flatpak already on Mint), Kisak Mesa
-  optional (flag), `dpkg --add-architecture i386`, `apt-get update`.
+  optional (flag), `dpkg --add-architecture i386`, `apt-get update`. Google Chrome's repo/key are
+  **not** staged here (lindos-core, which owns that logic, is not installed yet at this point in
+  the build) — see `30-lindos-debs.sh` below.
 - `10-debloat.sh` — purge list (keep tiny): `hexchat thunderbird? (keep) rhythmbox hypnotix
   warpinator? (keep, useful) mintwelcome? (replace by lindos-setup; keep package but hide autostart)
   onboard drawing simple-scan? (keep) gnome-calendar?`. Actual list documented in
-  `docs/RAM-BUDGET.md`; never purge network/printing basics; disable (not purge) `bluetooth`,
+  `docs/RAM-BUDGET.md`; never purge network/printing basics; disable (not purge)
   `cups` (socket-activated), `ModemManager`, `avahi-daemon` (keep for printers? → keep enabled but
   document), `mintreport`, `apport`, `whoopsie`, `kerneloops`, `ubuntu-report`, `brltty`,
-  `speech-dispatcher`, `NetworkManager-wait-online`.
+  `speech-dispatcher`, `NetworkManager-wait-online`. `bluetooth` is deliberately **not** disabled
+  here — it stays enabled by default in every mode (laptops need Bluetooth headphones/mice, and
+  it is cheap when idle); only Lite mode's own tune.d/mode.json turns it off (`docs/RAM-BUDGET.md`).
 - `20-base.sh` — install: `xfce4-docklike-plugin xfce4-panel-profiles xfce4-clipman-plugin
   xfce4-notifyd picom zram-tools|systemd-zram-generator earlyoom gamemode mangohud
   power-profiles-daemon lm-sensors fancontrol python3-gi gir1.2-gtk-3.0 polkitd pkexec
-  flatpak fonts-noto-color-emoji xdg-desktop-portal-gtk winbind cabextract`, plus mode packages.
+  flatpak fonts-noto-color-emoji xdg-desktop-portal-gtk winbind cabextract`, plus mode packages,
+  plus `LAPTOP_ESSENTIALS` (`build/config.env`): firmware (`linux-firmware`,
+  `firmware-sof-signed`, `intel-microcode`, `amd64-microcode`), audio (`alsa-ucm-conf`,
+  `pipewire-audio`/`wireplumber`/`pipewire-pulse` as a no-op safety net — Mint 22/Ubuntu 24.04
+  already default to PipeWire), Bluetooth (`bluez`, `blueman`), driver metadata
+  (`ubuntu-drivers-common`), firmware updates (`fwupd`), and printing
+  (`printer-driver-gutenprint`, `ipp-usb` — not `printer-driver-all`/`hplip`, too large; see
+  `docs/RAM-BUDGET.md` §8 for the estimated added size and the trade-off). 32-bit
+  `mesa-vulkan-drivers:i386` is already installed unconditionally by `70-gaming.sh` when i386 is
+  enabled, so `20-base.sh` does not repeat it.
   `xfce4-docklike-plugin` is not packaged for Ubuntu 24.04 "noble" as of this writing (only
   25.10+ / Debian trixie+ carry it): `20-base.sh` already skips any package `pkg_available`
   reports as absent with a loud warning rather than failing the build, and
   `packages/lindos-desktop/DEBIAN/control` lists it as a Recommends (not a Depends) for exactly
   this reason — see `docs/BUILDING.md` and `CI-LOGS.md`.
-- `30-lindos-debs.sh` — `apt-get install ./tmp/lindos/debs/*.deb`.
+- `30-lindos-debs.sh` — `apt-get install ./tmp/lindos/debs/*.deb`; afterwards, pre-stages Google
+  Chrome's apt repository + signing key (`install-browser.sh chrome --repo-only`, `ADD_CHROME_REPO`
+  default on) — same pattern as WineHQ/Steam in `00-repos.sh`, but here because it reuses
+  lindos-core's own script instead of duplicating Chrome's repo/key. The `google-chrome-stable`
+  package itself is **never** installed at build time (§0.1) — only downloaded later by
+  `lindos-browser-firstboot.service` or the OOBE.
 - `40-theme.sh` — run `fetch-assets` outputs already staged in `/tmp/lindos/assets` (theme,
   icons, cursors, fonts) → install (`install.sh -n Lindos …`), os-release sed, plymouth default,
   `update-alternatives` for default wallpaper, `glib-compile-schemas`, `fc-cache`,

@@ -177,7 +177,11 @@ def test_real_executors_report_failures_without_stopping(monkeypatch, tmp_path):
 def test_missing_wallpaper_fails_step_only(monkeypatch, tmp_path):
     calls = []
     _install_fake_lindos(monkeypatch, tmp_path, calls)
-    plan = build_plan(Selections(wallpaper="/usr/share/backgrounds/lindos/does-not-exist.svg"))
+    # browser pinned to firefox (on the ISO, not downloaded): isolates this test to the
+    # wallpaper failure only — the fake lindos.browsers.is_installed() always reports chrome
+    # as absent, which would otherwise also fail the unrelated set-default-browser step.
+    plan = build_plan(Selections(wallpaper="/usr/share/backgrounds/lindos/does-not-exist.svg",
+                                 browser="firefox"))
     result = Runner(plan, core.make_real_executors(), log=lambda m: None).run()
     assert result.failed_ids == ["set-wallpaper"]
     assert not any(c[0] == "set_wallpaper" for c in calls)

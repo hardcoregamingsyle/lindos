@@ -9,7 +9,9 @@ enable cups.socket
 enable cups.path
 enable avahi-daemon.service
 enable lindos-sensors-detect.service
-disable bluetooth.service
+enable bluetooth.service
+enable lindos-driver-firstboot.service
+enable lindos-browser-firstboot.service
 disable ModemManager.service
 disable cups.service
 disable cups-browsed.service

@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -66,7 +68,7 @@ def test_paths_env_overrides(core_env) -> None:
 
 # --- config ---------------------------------------------------------------------------------
 def test_config_defaults_and_roundtrip(core_env) -> None:
-    assert lconfig.DEFAULTS == {"mode": "everyday", "browser": "firefox", "theme": "dark", "accent": "#60CDFF",
+    assert lconfig.DEFAULTS == {"mode": "everyday", "browser": "chrome", "theme": "dark", "accent": "#60CDFF",
                                 "wallpaper": "/usr/share/backgrounds/lindos/aurora-dark.svg", "setup_done": False,
                                 "gamemode_auto": True, "mangohud": False, "telemetry": False, "schema": 1}
     cfg = lconfig.Config.load()
@@ -79,11 +81,12 @@ def test_config_defaults_and_roundtrip(core_env) -> None:
     again = lconfig.Config.load()
     assert again.as_dict()["mode"] == "gaming" and again["accent"] == "#0067C0" and again["custom"] == {"nested": [1, 2]}
     assert "custom" in again and len(again) >= len(lconfig.DEFAULTS)
-    assert lconfig.effective_mode() == "gaming" and lconfig.effective_browser() == "firefox"
+    # no "browser" key in the user config -> falls back to the system default (chrome, SPEC §3/§6)
+    assert lconfig.effective_mode() == "gaming" and lconfig.effective_browser() == "chrome"
 
 
 def test_system_config_and_effective(core_env) -> None:
-    assert lconfig.load_system() == {"mode": "everyday", "browser": "firefox", "oem": False}
+    assert lconfig.load_system() == {"mode": "everyday", "browser": "chrome", "oem": False}
     lconfig.save_system({"mode": "work", "browser": "edge", "vendor": "acme"})
     sysconf = lconfig.load_system()
     assert sysconf["mode"] == "work" and sysconf["browser"] == "edge" and sysconf["vendor"] == "acme"
@@ -521,7 +524,7 @@ def test_cli_lindos_config(core_env, run_cli) -> None:
 def test_cli_lindos_browser(core_env, run_cli) -> None:
     lst = run_cli("lindos-browser", "list", "--json")
     assert lst.returncode == 0 and [r["id"] for r in json.loads(lst.stdout)] == ["edge", "chrome", "firefox"]
-    assert run_cli("lindos-browser", "get").stdout.strip() == "firefox"
+    assert run_cli("lindos-browser", "get").stdout.strip() == "chrome"
     status = run_cli("lindos-browser", "status", "--json")
     assert json.loads(status.stdout)["online"] is False
     inst = run_cli("lindos-browser", "install", "edge", "--json")
@@ -581,6 +584,194 @@ def test_install_browser_script_dry_run(core_env) -> None:
     assert syntax.returncode == 0, syntax.stderr
 
 
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+@pytest.mark.parametrize("bid", ["edge", "chrome"])
+def test_install_browser_repo_only_never_installs_the_package(core_env, bid: str) -> None:
+    """--repo-only (used by build/chroot/30-lindos-debs.sh to pre-stage Chrome on the ISO,
+    SPEC §0.1) must add the repo/key and refresh that one source list, but never run
+    'apt-get install' — the package itself must never end up on the image."""
+    proc = subprocess.run([bash_available(), str(LIBEXEC / "install-browser.sh"), bid, "--repo-only", "--dry-run"],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+                          env={**os.environ, "LINDOS_ROOT": str(core_env["root"])})
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "would fetch" in proc.stdout and "would write" in proc.stdout
+    assert "apt-get update" in proc.stdout   # refreshes only that source list
+    assert "apt-get install" not in proc.stdout
+    assert "repository staged" in proc.stdout
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_install_browser_repo_only_rejects_firefox() -> None:
+    proc = subprocess.run([bash_available(), str(LIBEXEC / "install-browser.sh"), "firefox", "--repo-only"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 2
+
+
+# --- lindos-browser-firstboot.service / browser-firstboot.sh (SPEC §0.1, §4.4, §6, §8) -----------
+FIRSTBOOT_SERVICE = ROOT / "usr" / "lib" / "systemd" / "system" / "lindos-browser-firstboot.service"
+FIRSTBOOT_SCRIPT = LIBEXEC / "browser-firstboot.sh"
+
+
+def test_browser_firstboot_service_unit() -> None:
+    unit = FIRSTBOOT_SERVICE.read_text(encoding="utf-8")
+    assert "\r\n" not in unit
+    # never in the live/ISO session
+    assert "ConditionKernelCommandLine=!boot=casper" in unit
+    # run-once guard + never blocks boot
+    assert "ConditionPathExists=!/var/lib/lindos/browser-firstboot.done" in unit
+    assert "ConditionVirtualization=!container" in unit
+    assert "Type=oneshot" in unit and "RemainAfterExit=yes" in unit
+    assert "ExecStart=/usr/libexec/lindos/browser-firstboot.sh" in unit
+    # retries later when offline: ordered after (not required by) network-online.target
+    assert "Wants=network-online.target" in unit and "After=network-online.target" in unit
+    assert "WantedBy=multi-user.target" in unit
+
+
+def test_browser_firstboot_script_shape() -> None:
+    text = FIRSTBOOT_SCRIPT.read_text(encoding="utf-8")
+    assert text.startswith("#!/bin/bash\n") and "\r\n" not in text
+    assert "set -Eeuo pipefail" in text
+    # never in the live session (redundant guard even though the unit already gates this)
+    assert "boot=casper" in text
+    # run-once marker (STATE_DIR="${LINDOS_ROOT:-}/var/lib/lindos", MARKER="${STATE_DIR}/browser-firstboot.done")
+    assert "/var/lib/lindos" in text and "browser-firstboot.done" in text
+    # reuses install-browser.sh; never duplicates Google's repo/key URLs or calls apt directly
+    assert "install-browser.sh" in text
+    assert "dl.google.com" not in text
+    for forbidden in ("apt-get install", "apt install"):
+        assert forbidden not in text, forbidden
+    # sets the system-wide default for new users via the standard xdg fallback file
+    assert "/etc/xdg/mimeapps.list" in text
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_script_syntax() -> None:
+    syntax = subprocess.run([bash_available(), "-n", str(FIRSTBOOT_SCRIPT)], capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def _firstboot_sandbox(tmp_path: Path, *, install_rc: int = 0, system_browser: Optional[str] = "chrome"):
+    """Build a scratch LINDOS_ROOT with a fake install-browser.sh + a fake root-uid 'id'.
+
+    Returns (root, fakebin, canary) — canary is written by the fake install-browser.sh iff it
+    was actually invoked, so tests can prove the run-once/live-session guards short-circuit
+    before ever reaching it.
+    """
+    root = tmp_path / "root"
+    (root / "usr" / "libexec" / "lindos").mkdir(parents=True)
+    (root / "etc" / "lindos").mkdir(parents=True)
+    shutil.copy(FIRSTBOOT_SCRIPT, root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")
+    canary = tmp_path / "install-browser-was-called"
+    fake_install = root / "usr" / "libexec" / "lindos" / "install-browser.sh"
+    fake_install.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" > \"{canary.as_posix()}\"\n"
+        f"exit {install_rc}\n",
+        encoding="utf-8", newline="\n",
+    )
+    if system_browser is not None:
+        (root / "etc" / "lindos" / "system.json").write_text(
+            json.dumps({"mode": "everyday", "browser": system_browser, "oem": False}), encoding="utf-8")
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "id").write_text(
+        "#!/bin/bash\n[ \"$1\" = \"-u\" ] && echo 0 || echo root\n", encoding="utf-8", newline="\n")
+    return root, fakebin, canary
+
+
+def _run_firstboot(root: Path, fakebin: Path, *, cmdline: Optional[str] = None, force: bool = False,
+                   tmp_path: Optional[Path] = None):
+    env = dict(os.environ)
+    env["PATH"] = str(fakebin) + os.pathsep + env.get("PATH", "")
+    env["LINDOS_ROOT"] = str(root)
+    if cmdline is not None:
+        assert tmp_path is not None
+        cmdline_file = tmp_path / "fake-cmdline"
+        cmdline_file.write_text(cmdline, encoding="utf-8")
+        env["LINDOS_TEST_CMDLINE"] = str(cmdline_file)
+    args = [bash_available(), str(root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")]
+    if force:
+        args.append("--force")
+    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=60, env=env)
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_never_runs_in_live_session(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    proc = _run_firstboot(root, fakebin, cmdline="BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash",
+                          tmp_path=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "boot=casper" in proc.stderr or "live/ISO session" in proc.stderr
+    assert not canary.exists(), "install-browser.sh must never be invoked in the live session"
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_run_once_guard(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    marker = root / "var" / "lib" / "lindos" / "browser-firstboot.done"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("", encoding="utf-8")
+    proc = _run_firstboot(root, fakebin, tmp_path=tmp_path)
+    assert proc.returncode == 0
+    assert "already done" in proc.stderr
+    assert not canary.exists(), "must not re-install once the marker exists"
+    # --force bypasses the marker and (with our fake root 'id') actually runs
+    proc2 = _run_firstboot(root, fakebin, force=True, tmp_path=tmp_path)
+    assert proc2.returncode == 0
+    assert canary.exists() and canary.read_text(encoding="utf-8").strip() == "chrome"
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_requires_root(tmp_path: Path) -> None:
+    root, _fakebin, canary = _firstboot_sandbox(tmp_path)
+    # no fake 'id' on PATH here -> the real (non-root) id -u is used
+    env = dict(os.environ)
+    env["LINDOS_ROOT"] = str(root)
+    proc = subprocess.run([bash_available(), str(root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
+    assert proc.returncode == 0
+    assert "must run as root" in proc.stderr
+    assert not canary.exists()
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_installs_chrome_and_sets_default(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, install_rc=0, system_browser="chrome")
+    proc = _run_firstboot(root, fakebin, tmp_path=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert canary.exists() and canary.read_text(encoding="utf-8").strip() == "chrome"
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+    mimeapps = (root / "etc" / "xdg" / "mimeapps.list").read_text(encoding="utf-8")
+    assert "[Default Applications]" in mimeapps
+    for key in ("x-scheme-handler/http", "x-scheme-handler/https", "text/html", "application/xhtml+xml"):
+        assert f"{key}=google-chrome.desktop" in mimeapps
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_offline_retries_later(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, install_rc=3, system_browser="chrome")
+    proc = _run_firstboot(root, fakebin, tmp_path=tmp_path)
+    assert proc.returncode == 0
+    assert "offline" in proc.stderr and "retry" in proc.stderr
+    assert canary.exists()  # install-browser.sh really was tried
+    # no marker: a later boot must retry
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+    assert not (root / "etc" / "xdg" / "mimeapps.list").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_skips_when_another_browser_chosen(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, system_browser="firefox")
+    proc = _run_firstboot(root, fakebin, tmp_path=tmp_path)
+    assert proc.returncode == 0
+    assert "not chrome" in proc.stderr
+    assert not canary.exists(), "must not download Chrome when the user picked another browser"
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
 def test_debian_control_and_conffiles() -> None:
     control = (DEBIAN / "control").read_text(encoding="utf-8")
     fields = dict(re.findall(r"^([A-Za-z-]+): (.*)$", control, re.M))
@@ -592,7 +783,7 @@ def test_debian_control_and_conffiles() -> None:
     assert "xfconf" in fields["Recommends"] and "flatpak" in fields["Recommends"]
     assert (DEBIAN / "conffiles").read_text(encoding="utf-8").strip() == "/etc/lindos/system.json"
     with open(ROOT / "etc" / "lindos" / "system.json", encoding="utf-8") as fh:
-        assert json.load(fh) == {"mode": "everyday", "browser": "firefox", "oem": False}
+        assert json.load(fh) == {"mode": "everyday", "browser": "chrome", "oem": False}
 
 
 def test_polkit_policy() -> None:

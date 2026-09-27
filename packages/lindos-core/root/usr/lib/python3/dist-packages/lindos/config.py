@@ -22,7 +22,7 @@ log = logging.getLogger("lindos.config")
 
 DEFAULTS: Dict[str, Any] = {
     "mode": "everyday",
-    "browser": "firefox",
+    "browser": "chrome",
     "theme": "dark",
     "accent": "#60CDFF",
     "wallpaper": "/usr/share/backgrounds/lindos/aurora-dark.svg",
@@ -33,7 +33,7 @@ DEFAULTS: Dict[str, Any] = {
     "schema": 1,
 }
 
-SYSTEM_DEFAULTS: Dict[str, Any] = {"mode": "everyday", "browser": "firefox", "oem": False}
+SYSTEM_DEFAULTS: Dict[str, Any] = {"mode": "everyday", "browser": "chrome", "oem": False}
 
 VALID_MODES = ("everyday", "gaming", "work", "creator", "lite")
 VALID_BROWSERS = ("edge", "chrome", "firefox")
@@ -199,7 +199,12 @@ def effective_mode() -> str:
 
 
 def effective_browser() -> str:
-    """User override else system default else ``"firefox"``."""
+    """User override else system default (``"chrome"``) else ``"firefox"``.
+
+    The final ``"firefox"`` fallback only fires if ``/etc/lindos/system.json`` itself is
+    missing/corrupt: Firefox is the one browser guaranteed to be on the ISO, so it is the safe
+    answer when nothing else is known, even though the OOBE/system default is Chrome.
+    """
     user = _valid(read_json(paths.user_conf()).get("browser"), VALID_BROWSERS)
     if user:
         return user

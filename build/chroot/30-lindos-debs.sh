@@ -13,7 +13,9 @@
 #  archive; Recommends are deliberately NOT followed — see below);
 #  if that fails we fall back to 'dpkg -i' + 'apt-get -f install'.
 #  Afterwards: optional install of the everyday mode's package list, then
-#  'lindos-tune status --json || true' as a smoke test.
+#  'lindos-tune status --json || true' as a smoke test, then (ADD_CHROME_REPO=1,
+#  default) pre-stage Google Chrome's apt repo + signing key via lindos-core's
+#  own install-browser.sh --repo-only (SPEC §0.1: never installs the package).
 # ============================================================================
 set -Eeuo pipefail
 # shellcheck source=build/chroot/lib.sh
@@ -137,6 +139,33 @@ fi
 if have python3; then
     python3 -c 'import lindos, sys; print("lindos module import OK from", getattr(lindos, "__file__", "?"))' >&2 \
         || warn "python3 cannot import the 'lindos' module (lindos-core missing?)"
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-stage Google Chrome's apt repository + signing key on the image — same
+# pattern as the WineHQ/Steam repos in 00-repos.sh (SPEC §0.1, §8), but this
+# has to run here (after lindos-core is installed above) rather than in
+# 00-repos.sh, because it reuses lindos-core's own install-browser.sh
+# (--repo-only: adds the repo/key, never runs 'apt-get install') instead of
+# duplicating Chrome's key URL / repo line a second time.  google-chrome-stable
+# itself is NEVER installed at build time — that would be redistribution; it is
+# downloaded later by lindos-browser-firstboot.service (installed system, first
+# boot) or the OOBE, both of which call this exact same script.
+# ---------------------------------------------------------------------------
+: "${ADD_CHROME_REPO:=1}"
+INSTALL_BROWSER_SH=/usr/libexec/lindos/install-browser.sh
+if [ "${ADD_CHROME_REPO}" = "1" ]; then
+    if [ -x "${INSTALL_BROWSER_SH}" ]; then
+        if "${INSTALL_BROWSER_SH}" chrome --repo-only; then
+            log "Google Chrome apt repository staged (package not installed — SPEC §0.1)"
+        else
+            warn "could not stage Chrome's apt repository (offline?) — the OOBE / lindos-browser-firstboot.service will add it later"
+        fi
+    else
+        warn "${INSTALL_BROWSER_SH} not found (lindos-core missing?) — Chrome repo NOT staged"
+    fi
+else
+    log "ADD_CHROME_REPO=0 — Chrome apt repository not pre-staged"
 fi
 
 hook_end
