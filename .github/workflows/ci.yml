@@ -343,7 +343,11 @@ jobs:
           && inputs.boot_test }}
     runs-on: ubuntu-24.04
     needs: iso
-    timeout-minutes: 30
+    # Was 30: boot_test.py now also waits up to --desktop-timeout (default 180s) for the guest's
+    # detached desktop-readiness watcher before its grace period + screendump, on top of the
+    # existing --timeout (600s) + --grace (90s) -- still comfortably under 30m in practice, but
+    # give real headroom for artifact download/extraction variance too.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 

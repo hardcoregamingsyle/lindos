@@ -37,9 +37,14 @@ LINDOS_INFO os_release_id=linuxmint version=22.2 pretty=Lindos 1.0 (Aurora)
 LINDOS_CHECK python-import=OK
 LINDOS_CHECK lindos-mode=OK
 LINDOS_CHECK lindos-compat-doctor=FAIL rc=1
+LINDOS_DOCTOR_FAIL id=wine msg=wine not found (fix: apt install wine)
+LINDOS_CHECK lindos-ram=FAIL rc=1
+LINDOS_FAIL_LOG lindos-ram: Traceback (most recent call last):
+LINDOS_FAIL_LOG lindos-ram: RuntimeError: /proc/meminfo unreadable
 LINDOS_INFO failed_units=1
 LINDOS_FAILED_UNIT some.service loaded failed failed Some Service
 LINDOS_INFO is_system_running=degraded
+LINDOS_DESKTOP_READY
 LINDOS_SMOKE_DONE rc=1
 """
 
@@ -56,6 +61,31 @@ def test_parse_report_full(tmp_path):
     assert report["info"]["is_system_running"] == "degraded"
     assert len(report["failed_units"]) == 1
     assert "some.service" in report["failed_units"][0]
+    assert report["doctor_fails"] == ["id=wine msg=wine not found (fix: apt install wine)"]
+    assert report["fail_logs"] == [
+        "lindos-ram: Traceback (most recent call last):",
+        "lindos-ram: RuntimeError: /proc/meminfo unreadable",
+    ]
+    assert report["desktop_ready_line"] == "LINDOS_DESKTOP_READY"
+
+
+def test_parse_report_desktop_ready_timeout_sentinel(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text(
+        "LINDOS_SMOKE_START\nLINDOS_DESKTOP_READY_TIMEOUT\nLINDOS_SMOKE_DONE rc=0\n",
+        encoding="utf-8",
+    )
+    report = boot_test.parse_report(log)
+    assert report["desktop_ready_line"] == "LINDOS_DESKTOP_READY_TIMEOUT"
+
+
+def test_parse_report_no_desktop_ready_line(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text("LINDOS_SMOKE_START\nLINDOS_SMOKE_DONE rc=0\n", encoding="utf-8")
+    report = boot_test.parse_report(log)
+    assert report["desktop_ready_line"] is None
+    assert report["doctor_fails"] == []
+    assert report["fail_logs"] == []
 
 
 def test_parse_report_all_ok(tmp_path):
@@ -114,6 +144,41 @@ def test_tail_for_done_times_out(tmp_path):
     log = tmp_path / "serial.log"
     log.write_text("LINDOS_SMOKE_START\n", encoding="utf-8")
     line = boot_test.tail_for_done(log, timeout=0.01)
+    assert line is None
+
+
+def test_tail_for_desktop_ready_finds_ready_sentinel(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text("LINDOS_SMOKE_DONE rc=0\n", encoding="utf-8")
+
+    calls = {"n": 0}
+    real_sleep = boot_test.time.sleep
+
+    def fake_sleep(_seconds):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write("LINDOS_DESKTOP_READY\n")
+
+    boot_test.time.sleep = fake_sleep
+    try:
+        line = boot_test.tail_for_desktop_ready(log, timeout=5)
+    finally:
+        boot_test.time.sleep = real_sleep
+    assert line == "LINDOS_DESKTOP_READY"
+
+
+def test_tail_for_desktop_ready_accepts_the_watchers_own_timeout_sentinel(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text("LINDOS_SMOKE_DONE rc=0\nLINDOS_DESKTOP_READY_TIMEOUT\n", encoding="utf-8")
+    line = boot_test.tail_for_desktop_ready(log, timeout=5)
+    assert line == "LINDOS_DESKTOP_READY_TIMEOUT"
+
+
+def test_tail_for_desktop_ready_times_out_when_watcher_never_ran_at_all(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text("LINDOS_SMOKE_DONE rc=0\n", encoding="utf-8")
+    line = boot_test.tail_for_desktop_ready(log, timeout=0.01)
     assert line is None
 
 
@@ -305,6 +370,35 @@ def test_smoke_check_captures_real_exit_code_not_zero(tmp_path):
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_fail_prints_tail_of_its_own_log(tmp_path):
+    """A failing check's own captured output never leaves the guest any other way -- the CI
+    artifact only ever carries serial.log -- so check() must tail it straight to the console,
+    prefixed so build_test.py's parser can tell it apart from everything else."""
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    harness = tmp_path / "harness.sh"
+    noisy = tmp_path / "noisy.sh"
+    noisy.write_text(
+        "#!/bin/bash\nfor i in $(seq 1 15); do echo \"line ${i}\"; done\nexit 3\n", encoding="utf-8",
+    )
+    noisy.chmod(0o755)
+    harness.write_text(
+        "#!/bin/bash\nRC=0\n" + _extract_function(script_text, "check") + "\n"
+        f'check noisy-fail "{noisy.as_posix()}"\n'
+        'echo "FINAL_RC=${RC}"\n',
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    assert res.returncode == 0, res.stderr
+    out = res.stdout
+    assert "LINDOS_CHECK noisy-fail=FAIL rc=3" in out
+    # Only the last 10 of the 15 lines (a tail, not the whole log), each correctly prefixed.
+    assert "LINDOS_FAIL_LOG noisy-fail: line 6" in out
+    assert "LINDOS_FAIL_LOG noisy-fail: line 15" in out
+    assert "LINDOS_FAIL_LOG noisy-fail: line 1\n" not in out and "LINDOS_FAIL_LOG noisy-fail: line 5\n" not in out
+    assert "FINAL_RC=1" in out
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
 def test_smoke_check_all_pass_gives_rc_zero(tmp_path):
     script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
     harness = tmp_path / "harness.sh"
@@ -339,7 +433,8 @@ def test_smoke_check_compat_doctor_excuses_only_display(tmp_path):
             {"id": "wine32", "level": "recommended", "ok": False},
         ]
         if extra_bad_required:
-            checks.append({"id": "core", "level": "required", "ok": False})
+            checks.append({"id": "core", "level": "required", "ok": False,
+                          "detail": "python module 'lindos' not found", "fix": "apt install lindos-core"})
         return json.dumps({"ok": False, "summary": {}, "checks": checks})
 
     fake_bin = tmp_path / "fakebin"
@@ -377,4 +472,108 @@ def test_smoke_check_compat_doctor_excuses_only_display(tmp_path):
     core_also_broken = run_it(extra_bad_required=True)
     assert core_also_broken.returncode == 0, core_also_broken.stderr
     assert "LINDOS_CHECK lindos-compat-doctor=FAIL rc=1" in core_also_broken.stdout
+    assert ("LINDOS_DOCTOR_FAIL id=core msg=python module 'lindos' not found "
+            "(fix: apt install lindos-core)") in core_also_broken.stdout
     assert "FINAL_RC=1" in core_also_broken.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_compat_doctor_falls_back_to_log_tail_on_parse_error(tmp_path):
+    """If the doctor JSON itself can't even be parsed (never seen in practice, but check_compat_
+    doctor() must not go silent), it must still report SOMETHING actionable -- a raw log tail."""
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_doctor = fake_bin / "lindos-compat"
+    fake_doctor.write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" = "doctor" ]; then echo "not valid json at all"; exit 1; fi\n',
+        encoding="utf-8",
+    )
+    fake_doctor.chmod(0o755)
+    body = _extract_function(script_text, "check_compat_doctor")
+    body = body.replace("/usr/bin/lindos-compat", str(fake_doctor.as_posix()))
+    body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.log",
+                        (tmp_path / "doctor-check.log").as_posix())
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\nRC=0\n" + body + '\ncheck_compat_doctor\necho "FINAL_RC=${RC}"\n',
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    assert res.returncode == 0, res.stderr
+    assert "LINDOS_CHECK lindos-compat-doctor=FAIL rc=1" in res.stdout
+    assert "LINDOS_FAIL_LOG lindos-compat-doctor: not valid json at all" in res.stdout
+    assert "FINAL_RC=1" in res.stdout
+
+
+# --------------------------------------------------------------------------- #
+# start_desktop_watch()'s embedded watcher script (the guest-side detector for
+# "the desktop is actually up", read by boot_test.py's tail_for_desktop_ready())
+# --------------------------------------------------------------------------- #
+
+
+def _extract_heredoc(script_text: str, delimiter: str) -> str:
+    """Pull the literal body of a `cat > file <<'DELIM' ... DELIM` heredoc out of the real
+    script, so the test exercises the exact shipped watcher instead of a re-typed copy."""
+    m = re.search(rf"<<'{re.escape(delimiter)}'\n(.*?\n){re.escape(delimiter)}\n", script_text, re.S)
+    assert m, f"could not find heredoc {delimiter!r} in {SMOKE_SCRIPT}"
+    # The real watcher's `exec >/dev/console 2>&1` is meaningless (and /dev/console may not even
+    # be writable) outside a real boot -- strip it so a plain subprocess capture works everywhere.
+    return m.group(1).replace("exec >/dev/console 2>&1\n", "")
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tmp_path):
+    import os
+
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    watcher = _extract_heredoc(script_text, "WATCH_EOF")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text(
+        '#!/bin/bash\nif [ "$1" = "is-system-running" ]; then echo running; exit 0; fi\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "systemctl").chmod(0o755)
+    # Only lightdm "exists"; Xorg/Xwayland don't -- exercises the `||` chain, not just the first arm.
+    (fake_bin / "pgrep").write_text(
+        '#!/bin/bash\n[ "$2" = "lightdm" ] && exit 0\nexit 1\n', encoding="utf-8",
+    )
+    (fake_bin / "pgrep").chmod(0o755)
+    watch_file = tmp_path / "watch.sh"
+    watch_file.write_text(watcher, encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+    res = subprocess.run([BASH, str(watch_file)], capture_output=True, text=True, timeout=30,
+                        check=False, env=env)
+    assert res.returncode == 0, res.stderr
+    assert "LINDOS_DESKTOP_READY" in res.stdout
+    assert "LINDOS_DESKTOP_READY_TIMEOUT" not in res.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
+    import os
+
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    watcher = _extract_heredoc(script_text, "WATCH_EOF")
+    # Same logic, a much shorter bound/sleep so the test doesn't take 150 real seconds.
+    watcher = watcher.replace("-lt 150", "-lt 2").replace("sleep 1", "sleep 0.01")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text(
+        '#!/bin/bash\nif [ "$1" = "is-system-running" ]; then echo starting; exit 1; fi\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "systemctl").chmod(0o755)
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
+    (fake_bin / "pgrep").chmod(0o755)
+    watch_file = tmp_path / "watch.sh"
+    watch_file.write_text(watcher, encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+    res = subprocess.run([BASH, str(watch_file)], capture_output=True, text=True, timeout=30,
+                        check=False, env=env)
+    assert res.returncode == 0, res.stderr
+    assert "LINDOS_DESKTOP_READY_TIMEOUT" in res.stdout

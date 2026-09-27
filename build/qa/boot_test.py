@@ -51,6 +51,13 @@ DONE_RE = re.compile(r"^LINDOS_SMOKE_DONE rc=(\d+)")
 CHECK_RE = re.compile(r"^LINDOS_CHECK (\S+)=(OK|FAIL)(?: rc=(-?\d+))?")
 INFO_RE = re.compile(r"^LINDOS_INFO (\S+)=(.*)$")
 FAILED_UNIT_RE = re.compile(r"^LINDOS_FAILED_UNIT (.+)$")
+DOCTOR_FAIL_RE = re.compile(r"^LINDOS_DOCTOR_FAIL (.+)$")
+FAIL_LOG_RE = re.compile(r"^LINDOS_FAIL_LOG (.+)$")
+# ci-boot-smoke-test.sh's start_desktop_watch() prints one of these from a *detached* unit/
+# process once the desktop is (or, on the watcher's own internal timeout, still isn't) up --
+# see that function's docstring for why it must never run inline in the smoke-test unit itself.
+DESKTOP_READY_RE = re.compile(r"^LINDOS_DESKTOP_READY$")
+DESKTOP_READY_TIMEOUT_RE = re.compile(r"^LINDOS_DESKTOP_READY_TIMEOUT$")
 MONITOR_PROMPT = b"(qemu) "
 
 
@@ -160,8 +167,8 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
     ]
 
 
-def tail_for_done(serial_log: Path, *, timeout: float) -> Optional[str]:
-    """Poll serial_log for LINDOS_SMOKE_DONE; return the matched line or None on timeout."""
+def _tail_for(serial_log: Path, patterns: List["re.Pattern[str]"], *, timeout: float) -> Optional[str]:
+    """Poll serial_log for a line matching any of *patterns*; return it, or None on timeout."""
     deadline = time.monotonic() + timeout
     seen = 0
     while time.monotonic() < deadline:
@@ -169,11 +176,25 @@ def tail_for_done(serial_log: Path, *, timeout: float) -> Optional[str]:
             text = serial_log.read_text(encoding="utf-8", errors="replace")
             if len(text) > seen:
                 for line in text[seen:].splitlines():
-                    if DONE_RE.match(line.strip()):
-                        return line.strip()
+                    stripped = line.strip()
+                    if any(p.match(stripped) for p in patterns):
+                        return stripped
                 seen = len(text)
         time.sleep(2.0)
     return None
+
+
+def tail_for_done(serial_log: Path, *, timeout: float) -> Optional[str]:
+    """Poll serial_log for LINDOS_SMOKE_DONE; return the matched line or None on timeout."""
+    return _tail_for(serial_log, [DONE_RE], timeout=timeout)
+
+
+def tail_for_desktop_ready(serial_log: Path, *, timeout: float) -> Optional[str]:
+    """Poll serial_log for LINDOS_DESKTOP_READY or LINDOS_DESKTOP_READY_TIMEOUT (the detached
+    guest-side watcher's sentinels -- see ci-boot-smoke-test.sh's start_desktop_watch()); return
+    the matched line, or None if even the watcher's own timeout sentinel never showed up (e.g.
+    systemd-run/setsid themselves failed, or the guest never got far enough to run it at all)."""
+    return _tail_for(serial_log, [DESKTOP_READY_RE, DESKTOP_READY_TIMEOUT_RE], timeout=timeout)
 
 
 def parse_report(serial_log: Path) -> dict:
@@ -181,7 +202,10 @@ def parse_report(serial_log: Path) -> dict:
     checks: dict[str, dict] = {}
     info: dict[str, str] = {}
     failed_units: List[str] = []
+    doctor_fails: List[str] = []
+    fail_logs: List[str] = []
     smoke_rc: Optional[int] = None
+    desktop_ready_line: Optional[str] = None
     for raw in text.splitlines():
         line = raw.strip()
         m = CHECK_RE.match(line)
@@ -196,11 +220,23 @@ def parse_report(serial_log: Path) -> dict:
         if m:
             failed_units.append(m.group(1))
             continue
+        m = DOCTOR_FAIL_RE.match(line)
+        if m:
+            doctor_fails.append(m.group(1))
+            continue
+        m = FAIL_LOG_RE.match(line)
+        if m:
+            fail_logs.append(m.group(1))
+            continue
         m = DONE_RE.match(line)
         if m:
             smoke_rc = int(m.group(1))
+            continue
+        if DESKTOP_READY_RE.match(line) or DESKTOP_READY_TIMEOUT_RE.match(line):
+            desktop_ready_line = line
     return {"checks": checks, "info": info, "failed_units": failed_units, "smoke_rc": smoke_rc,
-            "booted": "LINDOS_SMOKE_START" in text}
+            "booted": "LINDOS_SMOKE_START" in text, "doctor_fails": doctor_fails,
+            "fail_logs": fail_logs, "desktop_ready_line": desktop_ready_line}
 
 
 def take_screenshot(monitor_sock: Path, out_png: Path) -> bool:
@@ -238,6 +274,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--iso", required=True, help="path to the built ISO (glob allowed)")
     p.add_argument("--out-dir", required=True, help="where to put extracted kernel/initrd, logs, screenshot")
     p.add_argument("--timeout", type=int, default=600, help="seconds to wait for LINDOS_SMOKE_DONE")
+    p.add_argument("--desktop-timeout", type=int, default=180,
+                    help="seconds to wait for LINDOS_DESKTOP_READY (the detached guest-side "
+                         "watcher) after the smoke test finishes, before giving up on it and "
+                         "moving on to the grace period + screenshot anyway")
     p.add_argument("--grace", type=int, default=90, help="extra seconds after smoke-done before the screenshot")
     p.add_argument("--ram", type=int, default=4096, help="guest RAM in MB")
     p.add_argument("--cpus", type=int, default=2, help="guest vCPUs")
@@ -277,6 +317,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             log("TIMEOUT waiting for the boot smoke test to finish")
         else:
             log(f"smoke test finished: {done_line}")
+            log(f"waiting up to {ns.desktop_timeout}s for LINDOS_DESKTOP_READY "
+                f"(the detached desktop-readiness watcher)...")
+            ready_line = tail_for_desktop_ready(serial_log, timeout=ns.desktop_timeout)
+            if ready_line is None:
+                log("TIMEOUT waiting for LINDOS_DESKTOP_READY (or its own _TIMEOUT sentinel) — "
+                    "screenshotting anyway for debugging")
+            else:
+                log(f"desktop watcher: {ready_line}")
             log(f"waiting {ns.grace}s for the live desktop to render before the screenshot...")
             time.sleep(ns.grace)
         took_shot = take_screenshot(monitor_sock, screenshot)
@@ -306,6 +354,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  failed systemd units ({len(report['failed_units'])}):")
         for u in report["failed_units"]:
             print(f"    - {u}")
+    if report["doctor_fails"]:
+        print("  lindos-compat doctor: failing required check(s):")
+        for d in report["doctor_fails"]:
+            print(f"    - {d}")
+    if report["fail_logs"]:
+        print("  tail of failing checks' own logs:")
+        for line in report["fail_logs"]:
+            print(f"    {line}")
+    print(f"  desktop ready: {report['desktop_ready_line'] or 'never seen (timeout)'}")
     print(f"  screenshot: {'captured' if took_shot else 'NOT captured'}")
 
     ok = True

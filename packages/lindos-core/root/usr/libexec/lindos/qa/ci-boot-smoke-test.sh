@@ -49,7 +49,16 @@ check() {
     fi
     case ",${ok}," in
         *",${rc},"*) echo "LINDOS_CHECK ${name}=OK rc=${rc}" ;;
-        *)           echo "LINDOS_CHECK ${name}=FAIL rc=${rc}"; RC=1 ;;
+        *)
+            echo "LINDOS_CHECK ${name}=FAIL rc=${rc}"
+            # Self-diagnosing: the CI artifact only ever carries serial.log, never the guest's
+            # own /tmp -- so a failure with nothing more than an rc is a dead end. Surface the
+            # tail of this check's own captured output right into the console/serial log.
+            tail -n 10 "/tmp/lindos-smoke-${name}.log" 2>/dev/null | while IFS= read -r line; do
+                echo "LINDOS_FAIL_LOG ${name}: ${line}"
+            done
+            RC=1
+            ;;
     esac
 }
 
@@ -60,7 +69,8 @@ check_compat_doctor() {
     # "Graphical session (DISPLAY)" check genuinely and correctly reports failure here (Windows
     # programs really can't run without a desktop); that is expected in *this* invocation
     # context, not a real problem. Parse the JSON and only fail this check if some OTHER
-    # required check failed.
+    # required check failed -- and when it does, print exactly which one(s) and why, instead of
+    # a bare rc (the JSON itself never leaves the guest otherwise; only serial.log does).
     local logf="/tmp/lindos-smoke-lindos-compat-doctor.log"
     /usr/bin/lindos-compat doctor --json >"${logf}" 2>&1
     local rc=$?
@@ -68,18 +78,82 @@ check_compat_doctor() {
         echo "LINDOS_CHECK lindos-compat-doctor=OK"
         return
     fi
-    if python3 -c "
+    # Runs as its own statement (never as an if-condition) for the same $?-capture reason as
+    # check() above. Exit 0 = only 'display' (or nothing) failed; 1 = some other required check
+    # failed (already printed as LINDOS_DOCTOR_FAIL lines below); 2 = couldn't even parse the
+    # JSON (unexpected -- fall back to a raw log tail same as check()).
+    python3 -c "
 import json, sys
-with open('${logf}', encoding='utf-8') as fh:
-    data = json.load(fh)
-bad = [c.get('id') for c in data.get('checks', [])
-       if c.get('level') == 'required' and not c.get('ok') and c.get('id') != 'display']
+try:
+    with open('${logf}', encoding='utf-8') as fh:
+        data = json.load(fh)
+    checks = data.get('checks', [])
+except Exception as exc:
+    print('LINDOS_DOCTOR_PARSE_ERROR ' + str(exc))
+    sys.exit(2)
+bad = [c for c in checks if c.get('level') == 'required' and not c.get('ok') and c.get('id') != 'display']
+for c in bad:
+    msg = (c.get('detail') or '').replace(chr(10), ' ').replace(chr(13), ' ')
+    fix = (c.get('fix') or '').replace(chr(10), ' ').replace(chr(13), ' ')
+    if fix:
+        msg = (msg + ' ' if msg else '') + '(fix: ' + fix + ')'
+    print('LINDOS_DOCTOR_FAIL id=' + str(c.get('id')) + ' msg=' + msg)
 sys.exit(1 if bad else 0)
-" 2>/dev/null; then
+"
+    local pyrc=$?
+    if [ "${pyrc}" -eq 0 ]; then
         echo "LINDOS_CHECK lindos-compat-doctor=OK rc=${rc} (no DISPLAY in this early-boot context, expected)"
+        return
+    fi
+    echo "LINDOS_CHECK lindos-compat-doctor=FAIL rc=${rc}"
+    if [ "${pyrc}" -eq 2 ]; then
+        tail -n 10 "${logf}" 2>/dev/null | while IFS= read -r line; do
+            echo "LINDOS_FAIL_LOG lindos-compat-doctor: ${line}"
+        done
+    fi
+    RC=1
+}
+
+start_desktop_watch() {
+    # Prints LINDOS_DESKTOP_READY once the live desktop is actually up (systemctl
+    # is-system-running reports running/degraded AND a real X/lightdm session process exists),
+    # or LINDOS_DESKTOP_READY_TIMEOUT if that never happens within its own internal bound. Read
+    # by build/qa/boot_test.py, which waits for one of those two lines before its grace period +
+    # screendump, instead of screenshotting mid-boot.
+    #
+    # MUST run as an INDEPENDENT unit/process, never inline in this script: this script is the
+    # ExecStart of a systemd.run= transient service that is itself one of default.target's start
+    # jobs, so 'is-system-running' can never report running/degraded while THIS unit is still
+    # active -- waiting for that in-line here would deadlock boot forever. systemd-run --no-block
+    # starts the watcher as its own separate unit and returns immediately, letting this script
+    # (and its unit) finish normally; setsid'd background process is the fallback if systemd-run
+    # is somehow unavailable.
+    local watch_script="/tmp/lindos-desktop-watch.sh"
+    cat > "${watch_script}" <<'WATCH_EOF'
+#!/bin/bash
+exec >/dev/console 2>&1
+i=0
+while [ "${i}" -lt 150 ]; do
+    state="$(systemctl is-system-running 2>/dev/null || true)"
+    if [ "${state}" = "running" ] || [ "${state}" = "degraded" ]; then
+        if pgrep -x Xorg >/dev/null 2>&1 || pgrep -x lightdm >/dev/null 2>&1 \
+           || pgrep -x Xwayland >/dev/null 2>&1; then
+            echo "LINDOS_DESKTOP_READY"
+            exit 0
+        fi
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+echo "LINDOS_DESKTOP_READY_TIMEOUT"
+WATCH_EOF
+    chmod +x "${watch_script}"
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --no-block --unit=lindos-desktop-watch --collect \
+            /bin/bash "${watch_script}" >/dev/null 2>&1 || true
     else
-        echo "LINDOS_CHECK lindos-compat-doctor=FAIL rc=${rc}"
-        RC=1
+        setsid /bin/bash "${watch_script}" </dev/null >/dev/console 2>&1 &
+        disown 2>/dev/null || true
     fi
 }
 
@@ -92,6 +166,8 @@ if [ -r /etc/os-release ]; then
     . /etc/os-release
     echo "LINDOS_INFO os_release_id=${ID:-unknown} version=${VERSION_ID:-unknown} pretty=${PRETTY_NAME:-unknown}"
 fi
+
+start_desktop_watch
 
 check python-import python3 -c "import lindos, lindos.paths, lindos.modes, lindos.config, lindos.hardware, lindos.ram, lindos.theme, lindos.compat, lindos.browsers"
 check lindos-mode /usr/bin/lindos-mode list --json
