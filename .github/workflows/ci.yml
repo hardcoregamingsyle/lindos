@@ -343,11 +343,16 @@ jobs:
           && inputs.boot_test }}
     runs-on: ubuntu-24.04
     needs: iso
-    # Was 30: boot_test.py now also waits up to --desktop-timeout (default 180s) for the guest's
-    # detached desktop-readiness watcher before its grace period + screendump, on top of the
-    # existing --timeout (600s) + --grace (90s) -- still comfortably under 30m in practice, but
-    # give real headroom for artifact download/extraction variance too.
-    timeout-minutes: 40
+    # Was 40: run 36313769193 found that once the guest actually resolves graphical.target for
+    # real (lightdm/Xorg genuinely starting, plus NetworkManager/wpa_supplicant/udisks2/
+    # gpu-manager/ubiquity/... all now legitimately running instead of never being reached),
+    # LINDOS_SMOKE_DONE did not arrive within the old 600s --timeout at all under this job's
+    # only 2 vCPUs (30+ concurrent unit starts competing for 2 cores). Bumped --timeout to 1500s
+    # and --cpus to 4 (matching this runner's real core count, cutting real contention instead
+    # of just waiting longer) -- worst case (1500s smoke wait + 180s desktop-wait + 90s grace +
+    # ~1min screenshot/upload) is ~30 min, plus ~5 min setup/checkout/artifact-download, so 55m
+    # keeps real headroom without being unbounded.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 
@@ -399,7 +404,7 @@ jobs:
             extra+=(--require-kernel-suffix=-lindos)
           fi
           python3 build/qa/boot_test.py --iso 'out/lindos-*.iso' --out-dir out/qemu-boot-test \
-            --timeout 600 --grace 90 "${extra[@]}"
+            --timeout 1500 --grace 90 --cpus 4 "${extra[@]}"
 
       - name: Upload boot-test artifacts (serial log + screenshot)
         if: always()
