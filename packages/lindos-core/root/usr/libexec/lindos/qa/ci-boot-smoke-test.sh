@@ -71,8 +71,19 @@ check_compat_doctor() {
     # context, not a real problem. Parse the JSON and only fail this check if some OTHER
     # required check failed -- and when it does, print exactly which one(s) and why, instead of
     # a bare rc (the JSON itself never leaves the guest otherwise; only serial.log does).
+    #
+    # stdout and stderr are captured to SEPARATE files, deliberately never merged with `2>&1`:
+    # doctor.py's own module and the libraries it calls (lindos_compat.get_logger()) attach a
+    # plain logging.StreamHandler(), which defaults to stderr and flushes every record
+    # immediately, while doctor's --json payload is built with plain print() to stdout, which
+    # Python fully block-buffers once it isn't a TTY (only flushed at process exit). Merged into
+    # one file, any log record emitted during the run lands *before* the buffered JSON at exit --
+    # corrupting the start of the file with non-JSON text. This was seen for real in CI (run
+    # 36286387867: "Expecting value: line 1 column 1 (char 0)" even though the file's tail was
+    # well-formed JSON) -- keeping the streams apart makes the JSON stream itself always pure.
     local logf="/tmp/lindos-smoke-lindos-compat-doctor.log"
-    /usr/bin/lindos-compat doctor --json >"${logf}" 2>&1
+    local errf="/tmp/lindos-smoke-lindos-compat-doctor.stderr.log"
+    /usr/bin/lindos-compat doctor --json >"${logf}" 2>"${errf}"
     local rc=$?
     if [ "${rc}" -eq 0 ]; then
         echo "LINDOS_CHECK lindos-compat-doctor=OK"
@@ -108,7 +119,10 @@ sys.exit(1 if bad else 0)
     echo "LINDOS_CHECK lindos-compat-doctor=FAIL rc=${rc}"
     if [ "${pyrc}" -eq 2 ]; then
         tail -n 10 "${logf}" 2>/dev/null | while IFS= read -r line; do
-            echo "LINDOS_FAIL_LOG lindos-compat-doctor: ${line}"
+            echo "LINDOS_FAIL_LOG lindos-compat-doctor(stdout): ${line}"
+        done
+        tail -n 10 "${errf}" 2>/dev/null | while IFS= read -r line; do
+            echo "LINDOS_FAIL_LOG lindos-compat-doctor(stderr): ${line}"
         done
     fi
     RC=1
@@ -148,13 +162,24 @@ done
 echo "LINDOS_DESKTOP_READY_TIMEOUT"
 WATCH_EOF
     chmod +x "${watch_script}"
+    # Launched via BOTH systemd-run --no-block (a real, independent unit -- immune to whatever
+    # cgroup cleanup systemd does to THIS unit's own children once its main process exits) AND a
+    # setsid'd background process (works even where systemd-run/its bus connection isn't usable
+    # this early in boot). Harmless if both get through: the watcher only ever prints its one
+    # outcome once and exits, and tail_for_desktop_ready() on the host just needs ANY matching
+    # line. The systemd-run attempt's own result is logged (LINDOS_INFO desktop_watch_launch=...)
+    # so a run where NEITHER sentinel ever appears is diagnosable instead of a silent mystery.
     if command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --no-block --unit=lindos-desktop-watch --collect \
-            /bin/bash "${watch_script}" >/dev/null 2>&1 || true
+        local sdr_out sdr_rc
+        sdr_out="$(systemd-run --no-block --unit=lindos-desktop-watch --collect \
+            /bin/bash "${watch_script}" 2>&1)"
+        sdr_rc=$?
+        echo "LINDOS_INFO desktop_watch_launch=systemd-run rc=${sdr_rc} out=${sdr_out:-<empty>}"
     else
-        setsid /bin/bash "${watch_script}" </dev/null >/dev/console 2>&1 &
-        disown 2>/dev/null || true
+        echo "LINDOS_INFO desktop_watch_launch=no-systemd-run"
     fi
+    setsid /bin/bash "${watch_script}" </dev/null >/dev/console 2>&1 &
+    disown 2>/dev/null || true
 }
 
 echo "LINDOS_INFO uname=$(uname -r)"

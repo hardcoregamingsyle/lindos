@@ -495,6 +495,8 @@ def test_smoke_check_compat_doctor_falls_back_to_log_tail_on_parse_error(tmp_pat
     body = body.replace("/usr/bin/lindos-compat", str(fake_doctor.as_posix()))
     body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.log",
                         (tmp_path / "doctor-check.log").as_posix())
+    body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.stderr.log",
+                        (tmp_path / "doctor-check.stderr.log").as_posix())
     harness = tmp_path / "harness.sh"
     harness.write_text(
         "#!/bin/bash\nRC=0\n" + body + '\ncheck_compat_doctor\necho "FINAL_RC=${RC}"\n',
@@ -503,7 +505,53 @@ def test_smoke_check_compat_doctor_falls_back_to_log_tail_on_parse_error(tmp_pat
     res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
     assert res.returncode == 0, res.stderr
     assert "LINDOS_CHECK lindos-compat-doctor=FAIL rc=1" in res.stdout
-    assert "LINDOS_FAIL_LOG lindos-compat-doctor: not valid json at all" in res.stdout
+    assert "LINDOS_FAIL_LOG lindos-compat-doctor(stdout): not valid json at all" in res.stdout
+    assert "FINAL_RC=1" in res.stdout
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_smoke_check_compat_doctor_never_lets_stderr_corrupt_the_json(tmp_path):
+    """Regression for the exact bug seen in CI run 36286387867: a log record emitted to stderr
+    during a real doctor run (logging.StreamHandler() defaults to stderr and flushes
+    immediately) landed BEFORE doctor's own buffered stdout JSON when both were merged into one
+    file with `2>&1`, so json.load saw the log line first and failed with "Expecting value: line
+    1 column 1 (char 0)" even though the file's tail was well-formed JSON. stdout and stderr must
+    be captured to separate files so the JSON stream is never corrupted by stderr timing."""
+    script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_doctor = fake_bin / "lindos-compat"
+    # Simulates exactly the observed failure mode: a stderr line "arrives" (is written) before
+    # the stdout JSON, as real unbuffered-stderr-vs-buffered-stdout timing would produce.
+    fake_doctor.write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" = "doctor" ]; then\n'
+        '    echo "INFO: some incidental log message" >&2\n'
+        '    echo \'{"ok": false, "summary": {}, "checks": '
+        '[{"id": "wine", "level": "required", "ok": false, "detail": "wine not found", "fix": "apt install wine"}, '
+        '{"id": "display", "level": "required", "ok": false}]}\'\n'
+        "    exit 1\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_doctor.chmod(0o755)
+    body = _extract_function(script_text, "check_compat_doctor")
+    body = body.replace("/usr/bin/lindos-compat", str(fake_doctor.as_posix()))
+    body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.log",
+                        (tmp_path / "doctor-check.log").as_posix())
+    body = body.replace("/tmp/lindos-smoke-lindos-compat-doctor.stderr.log",
+                        (tmp_path / "doctor-check.stderr.log").as_posix())
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\nRC=0\n" + body + '\ncheck_compat_doctor\necho "FINAL_RC=${RC}"\n',
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30, check=False)
+    assert res.returncode == 0, res.stderr
+    # Must parse correctly (no PARSE_ERROR) and report the real failing required check.
+    assert "LINDOS_DOCTOR_PARSE_ERROR" not in res.stdout
+    assert "LINDOS_DOCTOR_FAIL id=wine msg=wine not found (fix: apt install wine)" in res.stdout
+    assert "LINDOS_CHECK lindos-compat-doctor=FAIL rc=1" in res.stdout
     assert "FINAL_RC=1" in res.stdout
 
 
