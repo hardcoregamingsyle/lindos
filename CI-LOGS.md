@@ -358,24 +358,136 @@ pre-existing Windows-only skips) were run before every commit in this sequence.
 
 ---
 
+## 2026-09-27 — libdw-dev + the real black-screen root cause, 3 rounds (repo migrated C: → E: mid-session)
+
+Picked up exactly where the previous entry left off. Three fix-and-rerun rounds (the budgeted
+cap), each finding one real, previously-invisible bug — every one of them the direct, honest
+consequence of finally getting one layer deeper into a boot that had never gotten this far before.
+
+### Round 1 (`36300817476` — ✅ all 7 jobs green, including kernel and boot-test)
+
+- **Kernel job**: added `libdw-dev` (provides `dwarf.h`, needed by `scripts/gendwarfksyms` on
+  this kernel series — a different package from `dwarves`, which only provides `pahole`) to
+  ci.yml's "Install kernel build dependencies" step, and a matching `dpkg-query` check in
+  `build/kernel/build-kernel.sh`'s own `check_deps()` (kept in sync, per the same pattern as the
+  existing `libssl-dev`/`libelf-dev` checks). Kernel job went from failing on
+  `gendwarfksyms.h: fatal error: dwarf.h: No such file or directory` to a clean build:
+  `uname -r=6.14.0-lindos`, confirmed by `--require-kernel-suffix=-lindos`.
+- **Black screenshot — real root cause, not a guess.** Grepped `out/ci-boot-test/serial.log`
+  (per the task) and found the guest beginning a full `shutdown.target` teardown — including
+  "Stopping lindos-desktop-watch.service" — moments after `LINDOS_SMOKE_DONE`, with
+  `is_system_running` still `initializing`. Cross-checked against systemd's own
+  `kernel-command-line(7)`/`systemd-run-generator(8)` docs: **`systemd.run=`'s generated
+  `kernel-command-line.service` defaults to `SuccessAction=exit`/`FailureAction=exit`** — i.e. it
+  powers the whole VM off the instant the smoke-test command finishes. The smoke test itself
+  (a handful of quick CLI checks) completes in well under a second, so the guest was shutting
+  down before LightDM/XFCE — or the detached desktop-ready watcher's own 150s loop — ever got
+  anywhere near finishing. This is a test-harness artefact of how `boot_test.py` invokes
+  `systemd.run=`, not a Lindos bug (a real boot never passes `systemd.run=` at all). Fixed by
+  appending `systemd.run_success_action=none systemd.run_failure_action=none` to the kernel
+  command line in `build_qemu_argv()`.
+- Extended the detached desktop-ready watcher (never the main smoke script, which must stay
+  non-blocking) with `LINDOS_DESKTOP_DIAG`-prefixed diagnostics printed right before either of its
+  own sentinels: `systemctl is-system-running`/`list-jobs`/`--failed`/`status lightdm`, an
+  Xorg.0.log EE/WW tail, `loginctl list-sessions`, `fgconsole`, `/sys/class/drm/*/status`, and
+  `lsmod | grep bochs|drm|virtio`. `boot_test.py`'s `parse_report()`/`main()` now surface these in
+  the report too.
+- With the shutdown fixed, the watcher's own diagnostics finally told us something new: the
+  system genuinely reached `is-system-running=running` (0 failed units) — but `lightdm.service`
+  was `inactive (dead)`, `Loaded: ...; indirect; preset: enabled`, with **zero journal lines ever
+  recorded for it** — never crashed, never even triggered. DRM was fine
+  (`/sys/class/drm/card0-Virtual-1/status=connected`, `bochs` module loaded), so this wasn't the
+  QEMU-display suspect from the original brief. Everything pointed at `graphical.target` simply
+  never being the active default target.
+
+### Round 2 (`36313769193` — ✅ kernel/ISO green, ❌ boot-test)
+
+- Added an explicit, guarded, idempotent `systemctl set-default graphical.target` +
+  `systemctl enable lightdm.service` (no `--now`) to `packages/lindos-desktop/DEBIAN/postinst`.
+  lindos-desktop owns the desktop experience, so it should not depend on some other package (or
+  incidental base-image state) having already gotten this right.
+- Added `systemctl get-default`, the `display-manager` alias's own status, its symlink target,
+  and `/etc/X11/default-display-manager` to the watcher's diagnostics, to get a decisive answer
+  either way on the next run.
+- **This fix visibly worked**: for the first time ever, serial.log showed `Starting
+  lightdm.service - Light Display Manager...`, alongside a real full graphical-session boot —
+  NetworkManager, wpa_supplicant, udisks2, gpu-manager, ubiquity, blueman, polkit, all genuinely
+  running (none of this had ever happened on any previous run; `is-system-running` had always
+  either stayed `initializing` or (round 1) reached `running` via a much smaller, non-graphical
+  target). But `LINDOS_SMOKE_DONE` never arrived within the 600s `--timeout` — a clean "TIMEOUT
+  waiting for the boot smoke test to finish" with **zero `LINDOS_*` output at all**, not even
+  `LINDOS_SMOKE_START`. The desktop.png screenshot was 53 KB this round (vs. ~4.8 KB on every
+  prior black-screen run) — real rendered content, not flat black.
+
+### Round 3 (`36319809802` — the final round; ✅ kernel/ISO green, ❌ boot-test — new blocker found, not yet fixed)
+
+- Reasoned the 600s timeout was simply too short now that the guest does dramatically more real
+  work (30+ concurrent unit starts) on the job's default 2 vCPUs. Bumped `boot_test.py`'s
+  `--timeout` 600s → 1500s, added `--cpus 4` (matching the `ubuntu-24.04` runner's real core
+  count), and the job's own `timeout-minutes` 40 → 55.
+- **This did not help, and disproved the "just needs more time" theory**: serial.log for this
+  round is close to byte-for-byte identical to round 2's, stopping at the exact same point —
+  `Starting lightdm.service...` → `Starting plymouth-quit-wait.service...` →
+  `Finished nvmf-autoconnect.service` → a bare `mint login:` getty prompt on `ttyS0` — regardless
+  of whether the harness waited 600s or the full 1500s. `lightdm.service` never printed a
+  `Started`/`Failed` line either time. **This is a stable end state, not a slow-but-progressing
+  boot**: lightdm.service starts and then simply never finishes starting, for at least 25 real
+  minutes under real KVM with 4 vCPUs. `kernel-command-line.service` (our own `systemd.run=` unit)
+  never ran at all in either round 2 or round 3 — strong evidence it is ordered/gated behind
+  `default.target` settling (matching this repo's own existing comment that it "is itself part
+  of default.target's own start-job graph"), and since `default.target` is now correctly
+  `graphical.target`, a hung `lightdm.service` blocks the whole transaction from ever completing,
+  taking our own smoke-test script down with it. The screenshot this round was QEMU's own literal
+  placeholder, **"Guest has not initialized the display (yet)"** — the guest had not drawn a
+  single frame to the emulated VGA device in 25 minutes, consistent with Xorg (lightdm's child)
+  never getting far enough to do a modeset.
+- **Not yet fixed** — this is a genuinely new, real problem (present on real hardware too, not a
+  QEMU-only artefact, though QEMU's `-vga std`/bochs-drm combination with Xorg's modesetting DDX
+  is one of the "likely suspects" named at the start of this work and is the most promising next
+  thing to try) — found honestly via the round-3 evidence above, not fixed, because the 3-round
+  cap for this task was reached first.
+
+**Local verification for every round above:** `bash tests/run.sh --quick` (shellcheck clean, 0
+failures) and the touched pytest files (up to 152 passed) were run before every commit. The full
+pytest suite was not re-run in full this session (only the files actually touched), per the task's
+own scope.
+
+**Mid-session infrastructure note**: the working copy was migrated from
+`C:\Users\Hp\Desktop\Nitish-Code\Lindos` to `E:\Nitish\Lindos` partway through round 2 (the C:
+drive was full). One round of edits (the postinst fix + extra diagnostics + their tests) was
+made on the stale C: copy before the migration was fully internalized and had to be re-applied
+file-by-file onto E: before it could be committed from there — worth double-checking working
+directory discipline explicitly after any future workspace move, since the tools that take
+absolute paths (Read/Edit/Write) don't follow a shell `cd`.
+
 ## Next CI step (not yet run)
 
-The kernel job has never successfully compiled on this branch. Next step for whoever picks this
-up: add `libdw-dev` to `.github/workflows/ci.yml`'s "Install kernel build dependencies" step
-(alongside the existing `dwarves`), verify the kernel job gets past `gendwarfksyms` this time (it
-may or may not hit further missing deps — kernel 6.14's build-dep surface hasn't been exercised to
-completion on this runner image yet), then re-dispatch:
+The kernel build, the ISO build, and the "no real desktop attempted" black-screen bug are now
+**fully fixed and confirmed** (rounds 1–2). The **new, currently-open blocker** is: once LightDM
+genuinely tries to start (which is the correct, intended behavior now), it never finishes —
+`lightdm.service` stays `Starting` forever, the display stays un-initialized, and our own
+`systemd.run=` smoke-test script never even runs because it appears to be gated behind
+`default.target` (= `graphical.target`) actually settling. Candidates for whoever picks this up
+next, roughly in order of how cheap they are to try:
+
+1. Swap the boot-test harness's `-vga std` for `-vga virtio` / `-device virtio-vga` in
+   `build/qa/boot_test.py`'s `build_qemu_argv()` — `bochs-drm` + Xorg's modesetting DDX is a much
+   less battle-tested combination than `virtio-gpu`, which is the standard for headless/CI X
+   testing. This is the cheapest thing to try and was explicitly flagged as a candidate at the
+   start of this work.
+2. Confirm the dependency-ordering theory directly: `systemctl show kernel-command-line.service
+   -p After -p Requires -p Wants` on a real boot (or a local QEMU session with a monitor attached
+   interactively) would show definitively whether it is really gated on `graphical.target`.
+3. If it is real hardware-affecting (not just a QEMU-display artefact), consider giving
+   `lightdm.service` (or its Xorg child) an explicit `TimeoutStartSec=` so a real install fails
+   fast and visibly instead of hanging the whole boot forever — hanging forever with no operator
+   feedback is a bad failure mode regardless of root cause.
+4. Once the guest can actually run `ci-boot-smoke-test.sh` again, the `LINDOS_DESKTOP_DIAG`
+   diagnostics already added (Xorg.0.log EE/WW tail, `display-manager` status, DRM status, lsmod)
+   should immediately show Xorg's own failure/hang signature — no further blind guessing needed.
 
 ```bash
 gh workflow run CI --ref feature/windows-transfer-updates-boottest -f build_kernel=true -f build_iso=true -f boot_test=true
 gh run list --workflow CI --branch feature/windows-transfer-updates-boottest --limit 1 --json databaseId
 gh run watch <run-id> --exit-status   # not through tail
 ```
-
-Once the kernel job succeeds, boot-test should pass end-to-end (the smoke-test layer is already
-fully green and has been for two consecutive runs) — the only remaining question is whether
-`uname -r` then correctly ends in `-lindos`. Separately, the desktop-ready watcher issue (starts,
-never finishes) is worth a fresh look with a clean round budget: candidates to check are whether
-`systemd-run`'s transient unit is somehow still tied to the calling unit's cgroup lifecycle on
-this runner's systemd version, or whether `systemctl is-system-running`/`pgrep` themselves hang
-partway through the 150-iteration loop under this specific guest environment.
