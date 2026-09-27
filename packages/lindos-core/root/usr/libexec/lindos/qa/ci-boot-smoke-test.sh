@@ -160,6 +160,7 @@ diag() {
     # interactive session, so a missing tool or an empty result is itself useful information,
     # never a reason to abort the rest (no set -e in this script; each line stands on its own).
     echo "LINDOS_DESKTOP_DIAG is-system-running: $(systemctl is-system-running 2>&1)"
+    echo "LINDOS_DESKTOP_DIAG get-default: $(systemctl get-default 2>&1)"
     systemctl list-jobs --no-legend 2>&1 | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG list-jobs: ${line}"
     done
@@ -169,6 +170,14 @@ diag() {
     systemctl status lightdm --no-pager -n 20 2>&1 | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG lightdm: ${line}"
     done
+    # Whichever unit graphical.target actually Wants (an alias symlink to lightdm.service, if
+    # enabled correctly) -- distinguishing "lightdm never got wanted at all" (this stays
+    # inactive too, no log lines) from "lightdm was wanted but crashed" (this would show it).
+    systemctl status display-manager --no-pager -n 20 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG display-manager: ${line}"
+    done
+    echo "LINDOS_DESKTOP_DIAG display-manager-symlink: $(readlink -f /etc/systemd/system/display-manager.service 2>&1)"
+    echo "LINDOS_DESKTOP_DIAG default-display-manager: $(cat /etc/X11/default-display-manager 2>&1)"
     grep -E '\(EE\)|\(WW\)' /var/log/Xorg.0.log 2>/dev/null | tail -n 20 | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG xorg: ${line}"
     done

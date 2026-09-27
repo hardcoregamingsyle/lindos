@@ -65,6 +65,24 @@ case "${1:-}" in
         if [ -x /usr/libexec/lindos/build-panel-profiles.sh ]; then
             /usr/libexec/lindos/build-panel-profiles.sh --quiet || log "build-panel-profiles.sh failed (ignored; panel/ dir fallback stays usable)"
         fi
+
+        # 8. Make sure this system actually boots to a graphical login. A boot-test CI run
+        #    (36300817476) found a built ISO whose live session sat at a bare text VT forever:
+        #    `systemctl is-system-running` reported "running" with zero failed units, yet
+        #    lightdm.service stayed "inactive (dead)" with not one log line ever written for
+        #    it -- consistent with graphical.target simply never being the active target, so
+        #    nothing ever pulled display-manager.service in, regardless of whether lightdm
+        #    itself was correctly enabled. lindos-desktop is the package responsible for the
+        #    desktop experience, so make this explicit here instead of depending on whatever
+        #    order the base image's other packages happened to configure themselves in. Both
+        #    calls are pure symlink bookkeeping (no --now, no bus/PID1 contact needed), so they
+        #    are safe and idempotent offline in the ISO build chroot and on a real install alike.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl set-default graphical.target >/dev/null 2>&1 \
+                || log "systemctl set-default graphical.target failed (ignored)"
+            systemctl enable lightdm.service >/dev/null 2>&1 \
+                || log "systemctl enable lightdm.service failed (ignored)"
+        fi
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)
         ;;

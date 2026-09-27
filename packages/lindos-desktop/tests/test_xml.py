@@ -588,6 +588,32 @@ def test_debian_metadata() -> None:
     assert sorted(conffiles) == shipped_etc
 
 
+def test_postinst_ensures_graphical_boot() -> None:
+    # Regression (boot-test CI run 36300817476): a built ISO's live session sat at a bare text
+    # VT forever -- `systemctl is-system-running` reported "running" with zero failed units,
+    # yet lightdm.service stayed "inactive (dead)" with not one log line ever written for it,
+    # consistent with graphical.target never being the active default target. lindos-desktop
+    # owns the desktop experience, so its postinst must not depend on some other package having
+    # already gotten this right -- it must set both explicitly itself.
+    postinst = (DEBIAN / "postinst").read_text(encoding="utf-8")
+    assert "systemctl set-default graphical.target" in postinst, (
+        "postinst must explicitly set the default systemd target to graphical.target -- do "
+        "not rely on inherited state from the base image (CI run 36300817476)"
+    )
+    assert "systemctl enable lightdm.service" in postinst, (
+        "postinst must explicitly enable lightdm.service -- do not rely on inherited state "
+        "from the base image (CI run 36300817476)"
+    )
+    # Both calls must be guarded (offline/chroot-safe: no bus contact, never fail the install)
+    # and must never pass the flag that would also try to start/stop against a running PID1
+    # (no running instance to act on at ISO build time; redundant on a real install too, where
+    # a reboot follows). Checked against the actual invocation lines, not the file as a whole,
+    # since this very explanation is itself allowed to name that flag in prose.
+    assert "command -v systemctl" in postinst
+    assert "set-default graphical.target --now" not in postinst
+    assert "enable lightdm.service --now" not in postinst
+
+
 def test_skel_readme_honesty() -> None:
     text = (ROOT / "etc/skel/.config/lindos/README").read_text(encoding="utf-8")
     assert "not" in text and "Windows" in text and "Wine" in text

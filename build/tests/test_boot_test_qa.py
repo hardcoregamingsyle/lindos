@@ -613,6 +613,7 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
         '#!/bin/bash\n'
         'case "$1" in\n'
         '  is-system-running) echo running; exit 0 ;;\n'
+        '  get-default) echo graphical.target; exit 0 ;;\n'
         '  status) echo "Active: active (running)"; exit 0 ;;\n'
         '  *) exit 0 ;;\n'
         'esac\n',
@@ -644,7 +645,11 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
     assert "LINDOS_DESKTOP_READY_TIMEOUT" not in res.stdout
     # diag() diagnostics (LINDOS_DESKTOP_DIAG task 2): printed once, right before the sentinel.
     assert "LINDOS_DESKTOP_DIAG is-system-running: running" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG get-default: graphical.target" in res.stdout
     assert "LINDOS_DESKTOP_DIAG lightdm: Active: active (running)" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG display-manager: Active: active (running)" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG display-manager-symlink:" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG default-display-manager:" in res.stdout
     assert "LINDOS_DESKTOP_DIAG session: 1 1000 testuser seat0" in res.stdout
     assert "LINDOS_DESKTOP_DIAG fgconsole: 1" in res.stdout
     assert "LINDOS_DESKTOP_DIAG lsmod: bochs_drm 12345 0" in res.stdout
@@ -666,6 +671,7 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
         '#!/bin/bash\n'
         'case "$1" in\n'
         '  is-system-running) echo starting; exit 1 ;;\n'
+        '  get-default) echo multi-user.target; exit 0 ;;\n'
         '  status) echo "Active: activating (start)"; exit 3 ;;\n'
         '  *) exit 1 ;;\n'
         'esac\n',
@@ -692,6 +698,8 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     # diag() must still run on the timeout path -- this is the ONLY case that ever mattered in
     # every real CI run so far (the watcher has never once reached LINDOS_DESKTOP_READY).
     assert "LINDOS_DESKTOP_DIAG is-system-running: starting" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG get-default: multi-user.target" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG display-manager: Active: activating (start)" in res.stdout
     assert "LINDOS_DESKTOP_DIAG lsmod: virtio_gpu 45056 1" in res.stdout
     assert (res.stdout.index("LINDOS_DESKTOP_DIAG is-system-running")
             < res.stdout.index("LINDOS_DESKTOP_READY_TIMEOUT"))
