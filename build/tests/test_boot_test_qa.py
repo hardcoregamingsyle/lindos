@@ -44,6 +44,7 @@ LINDOS_FAIL_LOG lindos-ram: RuntimeError: /proc/meminfo unreadable
 LINDOS_INFO failed_units=1
 LINDOS_FAILED_UNIT some.service loaded failed failed Some Service
 LINDOS_INFO is_system_running=degraded
+LINDOS_DESKTOP_WATCH_STARTED
 LINDOS_DESKTOP_READY
 LINDOS_SMOKE_DONE rc=1
 """
@@ -67,6 +68,7 @@ def test_parse_report_full(tmp_path):
         "lindos-ram: RuntimeError: /proc/meminfo unreadable",
     ]
     assert report["desktop_ready_line"] == "LINDOS_DESKTOP_READY"
+    assert report["desktop_watch_started"] is True
 
 
 def test_parse_report_desktop_ready_timeout_sentinel(tmp_path):
@@ -84,6 +86,7 @@ def test_parse_report_no_desktop_ready_line(tmp_path):
     log.write_text("LINDOS_SMOKE_START\nLINDOS_SMOKE_DONE rc=0\n", encoding="utf-8")
     report = boot_test.parse_report(log)
     assert report["desktop_ready_line"] is None
+    assert report["desktop_watch_started"] is False
     assert report["doctor_fails"] == []
     assert report["fail_logs"] == []
 
@@ -596,6 +599,7 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
     res = subprocess.run([BASH, str(watch_file)], capture_output=True, text=True, timeout=30,
                         check=False, env=env)
     assert res.returncode == 0, res.stderr
+    assert "LINDOS_DESKTOP_WATCH_STARTED" in res.stdout
     assert "LINDOS_DESKTOP_READY" in res.stdout
     assert "LINDOS_DESKTOP_READY_TIMEOUT" not in res.stdout
 
@@ -624,4 +628,5 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     res = subprocess.run([BASH, str(watch_file)], capture_output=True, text=True, timeout=30,
                         check=False, env=env)
     assert res.returncode == 0, res.stderr
+    assert "LINDOS_DESKTOP_WATCH_STARTED" in res.stdout
     assert "LINDOS_DESKTOP_READY_TIMEOUT" in res.stdout

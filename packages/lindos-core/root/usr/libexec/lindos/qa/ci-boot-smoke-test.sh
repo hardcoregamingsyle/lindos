@@ -146,6 +146,12 @@ start_desktop_watch() {
     cat > "${watch_script}" <<'WATCH_EOF'
 #!/bin/bash
 exec >/dev/console 2>&1
+# Printed unconditionally as the very first thing this process does, before the loop even
+# starts: if a run ever again shows neither READY nor READY_TIMEOUT, this line's presence or
+# absence tells us whether the watcher process reached bash at all (systemd-run/setsid dispatch,
+# the exec redirect, /dev/console access) vs. got stuck somewhere inside the loop itself
+# (systemctl/pgrep hanging) or its final echo not propagating.
+echo "LINDOS_DESKTOP_WATCH_STARTED"
 i=0
 while [ "${i}" -lt 150 ]; do
     state="$(systemctl is-system-running 2>/dev/null || true)"

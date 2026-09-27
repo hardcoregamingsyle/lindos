@@ -58,6 +58,7 @@ FAIL_LOG_RE = re.compile(r"^LINDOS_FAIL_LOG (.+)$")
 # see that function's docstring for why it must never run inline in the smoke-test unit itself.
 DESKTOP_READY_RE = re.compile(r"^LINDOS_DESKTOP_READY$")
 DESKTOP_READY_TIMEOUT_RE = re.compile(r"^LINDOS_DESKTOP_READY_TIMEOUT$")
+DESKTOP_WATCH_STARTED_RE = re.compile(r"^LINDOS_DESKTOP_WATCH_STARTED$")
 MONITOR_PROMPT = b"(qemu) "
 
 
@@ -206,6 +207,7 @@ def parse_report(serial_log: Path) -> dict:
     fail_logs: List[str] = []
     smoke_rc: Optional[int] = None
     desktop_ready_line: Optional[str] = None
+    desktop_watch_started = False
     for raw in text.splitlines():
         line = raw.strip()
         m = CHECK_RE.match(line)
@@ -234,9 +236,13 @@ def parse_report(serial_log: Path) -> dict:
             continue
         if DESKTOP_READY_RE.match(line) or DESKTOP_READY_TIMEOUT_RE.match(line):
             desktop_ready_line = line
+            continue
+        if DESKTOP_WATCH_STARTED_RE.match(line):
+            desktop_watch_started = True
     return {"checks": checks, "info": info, "failed_units": failed_units, "smoke_rc": smoke_rc,
             "booted": "LINDOS_SMOKE_START" in text, "doctor_fails": doctor_fails,
-            "fail_logs": fail_logs, "desktop_ready_line": desktop_ready_line}
+            "fail_logs": fail_logs, "desktop_ready_line": desktop_ready_line,
+            "desktop_watch_started": desktop_watch_started}
 
 
 def take_screenshot(monitor_sock: Path, out_png: Path) -> bool:
@@ -362,6 +368,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("  tail of failing checks' own logs:")
         for line in report["fail_logs"]:
             print(f"    {line}")
+    print(f"  desktop watch started: {report['desktop_watch_started']}")
     print(f"  desktop ready: {report['desktop_ready_line'] or 'never seen (timeout)'}")
     print(f"  screenshot: {'captured' if took_shot else 'NOT captured'}")
 
