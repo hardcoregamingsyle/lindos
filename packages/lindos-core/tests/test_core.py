@@ -669,13 +669,22 @@ def _firstboot_sandbox(tmp_path: Path, *, install_rc: int = 0, system_browser: O
         f"exit {install_rc}\n",
         encoding="utf-8", newline="\n",
     )
+    fake_install.chmod(0o755)
     if system_browser is not None:
         (root / "etc" / "lindos" / "system.json").write_text(
             json.dumps({"mode": "everyday", "browser": system_browser, "oem": False}), encoding="utf-8")
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
-    (fakebin / "id").write_text(
+    fake_id = fakebin / "id"
+    fake_id.write_text(
         "#!/bin/bash\n[ \"$1\" = \"-u\" ] && echo 0 || echo root\n", encoding="utf-8", newline="\n")
+    # Path.write_text() never sets the execute bit. On Windows/git-bash this goes unnoticed (NTFS
+    # has no POSIX exec bit, so a shebang script "just runs" regardless), but on real Linux a
+    # non-executable match is skipped during PATH search -- bash falls through to the *real*
+    # /usr/bin/id, which reports the CI runner's actual (non-root) uid, and every test below that
+    # relies on this fake to simulate root sees browser-firstboot.sh's real "must run as root"
+    # error instead of the behavior it's trying to exercise. Seen for real on CI; never on Windows.
+    fake_id.chmod(0o755)
     return root, fakebin, canary
 
 
