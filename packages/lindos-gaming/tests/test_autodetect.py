@@ -269,6 +269,10 @@ def test_escalate_auto_no_gpu_only_packages(monkeypatch):
 # --------------------------------------------------------------------------- first-boot unit/script
 def test_firstboot_service_unit():
     unit = read_text(SERVICE)
+    # Never on a live/ISO boot (same guard as lindos-browser-firstboot.service): a boot-test or
+    # live-USB session would otherwise run full hardware autodetect on every single boot, since
+    # it can never persist the done-marker to a real, writable /var/lib.
+    assert "ConditionKernelCommandLine=!boot=casper" in unit
     assert "ConditionPathExists=!/var/lib/lindos/driver-firstboot.done" in unit
     assert "ConditionVirtualization=!container" in unit
     assert "Type=oneshot" in unit

@@ -5,6 +5,13 @@ Documentation=man:lindos-drivers(1)
 # records recommendations (and, when online + not OEM, writes an install offer for the OOBE /
 # Lindos Settings to surface) — it NEVER installs proprietary drivers without user consent
 # (SPEC-VM.md section 24).  Never runs inside containers/chroots.
+# Must never run in the live/ISO session either (same guard as lindos-browser-firstboot.service):
+# ConditionKernelCommandLine refuses to start while 'boot=casper' is on the kernel command line
+# (casper is Mint/Ubuntu's live-session bootstrap — present only when booted straight off the
+# ISO, never on an installed system). Without this, a boot-test/live-USB session would run full
+# hardware autodetect every single boot, since it never gets the chance to persist the marker to
+# a real, writable /var/lib.
+ConditionKernelCommandLine=!boot=casper
 ConditionPathExists=!/var/lib/lindos/driver-firstboot.done
 ConditionVirtualization=!container
 Wants=network-online.target
