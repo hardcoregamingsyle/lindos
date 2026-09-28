@@ -235,6 +235,15 @@ def test_build_qemu_argv_shape(tmp_path):
     # build_qemu_argv() comment. Both must be explicitly disabled so the guest keeps running.
     assert "systemd.run_success_action=none" in append
     assert "systemd.run_failure_action=none" in append
+    # Regression (run 36362190703): serial.log went completely silent -- not even this test
+    # harness's own LINDOS_SMOKE_START -- right after lightdm.service/plymouth-quit-wait.service
+    # started, the expected behavior once plymouth actually gets a working graphical splash
+    # going (it stops mirroring status text to the console). plymouth.enable=0 keeps this CI
+    # harness's own diagnostics flowing to ttyS0 regardless of what the display is doing; "quiet"/
+    # "splash" are never appended here at all (a real end-user boot still gets both, via GRUB).
+    assert "plymouth.enable=0" in append
+    assert "quiet" not in append.split()
+    assert "splash" not in append.split()
 
 
 def test_build_qemu_argv_monitor_and_serial_paths(tmp_path):

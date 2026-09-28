@@ -149,7 +149,20 @@ def extract_casper(iso: Path, dest: Path, *, which=shutil.which, run=subprocess.
 def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path, monitor_sock: Path,
                     ram_mb: int, cpus: int) -> List[str]:
     append = (
-        "boot=casper username=mint hostname=mint quiet splash "
+        # No "quiet splash" here (unlike a real end-user boot, which still gets both via GRUB's
+        # normal, untouched config): run 36362190703 found lightdm.service and
+        # plymouth-quit-wait.service both start, then serial.log goes completely silent (not
+        # even our own smoke-test script's LINDOS_SMOKE_START, which is the very first thing it
+        # prints) for the rest of the run. The leading explanation is the mundane, expected one --
+        # once plymouth actually gets a working graphical splash going (which the virtio-vga
+        # switch above may have just enabled, unlike every previous bochs-drm run), systemd
+        # deliberately stops mirroring unit-start status text to the console so it doesn't
+        # clobber the splash animation, and plymouth's own graphical theme does not relay it
+        # either -- exactly the visibility this CI harness (not a real user) cannot afford to
+        # lose. `plymouth.enable=0` skips starting plymouth at all, so systemd's normal verbose
+        # status keeps flowing to ttyS0 for the whole boot regardless of what the display is
+        # doing, whether or not lightdm/Xorg ever actually finish.
+        "boot=casper username=mint hostname=mint plymouth.enable=0 "
         f"console=ttyS0,115200n8 systemd.run={SMOKE_SCRIPT_PATH} "
         # systemd's kernel-command-line generator defaults systemd.run='s unit to
         # SuccessAction=exit / FailureAction=exit (systemd >= 240) -- i.e. it shuts the whole
