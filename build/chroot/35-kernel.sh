@@ -86,6 +86,19 @@ find_kernel_debs() {
         local hdrs=("${dir}"/linux-headers-*-lindos*.deb "${dir}"/linux-headers-*lindos*.deb)
         local libc=("${dir}"/linux-libc-dev_*lindos*.deb)
         shopt -u nullglob
+        # Exclude the debug-symbols package: `make bindeb-pkg` also produces
+        # linux-image-<ver>-dbg_*.deb (1+ GB, vs ~tens of MB for the real image) --
+        # its name contains "-lindos" too (e.g. linux-image-6.14.0-lindos-dbg_...deb), so
+        # both globs above match it. It is never a valid/needed *bootable* kernel image, so
+        # installing it here would bloat the ISO by well over a gigabyte for nothing.
+        local imgs_filtered=() f
+        for f in "${imgs[@]}"; do
+            case "$(basename "${f}")" in
+                *-dbg_*.deb|*-dbg-*.deb) continue ;;
+            esac
+            imgs_filtered+=("${f}")
+        done
+        imgs=("${imgs_filtered[@]}")
         # de-duplicate (the two globs can overlap) and require at least one image
         local uniq=() seen="" f
         for f in "${imgs[@]}" "${hdrs[@]}" "${libc[@]}"; do

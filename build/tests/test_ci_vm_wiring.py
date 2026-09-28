@@ -14,6 +14,7 @@ one structural check uses PyYAML when it happens to be installed.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,7 +25,9 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent                       # build/tests -> repo root
 CI_YML = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 HOOK = REPO_ROOT / "build" / "chroot" / "75-vm.sh"
+KERNEL_HOOK = REPO_ROOT / "build" / "chroot" / "35-kernel.sh"
 META_CONTROL = REPO_ROOT / "packages" / "lindos-meta" / "DEBIAN" / "control"
+BASH = shutil.which("bash")
 
 # Anti-cheat / VM-detection evasion tokens that must NEVER appear anywhere in
 # the wiring we own (SPEC-VM §20, §26 no-spoof assertion).
@@ -98,6 +101,20 @@ def test_kernel_job_uploads_image_and_headers() -> None:
     assert "out/kernel/linux-headers-*.deb" in t
 
 
+def test_kernel_job_excludes_debug_symbols_package() -> None:
+    # Regression: `make bindeb-pkg` also produces linux-image-<ver>-dbg_*.deb (1.3+ GB for
+    # 6.14.0-lindos, vs ~47 MB for the real image), which "linux-image-*.deb" above also
+    # matches -- it made `gh run download -n lindos-kernel-debs` take 20+ minutes for nothing.
+    # actions/upload-artifact@v4's path input supports "!"-prefixed exclude patterns.
+    t = _text(CI_YML)
+    m = re.search(r"name: lindos-kernel-debs\n(?:[ \t]*#.*\n)*[ \t]*path: \|\n((?:[ \t]+\S.*\n)+)", t)
+    assert m, "could not find the lindos-kernel-debs upload-artifact 'path:' block"
+    path_block = m.group(1)
+    assert "!out/kernel/linux-image-*-dbg_*.deb" in path_block, (
+        "lindos-kernel-debs upload must exclude the debug-symbols package"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # ci.yml — iso job optionally consumes the kernel artifact
 # --------------------------------------------------------------------------- #
@@ -110,6 +127,52 @@ def test_iso_job_optionally_downloads_kernel_artifact() -> None:
     assert "always()" in t
     # and it stages the debs where 35-kernel.sh will find them
     assert "out/debs" in t
+
+
+# --------------------------------------------------------------------------- #
+# 35-kernel.sh chroot hook — find_kernel_debs() debug-symbols exclusion
+# --------------------------------------------------------------------------- #
+def _extract_function(script_text: str, name: str) -> str:
+    """Pull one `name() { ... }` function body out of the real script by its source text (same
+    technique as build/tests/test_boot_test_qa.py's helper of the same name), so the test
+    exercises the exact shipped implementation instead of a re-typed copy."""
+    m = re.search(rf"^{re.escape(name)}\(\) \{{\n(.*?\n)^\}}\n", script_text, re.M | re.S)
+    assert m, f"could not find function {name}() in {KERNEL_HOOK}"
+    return f"{name}() {{\n{m.group(1)}}}\n"
+
+
+@pytest.mark.skipif(BASH is None, reason="bash not available on this host")
+def test_find_kernel_debs_excludes_debug_symbols_package(tmp_path: Path) -> None:
+    # Regression: linux-image-<ver>-dbg_*.deb (debug symbols, 1.3+ GB) matches the same
+    # "*-lindos*"/"*lindos*" globs as the real linux-image-<ver>_*.deb -- `dpkg -i`'ing it into
+    # the ISO chroot would bloat the ISO by well over a gigabyte for nothing.
+    debs_dir = tmp_path / "debs"
+    debs_dir.mkdir()
+    for name in (
+        "linux-image-6.14.0-lindos_6.14.0-2_amd64.deb",
+        "linux-image-6.14.0-lindos-dbg_6.14.0-2_amd64.deb",
+        "linux-headers-6.14.0-lindos_6.14.0-2_amd64.deb",
+    ):
+        (debs_dir / name).write_bytes(b"")
+    script_text = KERNEL_HOOK.read_text(encoding="utf-8")
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\nset -Eeuo pipefail\n"
+        f'LINDOS_KERNEL_DEBS_DIR="{tmp_path / "nonexistent"}"\n'
+        f'LINDOS_DEBS_DIR="{debs_dir}"\n'
+        + _extract_function(script_text, "find_kernel_debs")
+        + "\nfind_kernel_debs\n",
+        encoding="utf-8",
+    )
+    res = subprocess.run([BASH, str(harness)], capture_output=True, text=True, timeout=30,
+                        check=False)
+    assert res.returncode == 0, res.stderr
+    found = [Path(p).name for p in res.stdout.splitlines() if p]
+    assert "linux-image-6.14.0-lindos_6.14.0-2_amd64.deb" in found
+    assert "linux-headers-6.14.0-lindos_6.14.0-2_amd64.deb" in found
+    assert "linux-image-6.14.0-lindos-dbg_6.14.0-2_amd64.deb" not in found, (
+        "find_kernel_debs() must exclude the debug-symbols package: " + repr(found)
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -250,9 +250,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: lindos-kernel-debs
+          # `make bindeb-pkg` also produces linux-image-<ver>-dbg_*.deb (debug symbols --
+          # 1.3+ GB for 6.14.0-lindos, vs ~47 MB for the real image / ~10 MB for headers),
+          # which the linux-image-*.deb pattern above also matches. Excluded: it made
+          # `gh run download -n lindos-kernel-debs` take 20+ minutes for nothing, and (see
+          # build/chroot/35-kernel.sh's own matching fix) it must never be `dpkg -i`'d into
+          # the ISO either.
           path: |
             out/kernel/linux-image-*.deb
             out/kernel/linux-headers-*.deb
+            !out/kernel/linux-image-*-dbg_*.deb
           if-no-files-found: error
           retention-days: 14
 
