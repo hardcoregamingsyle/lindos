@@ -210,9 +210,16 @@ def test_build_qemu_argv_shape(tmp_path):
     accel_idxs = [i for i, a in enumerate(argv) if a == "-accel"]
     accels = [argv[i + 1] for i in accel_idxs]
     assert accels == ["kvm", "tcg"]
-    # -display none still needs a real VGA device for `screendump` to work
+    # -display none still needs a real display device for `screendump` to work
     assert "-display" in argv and argv[argv.index("-display") + 1] == "none"
-    assert "-vga" in argv and argv[argv.index("-vga") + 1] == "std"
+    # Regression (run 36319809802): switched off "-vga std" (Bochs VBE) to virtio-vga --
+    # bochs-drm + Xorg's modesetting DDX under a direct -kernel boot never got the guest to draw
+    # a single frame (lightdm.service stuck "Starting" forever); virtio-gpu is the standard,
+    # well-exercised choice for headless/CI KMS. See build_qemu_argv()'s own comment.
+    assert "-vga" in argv and argv[argv.index("-vga") + 1] == "none"
+    device_idxs = [i for i, a in enumerate(argv) if a == "-device"]
+    devices = [argv[i + 1] for i in device_idxs]
+    assert "virtio-vga" in devices
     append = argv[argv.index("-append") + 1]
     assert "boot=casper" in append
     assert f"systemd.run={boot_test.SMOKE_SCRIPT_PATH}" in append
@@ -625,14 +632,34 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
         '#!/bin/bash\n[ "$2" = "lightdm" ] && exit 0\nexit 1\n', encoding="utf-8",
     )
     (fake_bin / "pgrep").chmod(0o755)
+    # Dispatches on $1 so list-sessions / seat-status / show-seat -p CanGraphical (all now
+    # called by diag(), task 2) each get their own realistic-looking output instead of one
+    # generic line for all three.
     (fake_bin / "loginctl").write_text(
-        '#!/bin/bash\necho "1 1000 testuser seat0"\n', encoding="utf-8",
+        '#!/bin/bash\n'
+        'case "$1" in\n'
+        '  list-sessions) echo "1 1000 testuser seat0" ;;\n'
+        '  seat-status) printf "seat0\\n\\tSessions: *1\\n" ;;\n'
+        '  show-seat) echo "CanGraphical=yes" ;;\n'
+        '  *) ;;\n'
+        'esac\n',
+        encoding="utf-8",
     )
     (fake_bin / "loginctl").chmod(0o755)
     (fake_bin / "fgconsole").write_text('#!/bin/bash\necho 1\n', encoding="utf-8")
     (fake_bin / "fgconsole").chmod(0o755)
     (fake_bin / "lsmod").write_text('#!/bin/bash\necho "bochs_drm 12345 0"\n', encoding="utf-8")
     (fake_bin / "lsmod").chmod(0o755)
+    (fake_bin / "dmesg").write_text(
+        '#!/bin/bash\necho "[    2.345678] [drm] fb0: virtio_gpudrmfb frame buffer device"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "dmesg").chmod(0o755)
+    (fake_bin / "journalctl").write_text(
+        '#!/bin/bash\necho "Sep 28 05:00:00 mint lightdm[123]: Starting Light Display Manager"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "journalctl").chmod(0o755)
     watch_file = tmp_path / "watch.sh"
     watch_file.write_text(watcher, encoding="utf-8")
     env = dict(os.environ)
@@ -650,9 +677,15 @@ def test_desktop_watch_prints_ready_once_running_and_a_session_process_exists(tm
     assert "LINDOS_DESKTOP_DIAG display-manager: Active: active (running)" in res.stdout
     assert "LINDOS_DESKTOP_DIAG display-manager-symlink:" in res.stdout
     assert "LINDOS_DESKTOP_DIAG default-display-manager:" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG plymouth-quit-wait: Active: active (running)" in res.stdout
     assert "LINDOS_DESKTOP_DIAG session: 1 1000 testuser seat0" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG seat-status: seat0" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG can-graphical: CanGraphical=yes" in res.stdout
     assert "LINDOS_DESKTOP_DIAG fgconsole: 1" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG dev-dri:" in res.stdout
     assert "LINDOS_DESKTOP_DIAG lsmod: bochs_drm 12345 0" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG dmesg: [    2.345678] [drm] fb0: virtio_gpudrmfb frame buffer device" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG journal-lightdm: Sep 28 05:00:00 mint lightdm[123]: Starting Light Display Manager" in res.stdout
     assert (res.stdout.index("LINDOS_DESKTOP_DIAG is-system-running")
             < res.stdout.index("LINDOS_DESKTOP_READY"))
 
@@ -686,6 +719,11 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     (fake_bin / "fgconsole").chmod(0o755)
     (fake_bin / "lsmod").write_text('#!/bin/bash\necho "virtio_gpu 45056 1"\n', encoding="utf-8")
     (fake_bin / "lsmod").chmod(0o755)
+    # This is the branch that matches every real CI run so far: nothing captured for either.
+    (fake_bin / "dmesg").write_text('#!/bin/bash\nexit 0\n', encoding="utf-8")
+    (fake_bin / "dmesg").chmod(0o755)
+    (fake_bin / "journalctl").write_text('#!/bin/bash\nexit 0\n', encoding="utf-8")
+    (fake_bin / "journalctl").chmod(0o755)
     watch_file = tmp_path / "watch.sh"
     watch_file.write_text(watcher, encoding="utf-8")
     env = dict(os.environ)
@@ -700,6 +738,11 @@ def test_desktop_watch_times_out_when_no_session_ever_appears(tmp_path):
     assert "LINDOS_DESKTOP_DIAG is-system-running: starting" in res.stdout
     assert "LINDOS_DESKTOP_DIAG get-default: multi-user.target" in res.stdout
     assert "LINDOS_DESKTOP_DIAG display-manager: Active: activating (start)" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG plymouth-quit-wait: Active: activating (start)" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG can-graphical:" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG dev-dri:" in res.stdout
     assert "LINDOS_DESKTOP_DIAG lsmod: virtio_gpu 45056 1" in res.stdout
+    assert "LINDOS_DESKTOP_DIAG dmesg:" not in res.stdout
+    assert "LINDOS_DESKTOP_DIAG journal-lightdm:" not in res.stdout
     assert (res.stdout.index("LINDOS_DESKTOP_DIAG is-system-running")
             < res.stdout.index("LINDOS_DESKTOP_READY_TIMEOUT"))

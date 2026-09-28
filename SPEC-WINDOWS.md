@@ -780,7 +780,19 @@ would stick and every boot would go to Windows).
    `CONFIG_EXFAT_FS=m`, `CONFIG_UNICODE=y` (ext4 casefold), `CONFIG_BINFMT_MISC=y`,
    `CONFIG_EFIVAR_FS=y`, `CONFIG_DM_CRYPT=m`, `CONFIG_CRYPTO_USER_API_SKCIPHER=m` (cryptsetup
    BITLK), `CONFIG_BLK_DEV_LOOP=y`, `CONFIG_ISO9660_FS=m`, `CONFIG_JOLIET=y`, `CONFIG_UDF_FS=m`,
-   `CONFIG_FUSE_FS=y` (ntfs-3g), `CONFIG_LDM_PARTITION=y` (Windows dynamic disks, MBR).
+   `CONFIG_FUSE_FS=y` (ntfs-3g), `CONFIG_LDM_PARTITION=y` (Windows dynamic disks, MBR). Also
+   required (unit-tested, CONTINUATION.md item 2 / boot-test run 36319809802): a working
+   display/GPU stack, so a laptop (or a headless CI VM) with no bound KMS/DRM driver never hangs
+   `graphical.target` waiting on seat0's `CanGraphical` — `CONFIG_DRM=y`,
+   `CONFIG_DRM_KMS_HELPER=y`, `CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FRAMEBUFFER_CONSOLE=y`,
+   `CONFIG_SYSFB_SIMPLEFB=y`, `CONFIG_DRM_SIMPLEDRM=y` (a firmware framebuffer becomes an early
+   DRM device before/without a real GPU driver), `CONFIG_DRM_I915=m`, `CONFIG_DRM_XE=m`,
+   `CONFIG_DRM_AMDGPU=m`, `CONFIG_DRM_RADEON=m`, `CONFIG_DRM_NOUVEAU=m` (real-laptop Intel/AMD/
+   Nvidia GPUs), `CONFIG_DRM_BOCHS=m`, `CONFIG_DRM_VIRTIO_GPU=m`, `CONFIG_DRM_QXL=m` (QEMU/CI and
+   other virtual GPUs). Confirmed present with these exact values in the real built
+   `6.14.0-lindos` config (CI run 36319809802) — the Ubuntu base config (item 2 below) already
+   carried all of it; these keys are a regression guard, not evidence of what caused that run's
+   boot-test hang (see `CI-LOGS.md`'s corresponding entry for the real root cause).
 2. **Base config** (fixes a latent bug: an upstream `defconfig` kernel lacks most real Wi-Fi/GPU/
    audio drivers): `build-kernel.sh --base-config ubuntu|defconfig|PATH`, default `ubuntu` = the
    Ubuntu *generic* flavour config (newest `/boot/config-*-generic`, else extracted from

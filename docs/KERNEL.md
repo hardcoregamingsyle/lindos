@@ -64,6 +64,29 @@ These are unconditionally **required** keys (`lindos_kernel.kconfig.REQUIRED_KEY
 `tests/test_kconfig.py`), same enforcement as the performance keys above — a fragment missing any
 of them fails validation.
 
+### 1.2 Display/GPU support (CONTINUATION.md item 2 / boot-test run 36319809802)
+
+A kernel with no working KMS/DRM driver never draws a frame — on real hardware, not just in a VM:
+LightDM/logind waits on seat0's `CanGraphical`, which needs a GPU driver to have registered a DRM
+device, so this would hang `graphical.target` forever on a real laptop too. `--base-config ubuntu`
+(§2.1) already carries Ubuntu's own generic-flavour values for all of these — confirmed present
+with these exact values in the actual built `6.14.0-lindos` config used by CI run `36319809802`
+(extracted from the `linux-image` `.deb` and diffed against every key/value in this fragment) —
+so these keys are a **regression guard**, not what caused that run's boot-test hang (a stuck
+`lightdm.service`/`plymouth-quit-wait.service`; see `CI-LOGS.md`'s matching entry for the real
+root cause and fix).
+
+| Feature | kconfig | Why |
+|---|---|---|
+| **DRM core + KMS/fbdev helpers** | `CONFIG_DRM=y`, `CONFIG_DRM_KMS_HELPER=y`, `CONFIG_DRM_FBDEV_EMULATION=y`, `CONFIG_FRAMEBUFFER_CONSOLE=y` | The kernel modesetting stack every DRM driver below sits on top of, plus a text console over it. |
+| **Firmware framebuffer → early DRM** | `CONFIG_SYSFB_SIMPLEFB=y`, `CONFIG_DRM_SIMPLEDRM=y` | Turns a firmware-provided framebuffer (UEFI GOP on a real laptop, or a VESA/Bochs-VBE mode set by SeaBIOS) into a real, driver-independent DRM/KMS device — a working display even before, or without, the real GPU driver. |
+| **Real-laptop GPU drivers** | `CONFIG_DRM_I915=m` (Intel, pre-Meteor Lake), `CONFIG_DRM_XE=m` (Intel, Meteor Lake/Arc/Battlemage+), `CONFIG_DRM_AMDGPU=m` (AMD GCN+), `CONFIG_DRM_RADEON=m` (AMD, pre-GCN), `CONFIG_DRM_NOUVEAU=m` (Nvidia; the proprietary driver is not redistributable/buildable in-tree) | So the built kernel actually drives the GPU real Lindos hardware ships with, not just a generic framebuffer. |
+| **QEMU/CI/virt GPUs** | `CONFIG_DRM_BOCHS=m`, `CONFIG_DRM_VIRTIO_GPU=m`, `CONFIG_DRM_QXL=m` | So `build/qa/boot_test.py`'s QEMU boot test (virtio-vga) — and anyone using virt-manager/VirtualBox-style tooling — also gets a real KMS device. |
+
+Same enforcement as the tables above: unconditionally required
+(`lindos_kernel.kconfig.REQUIRED_KEYS_DISPLAY`, a subset of `REQUIRED_KEYS`), checked by
+`tests/test_kconfig.py`.
+
 ## 2. How to build it (Linux host only)
 
 The kernel is compiled by `build/kernel/build-kernel.sh`. It **only runs on Linux** — on Windows

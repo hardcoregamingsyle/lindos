@@ -178,19 +178,48 @@ diag() {
     done
     echo "LINDOS_DESKTOP_DIAG display-manager-symlink: $(readlink -f /etc/systemd/system/display-manager.service 2>&1)"
     echo "LINDOS_DESKTOP_DIAG default-display-manager: $(cat /etc/X11/default-display-manager 2>&1)"
+    # plymouth-quit-wait.service was seen stuck "Starting" alongside lightdm.service on every
+    # run so far (round 3, run 36319809802) -- its own status tells us whether it is itself
+    # hung (nothing ever called `plymouth quit`) or whether it finished and lightdm alone hung.
+    systemctl status plymouth-quit-wait --no-pager -n 20 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG plymouth-quit-wait: ${line}"
+    done
     grep -E '\(EE\)|\(WW\)' /var/log/Xorg.0.log 2>/dev/null | tail -n 20 | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG xorg: ${line}"
     done
     loginctl list-sessions --no-legend 2>&1 | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG session: ${line}"
     done
+    # seat0's CanGraphical is what LightDM (via logind) actually waits on before it will even
+    # try to start a display -- this is the leading hypothesis's single most direct signal:
+    # CanGraphical=no with no DRM device below means logind itself is the blocker, not Xorg.
+    echo "LINDOS_DESKTOP_DIAG seat-status: $(loginctl seat-status seat0 2>&1 | tr '\n' '|')"
+    echo "LINDOS_DESKTOP_DIAG can-graphical: $(loginctl show-seat seat0 -p CanGraphical 2>&1)"
     echo "LINDOS_DESKTOP_DIAG fgconsole: $(fgconsole 2>&1)"
     for f in /sys/class/drm/*/status; do
         [ -e "${f}" ] || continue
         echo "LINDOS_DESKTOP_DIAG drm: ${f}=$(cat "${f}" 2>&1)"
     done
+    # /dev/dri's actual device nodes (card0/renderD128/...) -- distinguishes "no GPU driver ever
+    # bound" (this whole directory is missing/empty) from "a card exists but logind/Xorg still
+    # won't use it" (the /sys/class/drm/*/status loop above would then show something too).
+    ls -l /dev/dri 2>&1 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG dev-dri: ${line}"
+    done
     lsmod 2>&1 | grep -E 'bochs|drm|virtio' | while IFS= read -r line; do
         echo "LINDOS_DESKTOP_DIAG lsmod: ${line}"
+    done
+    # kernel-side confirmation of the same GPU/framebuffer probe (driver bind messages, modeset
+    # failures, EDID/monitor detection) straight from the ring buffer -- independent of whatever
+    # userspace (Xorg/logind) diagnostics above already show.
+    dmesg 2>&1 | grep -iE 'drm|fb0|bochs|virtio.?gpu|simpledrm' | tail -n 20 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG dmesg: ${line}"
+    done
+    # lightdm's own journal entries: systemctl status above only shows its last few lines *if*
+    # journald captured them under that unit; this asks journald directly and is never redundant
+    # with the "zero journal lines ever recorded for it" failure mode seen in an earlier round.
+    journalctl -b -u lightdm --no-pager 2>&1 | tail -n 30 | while IFS= read -r line; do
+        echo "LINDOS_DESKTOP_DIAG journal-lightdm: ${line}"
     done
 }
 

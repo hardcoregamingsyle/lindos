@@ -16,8 +16,9 @@ replaces the real desktop startup), and:
   2. waits a further grace period for the live desktop (LightDM autologin +
      XFCE) to actually finish drawing;
   3. takes a screenshot via the QEMU monitor's ``screendump`` (works with
-     ``-display none`` as long as a real VGA device — ``-vga std`` — is
-     present, so no X server/VNC/framebuffer capture tooling is needed);
+     ``-display none`` as long as a real display device — ``-device
+     virtio-vga`` — is present, so no X server/VNC/framebuffer capture
+     tooling is needed);
   4. quits QEMU and reports pass/fail from the serial log alone (never from
      the guest's own shutdown/exit code, which is unreliable to script).
 
@@ -175,7 +176,23 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
         "-m", str(ram_mb),
         "-smp", str(cpus),
         "-no-reboot",
-        "-vga", "std",
+        # virtio-gpu instead of the old "-vga std" (Bochs VBE-compatible framebuffer): run
+        # 36319809802 found lightdm.service starting and then never finishing -- stuck
+        # "Starting" for 25+ real minutes under real KVM with 4 vCPUs, the guest never drawing a
+        # single frame (QEMU's screendump kept returning its literal "Guest has not initialized
+        # the display (yet)" placeholder). bochs-drm + Xorg's modesetting DDX under a direct
+        # `-kernel` boot (no GRUB/EFI framebuffer handoff -- see extract_casper()'s docstring) is
+        # one of the least battle-tested display combinations for headless/CI X; virtio-gpu is
+        # the standard, well-exercised choice for exactly this (headless VM + real KMS, no BIOS/
+        # UEFI framebuffer handoff needed at all -- the guest's own virtio_gpu DRM driver
+        # programs the device directly over its PCI BARs/virtqueues and does its own modeset).
+        # Still works with `-display none` + monitor `screendump`, same as std/bochs did: QEMU's
+        # screendump always reads the currently active primary display adapter's framebuffer,
+        # regardless of which one is emulated. lindos.config now requires CONFIG_DRM_VIRTIO_GPU
+        # (and CONFIG_DRM_BOCHS, kept for anyone still using -vga std elsewhere, e.g. virt-
+        # manager/VirtualBox) be built for exactly this reason.
+        "-vga", "none",
+        "-device", "virtio-vga",
         "-display", "none",
         "-serial", f"file:{serial_log}",
         "-monitor", f"unix:{monitor_sock},server=on,wait=off",

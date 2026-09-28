@@ -76,8 +76,11 @@ Plain `CONFIG_*=y|m|n` lines + `# comment` lines only. MUST enable at least: `CO
 `CONFIG_LRU_GEN=y`, `CONFIG_LRU_GEN_ENABLED=y`, `CONFIG_ZRAM`, `CONFIG_ZSWAP`,
 `CONFIG_TRANSPARENT_HUGEPAGE`, `CONFIG_TRANSPARENT_HUGEPAGE_MADVISE`, `CONFIG_TCP_CONG_BBR`,
 `CONFIG_NET_SCH_FQ`, `CONFIG_IOSCHED_BFQ`|`CONFIG_MQ_IOSCHED_KYBER`, `CONFIG_X86_AMD_PSTATE`,
-`CONFIG_FUTEX`, `CONFIG_USER_NS`, `CONFIG_CHECKPOINT_RESTORE`. No duplicate keys; no key set to two
-different values. `kconfig.py` enforces this and the test asserts every required key is present.
+`CONFIG_FUTEX`, `CONFIG_USER_NS`, `CONFIG_CHECKPOINT_RESTORE`, plus the Addendum W Windows-format
+keys and the display/GPU keys (SPEC-WINDOWS.md §31.1 — a working KMS/DRM driver so a laptop, or a
+headless CI VM, never hangs `graphical.target` waiting on a display that never initializes). No
+duplicate keys; no key set to two different values. `kconfig.py` enforces this and the test
+asserts every required key is present.
 The build script merges this fragment onto a base defconfig — it is intentionally a *fragment*,
 not a full kernel config.
 

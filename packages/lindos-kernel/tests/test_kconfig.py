@@ -88,6 +88,45 @@ def test_missing_addendum_w_key_is_reported_missing() -> None:
     assert "CONFIG_NTFS3_FS" in cfg.missing_required()
 
 
+# --- display/GPU keys (CONTINUATION.md item 2 / boot-test run 36319809802) ------------------
+def test_display_keys_are_required() -> None:
+    # every display key must be part of the general required-keys set
+    for key in k.REQUIRED_KEYS_DISPLAY:
+        assert key in k.REQUIRED_KEYS, key
+
+
+def test_display_keys_do_not_conflict_with_existing_keys() -> None:
+    pre_existing = set(k.REQUIRED_KEYS) - set(k.REQUIRED_KEYS_DISPLAY)
+    assert pre_existing.isdisjoint(k.REQUIRED_KEYS_DISPLAY)
+
+
+def test_shipped_fragment_has_every_display_key(shipped_config: Path) -> None:
+    cfg = k.parse_file(str(shipped_config))
+    present = set(cfg.keys())
+    for key in k.REQUIRED_KEYS_DISPLAY:
+        assert key in present, key
+
+
+def test_shipped_fragment_display_values(shipped_config: Path) -> None:
+    cfg = k.parse_file(str(shipped_config))
+    # display core: always built-in (KMS/fbcon must exist before any module loader could run)
+    for key in ("CONFIG_DRM", "CONFIG_DRM_KMS_HELPER", "CONFIG_DRM_FBDEV_EMULATION",
+                "CONFIG_FRAMEBUFFER_CONSOLE", "CONFIG_SYSFB_SIMPLEFB", "CONFIG_DRM_SIMPLEDRM"):
+        assert cfg.get(key) == "y", key
+    # real-hardware + QEMU/CI GPU drivers: modules (loaded on demand for whichever GPU is present)
+    for key in ("CONFIG_DRM_I915", "CONFIG_DRM_XE", "CONFIG_DRM_AMDGPU", "CONFIG_DRM_RADEON",
+                "CONFIG_DRM_NOUVEAU", "CONFIG_DRM_BOCHS", "CONFIG_DRM_VIRTIO_GPU", "CONFIG_DRM_QXL"):
+        assert cfg.get(key) == "m", key
+
+
+def test_missing_display_key_is_reported_missing() -> None:
+    base = {key: "y" for key in k.REQUIRED_KEYS if key != "CONFIG_DRM_I915"}
+    base["CONFIG_HZ"] = "1000"
+    text = "\n".join(f"{key}={val}" for key, val in base.items()) + "\nCONFIG_IOSCHED_BFQ=y\n"
+    cfg = k.parse(text)
+    assert "CONFIG_DRM_I915" in cfg.missing_required()
+
+
 def test_load_default_path_uses_lindos_root(fake_root) -> None:
     cfg = k.parse_file()  # resolved through LINDOS_ROOT
     assert cfg.get("CONFIG_NTSYNC") == "y"

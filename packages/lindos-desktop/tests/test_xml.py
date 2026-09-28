@@ -614,6 +614,27 @@ def test_postinst_ensures_graphical_boot() -> None:
     assert "enable lightdm.service --now" not in postinst
 
 
+def test_lightdm_has_a_start_timeout() -> None:
+    # Regression (boot-test run 36319809802): lightdm.service (and plymouth-quit-wait.service
+    # alongside it) was found stuck "Starting" forever -- 25+ real minutes under real KVM, the
+    # display never initialized, and no operator-visible failure. Upstream's lightdm.service
+    # ships no TimeoutStartSec=, so a wedged Xorg/display-manager startup (a real-hardware risk,
+    # not just a QEMU one) hangs the boot indefinitely. graphical.target only Wants (not
+    # Requires) display-manager.service, so lightdm timing out and failing here still lets the
+    # rest of the boot (and CI's own systemd.run= smoke test / desktop-watch unit, which is
+    # otherwise gated behind default.target settling) proceed instead of hanging forever too.
+    conf_rel = "etc/systemd/system/lightdm.service.d/lindos-timeout.conf"
+    conf = (ROOT / conf_rel).read_text(encoding="utf-8")
+    assert "[Service]" in conf
+    m = re.search(r"^TimeoutStartSec=(\S+)$", conf, flags=re.M)
+    assert m, "lindos-timeout.conf must set TimeoutStartSec="
+    # a bounded, human-scale timeout -- long enough for a slow-but-genuinely-progressing start,
+    # short enough that CI (and a real user) gets a definite answer instead of waiting forever
+    assert m.group(1).endswith("s")
+    assert 30 <= int(m.group(1).rstrip("s")) <= 300
+    assert "/" + conf_rel in (DEBIAN / "conffiles").read_text(encoding="utf-8").split()
+
+
 def test_skel_readme_honesty() -> None:
     text = (ROOT / "etc/skel/.config/lindos/README").read_text(encoding="utf-8")
     assert "not" in text and "Windows" in text and "Wine" in text

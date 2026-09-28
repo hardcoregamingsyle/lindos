@@ -59,6 +59,24 @@ REQUIRED_KEYS: Tuple[str, ...] = (
     "CONFIG_UDF_FS",
     "CONFIG_FUSE_FS",
     "CONFIG_LDM_PARTITION",
+) + (
+    # --- Display / GPU (CONTINUATION.md item 2 / boot-test run 36319809802): a kernel missing
+    # a working KMS/DRM driver never draws a frame on real hardware, not just in CI's QEMU -- see
+    # the comment block above these keys in lindos.config for the full rationale.
+    "CONFIG_DRM",
+    "CONFIG_DRM_KMS_HELPER",
+    "CONFIG_DRM_FBDEV_EMULATION",
+    "CONFIG_FRAMEBUFFER_CONSOLE",
+    "CONFIG_SYSFB_SIMPLEFB",
+    "CONFIG_DRM_SIMPLEDRM",
+    "CONFIG_DRM_I915",
+    "CONFIG_DRM_XE",
+    "CONFIG_DRM_AMDGPU",
+    "CONFIG_DRM_RADEON",
+    "CONFIG_DRM_NOUVEAU",
+    "CONFIG_DRM_BOCHS",
+    "CONFIG_DRM_VIRTIO_GPU",
+    "CONFIG_DRM_QXL",
 )
 
 #: The subset of :data:`REQUIRED_KEYS` added by Addendum W (SPEC-WINDOWS §31.1), kept as a
@@ -81,6 +99,26 @@ REQUIRED_KEYS_ADDENDUM_W: Tuple[str, ...] = (
     "CONFIG_LDM_PARTITION",
 )
 
+#: The subset of :data:`REQUIRED_KEYS` that guarantees a working display/GPU driver stack
+#: (CONTINUATION.md item 2 / boot-test run 36319809802), kept separate so tests and docs can
+#: refer to "the display keys" by name, the same way :data:`REQUIRED_KEYS_ADDENDUM_W` does.
+REQUIRED_KEYS_DISPLAY: Tuple[str, ...] = (
+    "CONFIG_DRM",
+    "CONFIG_DRM_KMS_HELPER",
+    "CONFIG_DRM_FBDEV_EMULATION",
+    "CONFIG_FRAMEBUFFER_CONSOLE",
+    "CONFIG_SYSFB_SIMPLEFB",
+    "CONFIG_DRM_SIMPLEDRM",
+    "CONFIG_DRM_I915",
+    "CONFIG_DRM_XE",
+    "CONFIG_DRM_AMDGPU",
+    "CONFIG_DRM_RADEON",
+    "CONFIG_DRM_NOUVEAU",
+    "CONFIG_DRM_BOCHS",
+    "CONFIG_DRM_VIRTIO_GPU",
+    "CONFIG_DRM_QXL",
+)
+
 #: Alternative groups: at least one symbol from each group must be present.
 REQUIRED_ANY: Tuple[Tuple[str, ...], ...] = (
     ("CONFIG_IOSCHED_BFQ", "CONFIG_MQ_IOSCHED_KYBER"),
@@ -93,6 +131,13 @@ REQUIRED_VALUES: Dict[str, str] = {
     "CONFIG_LRU_GEN": "y",
     "CONFIG_LRU_GEN_ENABLED": "y",
     "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE": "y",
+    # display core: always built-in, never modules (needed before any module loader could run)
+    "CONFIG_DRM": "y",
+    "CONFIG_DRM_KMS_HELPER": "y",
+    "CONFIG_DRM_FBDEV_EMULATION": "y",
+    "CONFIG_FRAMEBUFFER_CONSOLE": "y",
+    "CONFIG_SYSFB_SIMPLEFB": "y",
+    "CONFIG_DRM_SIMPLEDRM": "y",
 }
 
 

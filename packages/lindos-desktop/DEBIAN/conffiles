@@ -3,6 +3,7 @@
 /etc/lightdm/slick-greeter.conf
 /etc/lindos-release
 /etc/skel/.config/lindos/README
+/etc/systemd/system/lightdm.service.d/lindos-timeout.conf
 /etc/xdg/autostart/lindos-mode-apply-user.desktop
 /etc/xdg/autostart/lindos-picom.desktop
 /etc/xdg/autostart/lindos-setup.desktop
