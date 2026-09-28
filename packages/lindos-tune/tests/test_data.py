@@ -100,7 +100,7 @@ def test_ananicy_rules_are_json_lines_and_types_resolve() -> None:
 #: one-shot autodetect/first-boot units: not meant to be toggled by users through the generic
 #: services wrapper (they are managed by their own systemd Condition*=/marker files instead).
 _PRESET_NOT_WHITELISTED = {"lindos-sensors-detect.service", "lindos-driver-firstboot.service",
-                           "lindos-browser-firstboot.service"}
+                           "lindos-browser-firstboot.service", "lindos-ci-boot-smoke-test.service"}
 
 
 def test_preset_units_are_valid_and_whitelisted_where_toggleable() -> None:

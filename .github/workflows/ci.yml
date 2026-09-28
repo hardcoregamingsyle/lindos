@@ -337,10 +337,12 @@ jobs:
     # Actually boots the built ISO — CONTINUATION.md item 2/6: "nothing here has ever been
     # booted yet". Runs the live kernel/initrd directly under QEMU (bypassing GRUB), with the
     # ISO attached as a virtual CD-ROM so casper finds the squashfs exactly as on real hardware.
-    # `systemd.run=` on the kernel command line runs
+    # The `lindos.ci_boot_test` kernel-command-line flag triggers lindos-ci-boot-smoke-test.service
+    # (packages/lindos-core/.../usr/lib/systemd/system/), which runs
     # packages/lindos-core/.../usr/libexec/lindos/qa/ci-boot-smoke-test.sh alongside the normal
-    # boot (see build/qa/boot_test.py's docstring) — it never delays or replaces the real
-    # desktop. GitHub's ubuntu-24.04 hosted runners have nested KVM; boot_test.py falls back to
+    # boot, ordered only against basic.target (see build/qa/boot_test.py's docstring) — it never
+    # delays or replaces the real desktop, and never waits on multi-user.target/graphical.target
+    # either. GitHub's ubuntu-24.04 hosted runners have nested KVM; boot_test.py falls back to
     # TCG automatically (slower, but never hard-fails just because /dev/kvm is absent).
     if: >-
       ${{ always()

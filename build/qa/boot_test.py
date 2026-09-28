@@ -4,11 +4,18 @@
 Extracts the live kernel/initrd from the ISO (so GRUB's menu timeout/theme
 never has to be scripted), boots them directly under QEMU with the ISO
 attached as a virtual CD-ROM (so casper's live-boot init finds the squashfs
-on it exactly as it would on real hardware), appends
-``systemd.run=/usr/libexec/lindos/qa/ci-boot-smoke-test.sh`` on the kernel
-command line (systemd's kernel-command-line generator turns that into a
-transient unit that runs *alongside* the normal boot — it never delays or
-replaces the real desktop startup), and:
+on it exactly as it would on real hardware), appends ``lindos.ci_boot_test``
+on the kernel command line — matched by the ``ConditionKernelCommandLine=``
+on ``lindos-ci-boot-smoke-test.service`` (a real shipped unit that
+``ExecStart=``s ``/usr/libexec/lindos/qa/ci-boot-smoke-test.sh``), ordered
+only against ``basic.target`` so it runs *alongside* the normal boot
+regardless of whether multi-user.target/graphical.target/lightdm ever
+settle — never delaying or replacing the real desktop startup. (An earlier
+version of this harness used the kernel command line's own ``systemd.run=``
+instead; its generated transient unit turned out to be gated behind
+default.target actually settling, so it silently never ran at all whenever
+graphical.target got stuck — see CI-LOGS.md/CONTINUATION.md, run
+36370906849.) Then:
 
   1. tails the serial console for the smoke test's ``LINDOS_SMOKE_DONE``
      sentinel (with an overall timeout — a stuck/crashed boot fails the test
@@ -50,7 +57,15 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+# Kept only for parse_report()/tests that reference the script's own path in comments/docstrings;
+# the smoke test itself is no longer invoked via the kernel command line's `systemd.run=` (see
+# CI_BOOT_TEST_FLAG below for why) but via a real shipped unit,
+# lindos-ci-boot-smoke-test.service, that ExecStart=s this same script.
 SMOKE_SCRIPT_PATH = "/usr/libexec/lindos/qa/ci-boot-smoke-test.sh"
+# Bespoke kernel-command-line flag matched by lindos-ci-boot-smoke-test.service's own
+# ConditionKernelCommandLine=. Never present on a real end-user boot (GRUB's own, untouched
+# config) -- only build_qemu_argv() below ever appends it.
+CI_BOOT_TEST_FLAG = "lindos.ci_boot_test"
 DONE_RE = re.compile(r"^LINDOS_SMOKE_DONE rc=(\d+)")
 CHECK_RE = re.compile(r"^LINDOS_CHECK (\S+)=(OK|FAIL)(?: rc=(-?\d+))?")
 INFO_RE = re.compile(r"^LINDOS_INFO (\S+)=(.*)$")
@@ -151,33 +166,32 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
     append = (
         # No "quiet splash" here (unlike a real end-user boot, which still gets both via GRUB's
         # normal, untouched config): run 36362190703 found lightdm.service and
-        # plymouth-quit-wait.service both start, then serial.log goes completely silent (not
-        # even our own smoke-test script's LINDOS_SMOKE_START, which is the very first thing it
-        # prints) for the rest of the run. The leading explanation is the mundane, expected one --
-        # once plymouth actually gets a working graphical splash going (which the virtio-vga
-        # switch above may have just enabled, unlike every previous bochs-drm run), systemd
-        # deliberately stops mirroring unit-start status text to the console so it doesn't
-        # clobber the splash animation, and plymouth's own graphical theme does not relay it
-        # either -- exactly the visibility this CI harness (not a real user) cannot afford to
-        # lose. `plymouth.enable=0` skips starting plymouth at all, so systemd's normal verbose
-        # status keeps flowing to ttyS0 for the whole boot regardless of what the display is
-        # doing, whether or not lightdm/Xorg ever actually finish.
+        # plymouth-quit-wait.service both start, then serial.log goes completely silent for the
+        # rest of the run. `plymouth.enable=0` skips starting plymouth at all, so systemd's normal
+        # verbose status keeps flowing to ttyS0 for the whole boot regardless of what the display
+        # is doing, whether or not lightdm/Xorg ever actually finish.
         "boot=casper username=mint hostname=mint plymouth.enable=0 "
-        f"console=ttyS0,115200n8 systemd.run={SMOKE_SCRIPT_PATH} "
-        # systemd's kernel-command-line generator defaults systemd.run='s unit to
-        # SuccessAction=exit / FailureAction=exit (systemd >= 240) -- i.e. it shuts the whole
-        # machine down the instant the smoke-test command finishes, exactly like a `--` end-of-
-        # test action. That is the real cause the live desktop was never seen: the smoke-test
-        # script (a handful of quick CLI checks) completes in well under a second, so the guest
-        # started powering off before LightDM/XFCE (and the detached desktop-ready watcher's own
-        # 150s loop) ever got anywhere near finishing -- confirmed in serial.log, where "Stopping
-        # lindos-desktop-watch.service" appears as part of a full shutdown.target teardown
-        # (triggered by "casper.service - Shuts down the 'live' preinstalled system cleanly")
-        # moments after LINDOS_SMOKE_DONE, with is_system_running still =initializing. This is a
-        # test-harness artefact of how this script invokes systemd.run=, not a Lindos bug -- a
-        # real boot never passes systemd.run= at all. Explicitly disabling both actions keeps the
-        # VM running so the normal boot (and this script's own desktop-ready wait) can proceed.
-        "systemd.run_success_action=none systemd.run_failure_action=none --"
+        f"console=ttyS0,115200n8 {CI_BOOT_TEST_FLAG} --"
+        # ^ Deliberately NOT `systemd.run={SMOKE_SCRIPT_PATH} ...`: with plymouth.enable=0 in
+        # place (above), run 36370906849 proved that theory wrong for the *real* remaining
+        # blocker -- serial.log reached "Reached target basic.target" and ran a full early
+        # parallel batch of ordinary multi-user.target Wants= units (NetworkManager, ubiquity,
+        # lindos-sensors-detect, ...) for the entire 1500s/25-real-minute run, yet never once
+        # printed "Reached target multi-user.target" or "Reached target graphical.target" --
+        # only a `mint login:` getty prompt, proving the guest was alive and busy the whole time,
+        # just never settling either target. `systemd.run=`'s generated transient unit
+        # (kernel-command-line.service) is gated behind default.target (= graphical.target here)
+        # actually reaching "active", so it silently never ran at all, every round, regardless of
+        # the plymouth/console-visibility question this flag was originally added to answer. The
+        # smoke test is now a real shipped unit instead -- lindos-ci-boot-smoke-test.service,
+        # ConditionKernelCommandLine=lindos.ci_boot_test-gated, ordered only against basic.target,
+        # proven (via lindos-sensors-detect.service, WantedBy=multi-user.target, in that same
+        # serial.log) to start in that same early parallel batch independent of whether
+        # multi-user.target/graphical.target ever themselves settle. See CI-LOGS.md/CONTINUATION.md
+        # for the full history; whatever is actually hanging multi-user.target/graphical.target
+        # (lightdm.service and/or plymouth-quit-wait.service are the leading suspects) remains a
+        # separate, still-open bug -- it no longer blocks this smoke test, and the live-desktop
+        # screenshot/LINDOS_DESKTOP_READY watch was always non-blocking on its own.
     )
     return [
         "qemu-system-x86_64",

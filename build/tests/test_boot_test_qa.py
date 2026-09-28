@@ -1,9 +1,9 @@
 """Hermetic tests for build/qa/boot_test.py's pure logic (no real QEMU/xorriso/network).
 
 Covers: serial-log parsing (the CHECK/INFO/FAILED_UNIT/DONE sentinel grammar the guest-side
-``ci-boot-smoke-test.sh`` emits), the QEMU argv builder (systemd.run= path, KVM/TCG fallback,
-screendump-friendly VGA choice), and the extraction helper against injected which/run callables
-so it never shells out for real. Works on Windows and Linux.
+``ci-boot-smoke-test.sh`` emits), the QEMU argv builder (the lindos.ci_boot_test kernel-cmdline
+flag, KVM/TCG fallback, screendump-friendly VGA choice), and the extraction helper against
+injected which/run callables so it never shells out for real. Works on Windows and Linux.
 """
 from __future__ import annotations
 
@@ -222,19 +222,17 @@ def test_build_qemu_argv_shape(tmp_path):
     assert "virtio-vga" in devices
     append = argv[argv.index("-append") + 1]
     assert "boot=casper" in append
-    assert f"systemd.run={boot_test.SMOKE_SCRIPT_PATH}" in append
     assert "console=ttyS0" in append
-    # never a shell-quoted / spaced inline command -- a bare path only (kernel cmdline
-    # quoting for systemd.run= is not something to rely on; see boot_test.py docstring)
-    run_token = [t for t in append.split() if t.startswith("systemd.run=")][0]
-    assert " " not in run_token
-    # Regression: systemd's kernel-command-line generator defaults systemd.run='s unit to
-    # SuccessAction=exit/FailureAction=exit (systemd >= 240), i.e. it powers the whole VM off the
-    # instant the smoke-test command finishes -- which was the real reason the live desktop (and
-    # the detached desktop-ready watcher) never got a chance to be seen; see boot_test.py's
-    # build_qemu_argv() comment. Both must be explicitly disabled so the guest keeps running.
-    assert "systemd.run_success_action=none" in append
-    assert "systemd.run_failure_action=none" in append
+    # Regression (run 36370906849): the smoke test used to be invoked via the kernel command
+    # line's own `systemd.run=<script>`, whose generated transient unit turned out to be gated
+    # behind default.target actually settling -- serial.log reached basic.target and ran a full
+    # early parallel batch of ordinary multi-user.target Wants= units for the entire 25-real-
+    # minute run, yet never printed "Reached target multi-user.target"/"graphical.target", so
+    # that unit silently never ran at all. The smoke test is now a real shipped unit instead
+    # (lindos-ci-boot-smoke-test.service), gated by its own ConditionKernelCommandLine= on this
+    # bare flag and ordered only against basic.target -- never against systemd.run= at all.
+    assert boot_test.CI_BOOT_TEST_FLAG in append.split()
+    assert "systemd.run=" not in append
     # Regression (run 36362190703): serial.log went completely silent -- not even this test
     # harness's own LINDOS_SMOKE_START -- right after lightdm.service/plymouth-quit-wait.service
     # started, the expected behavior once plymouth actually gets a working graphical splash
@@ -377,7 +375,46 @@ def test_main_accepts_require_kernel_suffix_with_leading_dash_value(tmp_path, ca
 
 SMOKE_SCRIPT = (HERE.parent.parent / "packages" / "lindos-core" / "root" / "usr" / "libexec"
                 / "lindos" / "qa" / "ci-boot-smoke-test.sh")
+SMOKE_SERVICE_UNIT = (HERE.parent.parent / "packages" / "lindos-core" / "root" / "usr" / "lib"
+                       / "systemd" / "system" / "lindos-ci-boot-smoke-test.service")
 BASH = shutil.which("bash")
+
+
+# --------------------------------------------------------------------------- #
+# lindos-ci-boot-smoke-test.service (the real shipped unit that replaced systemd.run=)
+# --------------------------------------------------------------------------- #
+
+
+def test_ci_boot_smoke_test_service_unit() -> None:
+    unit = SMOKE_SERVICE_UNIT.read_text(encoding="utf-8")
+    assert "\r\n" not in unit
+    # never on a real end-user boot (build_qemu_argv() is the only thing that ever appends this)
+    assert "ConditionKernelCommandLine=lindos.ci_boot_test" in unit
+    assert "ConditionVirtualization=!container" in unit
+    # ordered ONLY against basic.target -- never multi-user.target/graphical.target/default.target,
+    # the whole point of this unit (run 36370906849: neither target was ever reached, even 25 real
+    # minutes in, so anything gated on them silently never ran). WantedBy=multi-user.target is fine
+    # (that's the pull-in point, not an ordering dependency -- see the unit's own comment and
+    # lindos-sensors-detect.service, which uses the identical pattern); only an actual
+    # After=/Before=/Wants=/Requires= directive against one of those three targets would matter.
+    assert "After=basic.target" in unit
+    ordering_lines = [ln for ln in unit.splitlines()
+                      if re.match(r"^(After|Before|Wants|Requires)=", ln)]
+    for stale in ("multi-user.target", "graphical.target", "default.target"):
+        assert not any(stale in ln for ln in ordering_lines), \
+            f"must not order against {stale}: {ordering_lines}"
+    assert "Type=oneshot" in unit and "RemainAfterExit=yes" in unit
+    assert f"ExecStart={boot_test.SMOKE_SCRIPT_PATH}" in unit
+    assert "TTYPath=/dev/console" in unit
+    assert "WantedBy=multi-user.target" in unit
+
+
+def test_ci_boot_smoke_test_service_enabled_in_preset() -> None:
+    # Must actually be enabled at ISO build time (systemctl preset-all, build/chroot/50-tune.sh) --
+    # never left to the ambient systemd default policy, same as its multi-user.target siblings.
+    preset = (HERE.parent.parent / "packages" / "lindos-tune" / "root" / "usr" / "lib" / "systemd"
+              / "system-preset" / "90-lindos.preset").read_text(encoding="utf-8")
+    assert "enable lindos-ci-boot-smoke-test.service" in preset.splitlines()
 
 
 def _extract_function(script_text: str, name: str) -> str:
@@ -465,9 +502,9 @@ def test_smoke_check_all_pass_gives_rc_zero(tmp_path):
 @pytest.mark.skipif(BASH is None, reason="bash not available on this host")
 def test_smoke_check_compat_doctor_excuses_only_display(tmp_path):
     """lindos-compat doctor's 'required' DISPLAY check genuinely fails when this smoke test runs
-    as an early-boot systemd.run= oneshot with no logged-in desktop session -- that's expected,
-    not a bug, so check_compat_doctor() must still report OK. Any OTHER required check failing
-    must still be a real FAIL."""
+    as an early-boot oneshot (lindos-ci-boot-smoke-test.service) with no logged-in desktop
+    session -- that's expected, not a bug, so check_compat_doctor() must still report OK. Any
+    OTHER required check failing must still be a real FAIL."""
     script_text = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
     def doctor_report(extra_bad_required: bool) -> str:

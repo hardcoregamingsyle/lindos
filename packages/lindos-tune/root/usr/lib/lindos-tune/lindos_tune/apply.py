@@ -87,7 +87,7 @@ MODE_DEFAULTS: Dict[str, Dict[str, Any]] = {
 }
 PRESET_ENABLE = ["earlyoom.service", "fstrim.timer", "zramswap.service", "cups.socket", "cups.path", "avahi-daemon.service",
                  "lindos-sensors-detect.service", "bluetooth.service", "lindos-driver-firstboot.service",
-                 "lindos-browser-firstboot.service"]
+                 "lindos-browser-firstboot.service", "lindos-ci-boot-smoke-test.service"]
 PRESET_DISABLE = ["ModemManager.service", "cups.service", "cups-browsed.service",
                   "NetworkManager-wait-online.service", "apport.service", "whoopsie.service",
                   "kerneloops.service", "brltty.service", "speech-dispatcher.service",

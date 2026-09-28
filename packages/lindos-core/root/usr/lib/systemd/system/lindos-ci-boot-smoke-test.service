@@ -1,0 +1,56 @@
+[Unit]
+Description=Lindos CI boot smoke test (QA only; never runs on a real install)
+Documentation=man:lindos-mode(1)
+# QA-only, like ci-boot-smoke-test.sh's own header says: exists solely for build/qa/boot_test.py's
+# CI boot-test. ConditionKernelCommandLine means this unit never even starts on a real end-user
+# boot, an installed system, or a plain chroot/build environment -- 'lindos.ci_boot_test' is a
+# bespoke flag only boot_test.py's build_qemu_argv() ever appends, never present on any real boot
+# (GRUB's own, untouched config).
+#
+# Pulled in via WantedBy=multi-user.target below (proven safe: lindos-sensors-detect.service uses
+# the exact same WantedBy=multi-user.target and this run's own serial.log shows it starting right
+# after basic.target, in the same early parallel batch as NetworkManager/ubiquity/etc. -- entirely
+# independent of whether multi-user.target itself ever finishes settling; WantedBy= only pulls a
+# unit into the transaction, it is not an ordering dependency on the target's own completion), but
+# ordered (After=/Wants=) against basic.target ONLY -- never against multi-user.target/graphical.
+# target/default.target. The original design relied on the kernel command line's own
+# `systemd.run=` mechanism instead of a real shipped unit; that generated transient unit is gated
+# behind default.target actually settling (see CI-LOGS.md/CONTINUATION.md, 2026-09-27 "round 3"),
+# so when anything blocks multi-user.target/graphical.target from ever reaching "active" -- e.g.
+# lightdm.service hanging (a separate, still-open bug; see lightdm.service.d/lindos-timeout.conf),
+# or plymouth-quit-wait.service itself never unblocking (run 36370906849: serial.log reached
+# basic.target and ran plenty of ordinary multi-user.target Wants= units in parallel -- ubiquity,
+# NetworkManager, lindos-sensors-detect, etc. -- yet NEVER printed "Reached target multi-user.
+# target" or "Reached target graphical.target" even 25 real minutes in, with a `mint login:` getty
+# prompt proving the system was otherwise alive) -- the whole smoke test silently never ran at all,
+# every single round. Anchoring on basic.target instead sidesteps that entire, still only partly
+# understood hang: this unit runs alongside the exact same early parallel batch as lindos-sensors-
+# detect.service (proven to start right after basic.target in that same serial.log), regardless of
+# whether the desktop ever comes up.
+#
+# Whether the graphical desktop itself ever renders is a separate, already non-blocking concern --
+# see start_desktop_watch() in ci-boot-smoke-test.sh and its own LINDOS_DESKTOP_READY/_TIMEOUT
+# sentinels, read by boot_test.py independently of this unit's own pass/fail. This unit's checks
+# (lindos-mode/-config/-ram/-tune/-compat doctor/etc.) do not need, and must not wait for, a working
+# display -- lindos-compat doctor's own required-check parsing already treats the "display" check as
+# expected-to-fail in this early-boot, no-session context.
+ConditionKernelCommandLine=lindos.ci_boot_test
+ConditionVirtualization=!container
+After=basic.target
+Wants=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+ExecStart=/usr/libexec/lindos/qa/ci-boot-smoke-test.sh
+# Generous but bounded: the script itself is a handful of quick CLI checks (well under a second in
+# every prior run that got this far) plus launching (never waiting on) the detached desktop-ready
+# watcher, so this is purely a safety net against some future check hanging, not a normal-path limit.
+TimeoutStartSec=1800
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

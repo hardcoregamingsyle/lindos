@@ -4,13 +4,17 @@
 #  Addendum U is silent about this file; it is a GitHub Actions boot-test
 #  helper, not a user-facing tool).
 #
-#  Invoked via the kernel command line: `systemd.run=/usr/libexec/lindos/qa/
-#  ci-boot-smoke-test.sh`. systemd's kernel-command-line generator turns that
-#  into a transient oneshot service that runs alongside the normal boot
-#  (default.target), so this never delays or blocks the real desktop from
-#  starting. It is READ-ONLY — it never installs, modifies or deletes
-#  anything on the system — and harmless if ever run by hand on a real
-#  install (it just prints a report and exits 0).
+#  Invoked by lindos-ci-boot-smoke-test.service (packages/lindos-core/root/usr/lib/systemd/system/),
+#  a real shipped oneshot unit gated by ConditionKernelCommandLine=lindos.ci_boot_test (a bespoke
+#  flag only build/qa/boot_test.py's build_qemu_argv() ever appends — never present on a real
+#  end-user boot) and ordered only against basic.target, so it runs alongside the normal boot and
+#  never delays or blocks the real desktop from starting, and never waits on
+#  multi-user.target/graphical.target either (an earlier version used the kernel command line's
+#  own `systemd.run=` instead; that generator-created unit turned out to be gated behind
+#  default.target actually settling, so it silently never ran at all whenever graphical.target got
+#  stuck — see CI-LOGS.md/CONTINUATION.md, run 36370906849). It is READ-ONLY — it never installs,
+#  modifies or deletes anything on the system — and harmless if ever run by hand on a real install
+#  (it just prints a report and exits 0).
 #
 #  Everything is written straight to /dev/console so it lands on QEMU's
 #  serial log regardless of how systemd would otherwise capture this unit's

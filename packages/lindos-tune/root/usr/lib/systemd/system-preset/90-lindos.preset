@@ -12,6 +12,7 @@ enable lindos-sensors-detect.service
 enable bluetooth.service
 enable lindos-driver-firstboot.service
 enable lindos-browser-firstboot.service
+enable lindos-ci-boot-smoke-test.service
 disable ModemManager.service
 disable cups.service
 disable cups-browsed.service
