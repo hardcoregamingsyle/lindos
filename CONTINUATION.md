@@ -1,7 +1,7 @@
 # Lindos — Continuation Guide (agent handoff)
 
-_Last updated: 2026-09-26 (Addendum W integration pass). Written for the next agent/developer
-taking over this project._
+_Last updated: 2026-09-28 (boot-test finally green — see §3/§4 item 2). Written for the next
+agent/developer taking over this project._
 
 Lindos is a **Windows-11-style remaster of Linux Mint 22.x XFCE** (Ubuntu 24.04 "noble" base):
 first-boot OOBE, 5 modes, a Win11 desktop, one-click Wine/Proton `.exe`, a gaming stack, heavy
@@ -132,6 +132,45 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
   - Repo working copy moved from `C:\Users\Hp\Desktop\Nitish-Code\Lindos` to `E:\Nitish\Lindos`
     mid-session (C: drive full); the old C: folder was deliberately left in place (not deleted —
     permanent file deletion is outside what gets done without a person doing it directly).
+- **2026-09-28 (boot-test GREEN — round 3's blocker fixed, 2 more rounds, same 3-round cap):** Full
+  detail in `CI-LOGS.md`'s 2026-09-28 entry; summary here.
+  - **Round 4 (`36362190703` → `36370906849`, diagnostic)**: added `plymouth.enable=0` to
+    `boot_test.py`'s kernel command line to rule out "plymouth's working splash is swallowing
+    console status text" as the cause of round 3's silence. **The fix worked as a diagnostic but
+    disproved its own theory**: with plymouth fully disabled, serial.log showed the *entire* boot
+    in the clear (full NetworkManager/ubiquity/polkit startup) yet still **zero
+    `LINDOS_SMOKE_START`** for the full 25-minute timeout, and — the key new evidence — **never
+    once printed "Reached target multi-user.target" or "Reached target graphical.target"**, even
+    though ordinary `multi-user.target` `Wants=` units ran fine in parallel the whole time. This
+    confirmed round 3's "gated behind `default.target` settling" hypothesis directly, ruling out
+    the console-visibility theory.
+  - **Round 5 (`36381907329` — ALL GREEN)**: stopped relying on the kernel command line's
+    `systemd.run=` mechanism entirely. Added a real shipped unit,
+    `lindos-ci-boot-smoke-test.service` (packages/lindos-core), gated by
+    `ConditionKernelCommandLine=lindos.ci_boot_test` and ordered only against `basic.target` +
+    `WantedBy=multi-user.target` (proven-safe pattern, matching `lindos-sensors-detect.service`).
+    **Result: all 7 jobs green, including boot-test in 6m18s** (down from a 25-minute
+    timeout-and-fail): `LINDOS_SMOKE_DONE rc=0`, all 10 CLI checks `OK`, kernel
+    `uname -r=6.14.0-lindos` confirmed, harness verdict `===== PASS =====`. The live desktop
+    rendered for the first time ever in this harness — `desktop.png` is a real, legible screenshot
+    of the `lindos-setup` "Welcome to Lindos" OOBE wizard. ISO size: 3.58 GiB
+    (3,842,011,136 bytes), confirmed built with the `-dbg` kernel-debug-symbols exclusion in
+    effect end-to-end.
+  - **Minor open loose end (non-blocking)**: the desktop-ready watcher itself still hit its own
+    internal 150s timeout before `is-system-running` reached `running`/`degraded` — its own
+    diagnostics at that moment showed `lightdm.service` already `active (running)` (a genuine
+    success, unlike round 3's real hang), with `multi-user.target`/`graphical.target` still
+    `start waiting` behind `lindos-sensors-detect.service` (still running) and
+    `casper-md5check.service` (a live-ISO integrity check), both plausibly just slow under CI's
+    shared vCPUs rather than hung. `boot_test.py`'s own unconditional post-watcher grace period
+    (90s more) was enough extra time for the real screenshot to still come out fine. Worth a longer
+    watcher poll next time to get a clean `is-system-running=running` confirmation directly instead
+    of inferring it from the screenshot.
+  - Local gate: `bash tests/run.sh --quick` (shellcheck clean) before every commit, plus — round 5
+    only, since it touched cross-package plumbing — the full repository pytest suite via the
+    project's real config: 3138 passed, 18 skipped (the only errors, 14 in lindos-transfer's
+    Windows junction-harness tests, were a same-session `TMPDIR`-on-`E:`-drive environment
+    artifact, confirmed unrelated to either round's changes).
 - **2026-09-27 (earlier session — self-diagnosis, real-desktop wait, merged
   `feature/preinstall-essentials`, first `build_kernel=true` runs):** Full detail in `CI-LOGS.md`;
   summary here.
@@ -209,36 +248,39 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
    Artifacts: `lindos-debs`, `lindos-kernel-debs`, `lindos-iso` (+ `.sha256`, `build.log`),
    `lindos-boot-test` (serial log + a screenshot of the live desktop — see item 2). Watch:
    `gh run watch <id> --exit-status` (never through `tail`, it hides the real exit code).
-2. **Boot-test the ISO** — automated in CI (`boot-test` job, `build/qa/boot_test.py`): it extracts
-   `casper/vmlinuz`+`initrd` from the built ISO, boots them directly under QEMU (KVM-accelerated —
-   `ci.yml`'s "Check for KVM" step now `chmod 0666`s the device so this ephemeral runner can
-   actually use it) with the ISO attached as a CD-ROM, injects
-   `packages/lindos-core/.../usr/libexec/lindos/qa/ci-boot-smoke-test.sh` via
-   `systemd.run=` (runs alongside the normal boot, never delays/replaces the real desktop),
-   and asserts every shipped CLI (`lindos-mode`, `lindos-tune`, `lindos-compat doctor`,
-   `lindos-game`, `lindos-transfer`, `lindos-dualboot`, `lindos-update`, a plain `python3 -c
-   "import lindos"`) actually runs, self-diagnoses any failure (per-check log tails, and
-   per-required-check detail for `lindos-compat doctor`), waits for a detached watcher's
-   `LINDOS_DESKTOP_READY` signal, then captures a screenshot via the QEMU monitor's `screendump`.
-   **The premature-shutdown bug that always killed this before `LINDOS_DESKTOP_READY`/`_TIMEOUT`
-   could ever appear is fixed** (`systemd.run=`'s generated unit defaults to
-   `SuccessAction=exit`/`FailureAction=exit` — now explicitly overridden to `none`/`none`). **The
-   "lightdm never even attempted to start" bug is also fixed** (`lindos-desktop`'s postinst now
-   explicitly sets `graphical.target` as default + enables `lightdm.service`), confirmed by
-   serial.log finally showing `Starting lightdm.service` for the first time ever, alongside a real
-   full graphical-session boot (NetworkManager, wpa_supplicant, udisks2, gpu-manager, ubiquity,
-   blueman, polkit). **Currently blocked on a new, third bug**: `lightdm.service` starts and then
-   never finishes — stays `Starting` forever (confirmed for 25+ real minutes under real KVM with 4
-   vCPUs, ruling out "just needs more time"), the guest's display stays QEMU's literal "Guest has
-   not initialized the display (yet)" placeholder, and our own `systemd.run=` smoke-test script
-   never runs at all once this happens (apparently gated behind `default.target` =
-   `graphical.target` actually settling). **Not yet fixed** — 3-round cap for this task reached
-   first. See `CI-LOGS.md`'s 2026-09-27 entry for the full evidence and next-step candidates
-   (cheapest first: try `-vga virtio`/`-device virtio-vga` instead of `-vga std` in
-   `boot_test.py`'s `build_qemu_argv()` — bochs-drm + Xorg modesetting was always one of the
-   original suspects and is the least battle-tested combination for headless/CI X). Manual
-   interactive boot-testing (`make qemu` / `build/test-qemu.sh`) or real hardware is
-   still worth doing separately for a visual/hands-on check.
+2. **~~Boot-test the ISO~~ — GREEN as of run `36381907329` (2026-09-28).** Automated in CI
+   (`boot-test` job, `build/qa/boot_test.py`): extracts `casper/vmlinuz`+`initrd` from the built
+   ISO, boots them directly under QEMU (KVM-accelerated) with the ISO attached as a CD-ROM, and
+   runs `packages/lindos-core/.../usr/libexec/lindos/qa/ci-boot-smoke-test.sh` via a real shipped
+   unit, `lindos-ci-boot-smoke-test.service` (`ConditionKernelCommandLine=lindos.ci_boot_test`,
+   ordered only against `basic.target` — **not** the kernel command line's `systemd.run=` anymore;
+   see below for why), asserting every shipped CLI (`lindos-mode`, `lindos-tune`, `lindos-compat
+   doctor`, `lindos-game`, `lindos-transfer`, `lindos-dualboot`, `lindos-update`, a plain
+   `python3 -c "import lindos"`) actually runs, then waits for a detached watcher's
+   `LINDOS_DESKTOP_READY` signal and captures a screenshot via the QEMU monitor's `screendump`.
+   Three real bugs were found and fixed across 2026-09-27/28 (full detail in `CI-LOGS.md`'s
+   2026-09-27/28 entries): (1) `systemd.run=`'s generated unit defaulting to
+   `SuccessAction=exit`/`FailureAction=exit`, powering the VM off before the desktop could start;
+   (2) `lindos-desktop`'s postinst not setting `graphical.target`/enabling `lightdm.service`; (3)
+   **the smoke test itself silently never running at all** whenever `multi-user.target`/
+   `graphical.target` took a while to settle, because `systemd.run=`'s generated
+   `kernel-command-line.service` is gated behind `default.target` actually reaching "active" —
+   fixed by replacing it with the real shipped unit above, ordered only against `basic.target` so
+   it runs regardless of the desktop's own state. **Result (run `36381907329`): all 7 CI jobs
+   green, boot-test in 6m18s, `LINDOS_SMOKE_DONE rc=0`, all 10 CLI checks `OK`, kernel
+   `uname -r=6.14.0-lindos` confirmed, and — for the first time ever — a real, legible screenshot
+   of the live `lindos-setup` "Welcome to Lindos" OOBE wizard** (not a black screen). ISO size:
+   3.58 GiB, confirmed built with the `-dbg` kernel-debug-symbols exclusion in effect.
+   **Minor open loose end (non-blocking, never gates pass/fail)**: the desktop-ready watcher's own
+   150s poll still timed out before `is-system-running` reached `running`/`degraded` — diagnostics
+   at that moment showed `lightdm.service` genuinely `active (running)` (unlike the old hang) with
+   `multi-user.target`/`graphical.target` still `start waiting` behind
+   `lindos-sensors-detect.service` and `casper-md5check.service`, both plausibly just slow rather
+   than hung; `boot_test.py`'s own extra 90s grace period was enough for the real screenshot to
+   still land fine. Worth a longer watcher poll sometime to get a direct
+   `is-system-running=running` confirmation instead of inferring it from the screenshot alone.
+   Manual interactive boot-testing (`make qemu` / `build/test-qemu.sh`) or real hardware is still
+   worth doing separately for a visual/hands-on check.
 3. **Real-Linux GTK visual pass** for `lindos-setup` (OOBE) and `lindos-settings` — they are only
    import-smoke-tested against the gi stub; construct/paint them under a real GTK + display.
 4. **`lindos-vm` / `lindos-winapps` live test** on a machine with KVM + a licensed Windows.

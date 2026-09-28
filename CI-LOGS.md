@@ -491,3 +491,97 @@ gh workflow run CI --ref feature/windows-transfer-updates-boottest -f build_kern
 gh run list --workflow CI --branch feature/windows-transfer-updates-boottest --limit 1 --json databaseId
 gh run watch <run-id> --exit-status   # not through tail
 ```
+
+## 2026-09-28 — boot-test finally GREEN (2 more rounds, same 3-round cap; `36362190703` → `36370906849` → `36381907329`)
+
+Picked up exactly where the 2026-09-27 session left off (round 3's open blocker above). Two more
+rounds, both real bugs found and fixed, not guesses:
+
+### Round 4 (`36362190703` → fix → `36370906849`, diagnostic round)
+
+- `36362190703` (the round-3-era run, re-checked at the start of this session) showed the same
+  "`lightdm.service`/`plymouth-quit-wait.service` start, then serial.log goes silent" symptom.
+  Leading theory: once the round-3 `-vga virtio`/`-device virtio-vga` fix (already landed,
+  `93fa12f`) gave plymouth a *working* graphical splash for the first time, systemd's normal
+  practice of not mirroring unit-status text to the console while a splash is up would explain the
+  silence. Fixed by appending `plymouth.enable=0` to `boot_test.py`'s kernel command line (`quiet`/
+  `splash` were never appended here to begin with) so systemd's verbose status keeps flowing to
+  `ttyS0` regardless of the display.
+- **This fix worked as a diagnostic, but disproved its own leading theory.** Run `36370906849`
+  (plymouth fully disabled) showed the *entire* boot in the clear — full NetworkManager/ubiquity/
+  polkit/etc. startup, `lightdm.service`/`plymouth-quit-wait.service` starting — and then **still
+  zero `LINDOS_SMOKE_START`**, for the full 1500s/25-real-minute timeout, ending in a bare `mint
+  login:` getty prompt. Crucially, `serial.log` **never once printed "Reached target
+  multi-user.target" or "Reached target graphical.target"**, even though ordinary
+  `multi-user.target` `Wants=` units (`lindos-sensors-detect.service`, `NetworkManager`, `ubiquity`,
+  …) ran fine in parallel the whole time. This is the real, now-confirmed cause: `systemd.run=`'s
+  generated transient unit (`kernel-command-line.service`) is gated behind `default.target` (=
+  `graphical.target` here) actually reaching "active" — exactly the "round 3" hypothesis from
+  2026-09-27's entry above, now proven rather than guessed at.
+
+### Round 5 (`36381907329` — ✅ ALL GREEN, including boot-test)
+
+- Stopped relying on the kernel command line's `systemd.run=` mechanism entirely. Added
+  `lindos-ci-boot-smoke-test.service` (packages/lindos-core), a real shipped oneshot unit —
+  `ExecStart=` the same `ci-boot-smoke-test.sh` — gated by
+  `ConditionKernelCommandLine=lindos.ci_boot_test` (a bespoke flag only `boot_test.py` ever
+  appends; never on a real end-user boot) and ordered only against `basic.target` +
+  `WantedBy=multi-user.target` (the pull-in point, not an ordering dependency — proven safe by
+  `lindos-sensors-detect.service`, which uses the identical pattern and was directly observed
+  starting right after `basic.target`, independent of whether `multi-user.target` itself ever
+  settles). Enabled via `lindos-tune`'s `90-lindos.preset` (+ its `apply.py` source of truth).
+- **Result: full green run, all 7 jobs, including `boot-test the ISO (QEMU/KVM)` in 6m18s** (down
+  from the previous 25-minute timeout-and-fail). The smoke test's own report:
+  `LINDOS_SMOKE_DONE rc=0`, all 10 `LINDOS_CHECK` lines `OK` (`python-import`, `lindos-mode`,
+  `lindos-config`, `lindos-ram`, `lindos-tune`, `lindos-compat-doctor` — `OK rc=1`, no DISPLAY in
+  this early-boot context, expected — `lindos-run-version`, `lindos-game-list`,
+  `lindos-transfer-sources`, `lindos-dualboot-status`, `lindos-update-check` — `OK rc=3`, the
+  designed `EXIT_NOTHING`), `failed_units=0`, kernel `uname -r=6.14.0-lindos` (confirmed via
+  `--require-kernel-suffix=-lindos`), and the harness's own final verdict: **`===== PASS =====`**.
+- **The live desktop rendered for the first time ever in this harness.** `desktop.png` (52.8 KB,
+  vs. ~4.8 KB for every prior black-screen run) is a full, legible screenshot of the real
+  `lindos-setup` first-boot OOBE wizard ("Welcome to Lindos" — mode picker, RAM detection banner,
+  "Get started" button). The desktop-ready watcher itself still reported
+  `LINDOS_DESKTOP_READY_TIMEOUT` (its own internal 150s poll loop ran out before
+  `is-system-running` reached `running`/`degraded`) — its own diagnostics at that moment showed
+  `lightdm.service` was actually `Active: active (running)` already, with `multi-user.target`/
+  `graphical.target` still `start waiting` behind a handful of slow-but-not-hung units
+  (`lindos-sensors-detect.service` still `start running`, `lm-sensors.service`/
+  `fancontrol.service` waiting on it, `casper-md5check.service` — a live-session ISO integrity
+  check — also still waiting). `boot_test.py`'s own unconditional post-watcher `--grace` period
+  (90s, on top of the watcher's 150s) was enough extra time for the desktop to actually finish
+  rendering, hence the real screenshot despite the watcher's own timeout. This watcher-timeout-vs-
+  actually-fine gap is a minor, non-blocking loose end (the watcher never gates pass/fail) worth a
+  closer look later — possibly just bump its poll count, or extend `LINDOS_DESKTOP_DIAG` to log
+  `casper-md5check.service`'s own progress — but is **not** a repeat of round 3's real hang:
+  `lightdm.service` genuinely started and reached `active (running)` this time, with a
+  `Drop-In: lindos-timeout.conf` confirmed loaded.
+- **ISO size**: `lindos-1.0.0-xfce-64bit.iso` = 3,842,011,136 bytes (3.58 GiB), confirmed built
+  with the `-dbg` kernel-debug-symbols exclusion (`f652d95`, already landed before this session)
+  in effect end-to-end: `linux-image-6.14.0-lindos-dbg_*.deb` (1.33 GB) was produced by the kernel
+  build but excluded from both the `lindos-kernel-debs` artifact upload (`!out/kernel/linux-image-
+  *-dbg_*.deb`) and the ISO chroot install (`35-kernel.sh` only ever saw/`dpkg -i`'d the
+  non-`-dbg` `linux-image`/`linux-headers` debs).
+
+**Local verification for both rounds**: `bash tests/run.sh --quick` (shellcheck clean) before every
+commit, plus — round 5 only, since it touched cross-package plumbing (a new lindos-core unit
+enabled via a lindos-tune preset) — the full repository pytest suite via the project's real
+config (`python -m pytest -c tests/pytest.ini --rootdir . -p lindos_testsupport tests
+packages/*/tests build/tests`): **3138 passed, 18 skipped**. The only errors (14, confined to
+`lindos-transfer`'s Windows junction-harness tests) were a same-session environment artifact —
+`mklink /J` failing with "Local NTFS volumes are required to complete the operation" specifically
+because `TMPDIR` was redirected to the `E:` drive (`C:` was at 0 bytes free all session) — confirmed
+unrelated to any file either round touched, and not expected to reproduce on the real Windows CI
+runner (a genuine local NTFS volume).
+
+**Still open, not addressed this session** (none block the ISO/kernel/boot-test pass/fail; ordered
+by how much they'd matter for a real user):
+1. Why `multi-user.target`/`graphical.target` take long enough to still be `start waiting` at the
+   desktop-watcher's own 150s mark (see above) — likely just `casper-md5check.service` (live-ISO
+   integrity check over the whole squashfs) plus `lindos-sensors-detect.service`'s deliberately
+   `Nice=10`/`IOSchedulingClass=idle` hardware scan being slower than 150s under CI's shared vCPUs,
+   not a hang — but never confirmed with a direct trace on this run since the VM was torn down
+   right after the screenshot. Worth a longer/instrumented watcher poll next time to get a clean
+   `is-system-running=running` confirmation instead of inferring it from the screenshot alone.
+2. `docs/COMPATIBILITY.md` freshness / cosmetic Node20-deprecation warnings from `CONTINUATION.md`
+   §4 items 3–6 remain outstanding, unrelated to this session's scope.
