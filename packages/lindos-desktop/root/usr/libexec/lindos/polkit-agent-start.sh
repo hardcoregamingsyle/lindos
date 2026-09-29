@@ -60,15 +60,22 @@ if agent_running; then
     exit 0
 fi
 
+chosen=""
 for agent in "${AGENTS[@]}"; do
-    [ -n "${agent}" ] && [ -x "${agent}" ] || continue
+    if [ -n "${agent}" ] && [ -x "${agent}" ]; then
+        chosen="${agent}"
+        break
+    fi
+done
+
+if [ -n "${chosen}" ]; then
     if [ "${PRINT_ONLY}" -eq 1 ]; then
-        printf '%s\n' "${agent}"
+        printf '%s\n' "${chosen}"
         exit 0
     fi
-    log "starting ${agent}"
-    exec "${agent}"
-done
+    log "starting ${chosen}"
+    exec "${chosen}"
+fi
 
 if [ "${PRINT_ONLY}" -eq 1 ]; then
     printf 'none\n'
