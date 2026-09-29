@@ -19,6 +19,15 @@ flow", packages/lindos-installer):
     diverted start-stop-daemon) and dpkg is clean;
   * the browser marker only exists when Chrome is installed (or the step was skipped on purpose) and
     Chrome is installed exactly when the step says ``done``;
+  * every OTHER step that says ``done`` really left its packages / files on the disk (the packages of
+    ``extras.json`` for mode_extras, compat and gaming, the Flatpak app directories, the firmware
+    packages for drivers, an ``upgrade`` line in dpkg.log for updates) - a step that swallowed its list
+    and recorded "nothing to install" against a non-empty ``extras.json`` fails;
+  * the answers the image bakes (lindos.seed) had the intended effect on the installed system:
+    ``user-setup/allow-password-empty`` is NOT ``true`` in the new debconf database (finalize.sh reset
+    it) and the i386 architecture is still enabled in dpkg (Wine and Steam need it);
+  * with ``strict_offline`` (a run without any network) the hook must have recorded ``online=false`` and
+    every step ``pending`` - the offline path - while everything above about oem-config still holds;
   * a boot loader and a kernel/initrd pair are on the disk.
 
 Every check returns :class:`Finding` objects with a level: ``fail`` fails the test, ``warn`` is reported
@@ -48,6 +57,14 @@ INSTALLER_LOG = "var/log/lindos/installer.log"
 BROWSER_MARKER = "var/lib/lindos/browser-firstboot.done"
 DRIVER_MARKER = "var/lib/lindos/driver-firstboot.done"
 NOT_ARMED_MARKER = "var/lib/lindos/oem-config-not-armed"
+DEBCONF_CONFIG = "var/cache/debconf/config.dat"      # the new system's debconf answers (finalize.sh edits them)
+DPKG_ARCH = "var/lib/dpkg/arch"                      # the foreign architectures dpkg knows (one per line)
+DPKG_LOG = "var/log/dpkg.log"
+FLATPAK_APPS = "var/lib/flatpak/app"                 # system installation: one directory per installed app id
+# the steps whose 'failed' is a failure (not a warning) on a run that has internet: everything the hook does with
+# Ubuntu's own archives.  compat, gaming and flatpaks use third-party repositories / Flathub inside a chroot
+# (unproven), so they stay warnings.
+HARD_ONLINE_STEPS: Tuple[str, ...] = ("updates", "drivers", "mode_extras")
 
 OK, INFO, WARN, FAIL = "ok", "info", "warn", "fail"
 LEVELS = (OK, INFO, WARN, FAIL)
@@ -277,11 +294,16 @@ def load_state(tree: Tree) -> Tuple[Optional[dict], List[Finding]]:
     return data, []
 
 
-def check_install_state(tree: Tree, *, expect_online: Optional[bool]) -> Tuple[List[Finding], Optional[dict]]:
+def check_install_state(tree: Tree, *, expect_online: Optional[bool],
+                        strict_offline: bool = False) -> Tuple[List[Finding], Optional[dict]]:
     """Schema, step ids/statuses, and consistency with the network the runner really had.
 
     *expect_online*: True when the CI runner has internet (Chrome must then be installed), False for an
     offline run (every network step may be pending), None when unknown (only recorded).
+    *strict_offline*: the guest had NO network device at all (install_test.py ``--network off``): the hook
+    must then have recorded ``online=false`` and every step ``pending`` (li_main marks all of them pending
+    "offline while installing" before it does anything), otherwise the run proves nothing about the offline
+    path.
     """
     data, out = load_state(tree)
     if data is None:
@@ -313,7 +335,9 @@ def check_install_state(tree: Tree, *, expect_online: Optional[bool]) -> Tuple[L
             out.append(fail("step-" + sid, "status %r is not one of %s" % (status, "/".join(STATUSES))))
             continue
         text = "%s%s" % (status, (" - " + detail) if detail else "")
-        if status == "failed":
+        if status == "failed" and expect_online is True and sid in HARD_ONLINE_STEPS:
+            out.append(fail("step-" + sid, text + " (the runner has internet: a step that only needs Ubuntu's archives must not fail)"))
+        elif status == "failed":
             out.append(warn("step-" + sid, text))
         elif status == "pending" and expect_online:
             out.append(warn("step-" + sid, text + " (the runner has internet: this should have been done)"))
@@ -336,9 +360,35 @@ def check_install_state(tree: Tree, *, expect_online: Optional[bool]) -> Tuple[L
         if status_of("browser") != "done":
             out.append(fail("state-browser", "Chrome must be installed when online, but the browser step is %r"
                             % (status_of("browser") or "missing")))
-    elif expect_online is False and online is True:
+    elif expect_online is False and online is True and not strict_offline:
         out.append(warn("state-online", "the runner had no internet but the hook recorded online=true"))
+    if strict_offline:
+        out.extend(_check_offline_path(steps, online))
     return out, data
+
+
+def _check_offline_path(steps: Mapping, online: object) -> List[Finding]:
+    """A guest without a network device: the hook records online=false and every step pending, nothing else."""
+    out: List[Finding] = []
+    if online is not False:
+        out.append(fail("state-offline", "the guest had no network at all but the hook recorded online=%r" % (online,)))
+    bad = []
+    for sid in STEPS:
+        entry = steps.get(sid)
+        status = entry.get("status") if isinstance(entry, dict) else None
+        detail = str(entry.get("detail", "")) if isinstance(entry, dict) else ""
+        if status is None:
+            continue           # a missing step is reported as such by the caller
+        if status != "pending":
+            bad.append("%s is %r" % (sid, status))
+        elif "offline" not in detail.lower():
+            out.append(warn("state-offline-detail", "step %s is pending but says %r, not that it was offline" % (sid, detail)))
+    if bad:
+        out.append(fail("state-offline", "an offline install must leave every step 'pending' (the retries do them later): "
+                                         + "; ".join(bad)))
+    elif online is False:
+        out.append(ok("state-offline", "offline path: online=false and all %d steps are pending" % len(STEPS)))
+    return out
 
 
 _HOOK_START = re.compile(r"lindos-installer: start \(version ")
@@ -582,6 +632,247 @@ def check_browser(tree: Tree, pkgs: Mapping[str, Pkg], state: Optional[dict]) ->
     return out
 
 
+# ---- the answers the image bakes (lindos.seed) --------------------------------------------------------
+def parse_debconf_db(text: str) -> Dict[str, Dict[str, str]]:
+    """``/var/cache/debconf/config.dat`` (debconf's flat 822-style database) -> {question: {field: value}}.
+
+    Stanzas are separated by blank lines and start with ``Name:``; a line that starts with a blank continues the
+    previous field (multi-line values).
+    """
+    db: Dict[str, Dict[str, str]] = {}
+    cur: Optional[Dict[str, str]] = None
+    field = ""
+    for raw in text.splitlines():
+        if not raw.strip():
+            cur, field = None, ""
+            continue
+        if raw[0] in " \t":
+            if cur is not None and field:
+                cur[field] = (cur[field] + "\n" + raw.strip()).strip()
+            continue
+        key, sep, value = raw.partition(":")
+        if not sep:
+            continue
+        key, value = key.strip(), value.strip()
+        if key == "Name":
+            cur = db.setdefault(value, {})
+            field = ""
+        elif cur is not None:
+            cur[key] = value
+            field = key
+    return db
+
+
+def check_seed_effects(tree: Tree, pkgs: Mapping[str, Pkg], *, expect_i386: Optional[bool]) -> List[Finding]:
+    """Did the answers baked into the medium (lindos.seed) and finalize.sh's clean-up do their job on the new system?
+
+    * ``user-setup/allow-password-empty`` is baked ``true`` so that the OEM installer's temporary account page
+      needs no password; finalize.sh (fin_reset_seed) sets it back to ``false`` in the NEW system's debconf
+      database, because oem-config reads that database and must not accept an empty password for the REAL
+      account.  ``true`` on the installed disk therefore fails.  (The CI preseed supplies a password, so the
+      account itself proves nothing here - the database does.)
+    * ``apt-setup/multiarch`` keeps i386 for Wine and Steam.  *expect_i386*: True when the image is built with
+      ENABLE_I386=1 (i386 must be in /var/lib/dpkg/arch), False when it is not, None when unknown.  Installed
+      i386 packages without the architecture in dpkg's list fail whatever is expected (dpkg would be inconsistent).
+    """
+    out: List[Finding] = []
+    text = tree.read_text(DEBCONF_CONFIG, limit=64 << 20)
+    if text is None:
+        out.append(warn("seed-password-empty", "/%s is unreadable: cannot tell whether user-setup/allow-password-empty was "
+                                               "reset (the first-boot wizard may accept an empty password)" % DEBCONF_CONFIG))
+    else:
+        question = parse_debconf_db(text).get("user-setup/allow-password-empty")
+        value = (question or {}).get("Value", "").strip().lower()
+        if question is None:
+            out.append(info("seed-password-empty", "user-setup/allow-password-empty is not in the new debconf database (its "
+                                                   "default is false: the real account needs a password)"))
+        elif value == "true":
+            out.append(fail("seed-password-empty", "user-setup/allow-password-empty is still 'true' in the installed system's "
+                                                   "debconf database: finalize.sh's reset did not take effect, so the first-boot "
+                                                   "wizard may create the real account with an empty password"))
+        else:
+            out.append(ok("seed-password-empty", "user-setup/allow-password-empty is %r in the new system" % (value or "unset")))
+    archs = (tree.read_text(DPKG_ARCH) or "").split()
+    i386_pkgs = sorted(n for n, p in pkgs.items() if n.endswith(":i386") and p.state == "installed")
+    if "i386" in archs:
+        note = "%d i386 package(s) installed" % len(i386_pkgs) if i386_pkgs else "no i386 package is installed yet"
+        out.append(ok("seed-multiarch", "dpkg still has the i386 architecture (%s)" % note))
+    elif i386_pkgs:
+        out.append(fail("seed-multiarch", "%d i386 package(s) are installed (e.g. %s) but /%s does not list i386: the installer's "
+                                          "apt setup removed the architecture (apt-setup/multiarch did not reach it)"
+                        % (len(i386_pkgs), ", ".join(i386_pkgs[:3]), DPKG_ARCH)))
+    elif expect_i386 is True:
+        out.append(fail("seed-multiarch", "the image enables i386 (ENABLE_I386=1) but /%s %s: Wine and Steam cannot install "
+                                          "their 32-bit half" % (DPKG_ARCH, ("lists " + ", ".join(archs)) if archs else "is empty or missing")))
+    elif expect_i386 is False:
+        out.append(ok("seed-multiarch", "the image does not enable i386 and dpkg does not list it"))
+    else:
+        out.append(info("seed-multiarch", "i386 is not enabled in dpkg (whether the image should have it is unknown)"))
+    return out
+
+
+# ---- 'done' must mean installed -----------------------------------------------------------------------
+class Evidence(NamedTuple):
+    """What an item of extras.json leaves on the disk: ANY of these packages, files or Flatpak apps."""
+
+    pkgs: Tuple[str, ...] = ()
+    files: Tuple[str, ...] = ()
+    flatpaks: Tuple[str, ...] = ()
+
+
+# install-compat.sh: WineHQ staging, else wine-staging, else Ubuntu's own 'wine'; umu is the pinned zipapp in
+# /usr/local/bin (or the deb).  install-gaming.sh: Valve's steam-launcher, else Ubuntu's steam-installer; lutris from
+# apt, else the Flatpak.  Keep in step with those scripts (the tests read them).
+ITEM_EVIDENCE: Dict[Tuple[str, str], Evidence] = {
+    ("compat", "wine"): Evidence(pkgs=("winehq-staging", "wine-staging", "wine")),
+    ("compat", "winetricks"): Evidence(pkgs=("winetricks",)),
+    ("compat", "umu"): Evidence(pkgs=("umu-launcher", "python3-umu-launcher"),
+                                files=("usr/local/bin/umu-run", "usr/bin/umu-run")),
+    ("gaming", "steam"): Evidence(pkgs=("steam-launcher", "steam-installer")),
+    ("gaming", "lutris"): Evidence(pkgs=("lutris",), flatpaks=("net.lutris.Lutris",)),
+}
+
+_TRIVIAL_DETAIL = re.compile(r"nothing to install|no extra packages defined|no Flatpak apps defined", re.I)
+_NOT_IN_ARCHIVES = re.compile(r"not in the archives:\s*(.*)$")
+_UPGRADED = re.compile(r"(\d+) packages? upgraded")
+
+
+def load_extras(path: object) -> Optional[dict]:
+    """The installer's extras.json (the repository copy: the installed system drops lindos-installer), or None."""
+    try:
+        data = json.loads(Path(str(path)).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _names(extras: Mapping, key: str) -> List[str]:
+    """extras['key'] as a list of names ('drivers.firmware' for the nested list)."""
+    node: object = extras
+    for part in key.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return [str(x).strip() for x in node if isinstance(x, str) and x.strip()] if isinstance(node, list) else []
+
+
+def _evidence_words(ev: Evidence) -> str:
+    return " or ".join(ev.pkgs + ev.files + tuple("flatpak " + a for a in ev.flatpaks))
+
+
+def _has_evidence(tree: Tree, pkgs: Mapping[str, Pkg], ev: Evidence) -> bool:
+    return (any(is_installed(pkgs, p) for p in ev.pkgs) or any(tree.lexists(f) for f in ev.files)
+            or any(tree.is_dir("%s/%s" % (FLATPAK_APPS, a)) for a in ev.flatpaks))
+
+
+def check_steps_vs_disk(tree: Tree, pkgs: Mapping[str, Pkg], state: Optional[dict], extras: Optional[Mapping], *,
+                        expect_online: Optional[bool] = None) -> List[Finding]:
+    """A step that records ``done`` must have left what it promises on the disk (the state file is the hook's own claim).
+
+    Steps that are pending/failed/skipped promise nothing and are not judged here.  Findings are named
+    ``disk-<step>``; a mismatch fails.  *extras* is the repository copy of extras.json; without it the
+    package lists cannot be compared and that is said (never silently skipped).
+    """
+    steps = (state or {}).get("steps")
+    if not isinstance(steps, dict):
+        return []
+    if extras is None:
+        return [info("disk-steps", "extras.json is not available to the test: what the steps installed is not cross-checked")]
+
+    def entry(step: str) -> Tuple[str, str]:
+        e = steps.get(step)
+        return ((e.get("status") or "", str(e.get("detail", ""))) if isinstance(e, dict) else ("", ""))
+
+    out: List[Finding] = []
+
+    # ---- updates: an 'upgrade' line in dpkg.log when the hook says it upgraded packages
+    status, detail = entry("updates")
+    m = _UPGRADED.search(detail)
+    if status == "done" and m and int(m.group(1)) > 0:
+        log = tree.read_text(DPKG_LOG, limit=64 << 20)
+        if log is None:
+            out.append(warn("disk-updates", "the updates step says %r but /%s is missing: nothing to verify it against" % (detail, DPKG_LOG)))
+        else:
+            n = sum(1 for ln in log.splitlines() if re.match(r"^\S+ \S+ upgrade ", ln))
+            if n:
+                out.append(ok("disk-updates", "/%s records %d upgrade(s) (the step says: %s)" % (DPKG_LOG, n, detail)))
+            else:
+                out.append(fail("disk-updates", "the updates step says %r but /%s has no 'upgrade' line: nothing was upgraded"
+                                % (detail, DPKG_LOG)))
+
+    # ---- drivers: at least one firmware package of the list is installed
+    status, detail = entry("drivers")
+    firmware = _names(extras, "drivers.firmware")
+    if status == "done" and firmware and "firmware" in detail:
+        have = [p for p in firmware if is_installed(pkgs, p)]
+        gone = [p for p in firmware if p not in have]
+        if not have:
+            out.append(fail("disk-drivers", "the drivers step says done but none of %s is installed" % ", ".join(firmware)))
+        elif gone:
+            out.append(info("disk-drivers", "firmware installed: %s; not installed: %s (the hook leaves out what no archive carries)"
+                            % (", ".join(have), ", ".join(gone))))
+        else:
+            out.append(ok("disk-drivers", "firmware installed: %s" % ", ".join(have)))
+
+    # ---- mode_extras: every apt package of extras.json, except those the hook says the archives lack
+    status, detail = entry("mode_extras")
+    want = _names(extras, "apt")
+    if status == "done" and want:
+        if _TRIVIAL_DETAIL.search(detail):
+            out.append(fail("disk-mode_extras", "the step says %r but extras.json lists %d apt package(s): the hook lost its list "
+                                                "(li_extras_load swallows a load error)" % (detail, len(want))))
+        elif detail.lower().startswith("none of the extra apps"):
+            level = fail if expect_online is True else warn
+            out.append(level("disk-mode_extras", "the step says %r although %d packages were asked for" % (detail, len(want))))
+        else:
+            m2 = _NOT_IN_ARCHIVES.search(detail)
+            excused = set(m2.group(1).split()) if m2 else set()
+            missing = [p for p in want if p not in excused and not is_installed(pkgs, p)]
+            if missing:
+                out.append(fail("disk-mode_extras", "the step says %r but %d package(s) are not installed: %s"
+                                % (detail, len(missing), ", ".join(missing[:12]))))
+            else:
+                tail = " (not in the archives: %s)" % ", ".join(sorted(excused)) if excused else ""
+                out.append(ok("disk-mode_extras", "%d extra apt package(s) are installed%s"
+                              % (len([p for p in want if p not in excused]), tail)))
+
+    # ---- compat / gaming: the evidence of every item
+    for step in ("compat", "gaming"):
+        status, detail = entry(step)
+        items = _names(extras, step)
+        if status != "done" or not items:
+            continue
+        if _TRIVIAL_DETAIL.search(detail):
+            out.append(fail("disk-" + step, "the step says %r but extras.json lists %s: the hook lost its list" % (detail, ", ".join(items))))
+            continue
+        missing, unknown = [], []
+        for item in items:
+            ev = ITEM_EVIDENCE.get((step, item))
+            if ev is None:
+                unknown.append(item)
+            elif not _has_evidence(tree, pkgs, ev):
+                missing.append("%s (needs %s)" % (item, _evidence_words(ev)))
+        if missing:
+            out.append(fail("disk-" + step, "the step says done but not installed: " + "; ".join(missing)))
+        else:
+            out.append(ok("disk-" + step, "%s: %s" % (step, ", ".join(i for i in items if i not in unknown) or "-")))
+        if unknown:
+            out.append(info("disk-%s-items" % step, "no disk check is known for: " + ", ".join(unknown)))
+
+    # ---- flatpaks: the app directory of every id
+    status, detail = entry("flatpaks")
+    ids = _names(extras, "flatpaks")
+    if status == "done" and ids:
+        if _TRIVIAL_DETAIL.search(detail):
+            out.append(fail("disk-flatpaks", "the step says %r but extras.json lists %d Flatpak app(s): the hook lost its list"
+                            % (detail, len(ids))))
+        else:
+            missing = [a for a in ids if not tree.is_dir("%s/%s" % (FLATPAK_APPS, a))]
+            if missing:
+                out.append(fail("disk-flatpaks", "the step says done but /%s has no directory for: %s" % (FLATPAK_APPS, ", ".join(missing))))
+            else:
+                out.append(ok("disk-flatpaks", "%d Flatpak app(s) are installed" % len(ids)))
+    return out
+
+
 class Kernel(NamedTuple):
     version: str
     vmlinuz: str    # path relative to the system root
@@ -701,10 +992,16 @@ LOG_FILES_FOR_SCAN: Tuple[str, ...] = ("var/log/installer/syslog", "var/log/lind
 
 
 def run_all_checks(tree: Tree, *, expect_online: Optional[bool], mbr: Optional[bytes] = None,
-                   firmware: str = "bios", esp: Optional[Tree] = None) -> List[Finding]:
-    """Every check of the installed disk, in the order a maintainer reads them."""
+                   firmware: str = "bios", esp: Optional[Tree] = None, extras: Optional[Mapping] = None,
+                   expect_i386: Optional[bool] = None, strict_offline: bool = False) -> List[Finding]:
+    """Every check of the installed disk, in the order a maintainer reads them.
+
+    *extras*: the repository copy of extras.json (see :func:`load_extras`) - without it a 'done' step's packages are
+    not cross-checked.  *expect_i386*: the image is built with ENABLE_I386=1.  *strict_offline*: the guest had no
+    network device (see :func:`check_install_state`).
+    """
     findings: List[Finding] = []
-    state_findings, state = check_install_state(tree, expect_online=expect_online)
+    state_findings, state = check_install_state(tree, expect_online=expect_online, strict_offline=strict_offline)
     findings.extend(state_findings)
     status_text = tree.read_text("var/lib/dpkg/status", limit=64 << 20)
     if status_text is None:
@@ -719,6 +1016,8 @@ def run_all_checks(tree: Tree, *, expect_online: Optional[bool], mbr: Optional[b
     findings.extend(check_leftovers(tree, pkgs))
     findings.extend(check_apt_sources(tree))
     findings.extend(check_browser(tree, pkgs, state))
+    findings.extend(check_steps_vs_disk(tree, pkgs, state, extras, expect_online=expect_online))
+    findings.extend(check_seed_effects(tree, pkgs, expect_i386=expect_i386))
     findings.extend(check_bootloader(tree, mbr=mbr, firmware=firmware, esp=esp))
     findings.extend(check_branding(tree, pkgs))
     texts = {rel: t for rel in LOG_FILES_FOR_SCAN if (t := tree.read_text(rel, limit=16 << 20)) is not None}

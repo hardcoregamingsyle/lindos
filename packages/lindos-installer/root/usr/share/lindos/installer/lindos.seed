@@ -25,7 +25,10 @@ d-i apt-setup/multiarch string i386
 
 # The OEM installer still shows a page for the temporary account (it cannot be skipped by a
 # preseed).  Allowing an empty password lets the user just press Continue; finalize.sh locks the
-# account at the end of the installation, so the empty password is never usable, and sets this
-# answer back to false in the new system (Ubiquity's first-boot wizard reads the same database and
-# must not accept an empty password for the real account).
+# account at the end of the installation once it has armed the first-boot wizard, so the empty
+# password is not left usable there.  If it cannot arm the wizard, the machine keeps signing in as
+# that account, so finalize.sh gives it a random password (or locks it) instead of leaving it open.
+# finalize.sh also sets this answer back to false in the new system on every path (Ubiquity's
+# first-boot wizard reads the same database and must not accept an empty password for the real
+# account).
 d-i user-setup/allow-password-empty boolean true

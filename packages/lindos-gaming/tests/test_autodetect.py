@@ -329,8 +329,27 @@ def _msys(value: str) -> str:
 
 def _fake(directory: Path, name: str, body: str) -> None:
     path = directory / name
-    path.write_text("#!/bin/bash\n" + body, encoding="utf-8", newline="\n")
+    path.write_text(body if body.startswith("#!") else "#!/bin/bash\n" + body, encoding="utf-8", newline="\n")
     os.chmod(path, 0o755)
+
+
+#: stands in for flock(1): records its arguments, honours -o/-w/-E, and either runs the command (the lock was
+#: free) or exits with the -E status (still held after the wait)
+FAKE_FLOCK = r'''#!/bin/bash
+printf '%s\n' "$*" >>"${FAKE_FLOCK_LOG}"
+conflict=1
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) shift ;;
+        -w) shift 2 ;;
+        -E) conflict="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+lock="$1"; shift
+[ "${FAKE_FLOCK_BUSY:-0}" = 1 ] && exit "${conflict}"
+exec "$@"
+'''
 
 
 class Firstboot:
@@ -363,6 +382,18 @@ class Firstboot:
         _fake(self.bin, "timeout",
               '[ -n "${FAKE_TIMEOUT_RC:-}" ] && exit "${FAKE_TIMEOUT_RC}"\n'
               '[ "$1" = "-k" ] && shift 2\nshift\nexec "$@"\n')
+        self.serialiser_env: Dict[str, str] = {}
+
+    def enable_serialiser(self) -> None:
+        """Ship lindos-core's apt-serialise next to the script (as the package does), with a fake flock(1)."""
+        shutil.copy(CORE_LIBEXEC / "apt-serialise", self.root / "usr" / "libexec" / "lindos" / "apt-serialise")
+        _fake(self.bin, "flock-fake", FAKE_FLOCK)
+        self.serialiser_env = {"LINDOS_FLOCK": _msys(str(self.bin / "flock-fake")),
+                               "FAKE_FLOCK_LOG": _msys(str(self.tmp / "flock.log"))}
+
+    def flock_calls(self) -> List[str]:
+        log = self.tmp / "flock.log"
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
     def write_state(self, **steps: str) -> Path:
         path = self.state_dir / "install-state.json"
@@ -389,6 +420,9 @@ class Firstboot:
                     "PYTHONPATH": str(CORE_PYLIB) + os.pathsep + env.get("PYTHONPATH", ""),
                     "FAKE_LOG": _msys(str(self.log))})
         env.pop("LINDOS_OFFLINE", None)
+        for name in ("APT_CONFIG", "LINDOS_APT_SERIALISED", "FAKE_FLOCK_BUSY", "LINDOS_DRIVER_LOCK_WAIT"):
+            env.pop(name, None)
+        env.update(self.serialiser_env)
         if offline:
             env["LINDOS_OFFLINE"] = "1"
         if extra:
@@ -629,3 +663,99 @@ def test_firstboot_marker_and_chroot_guards(tmp_path):
     fb.marker.unlink()
     chroot = fb.run(extra={"LINDOS_TEST_IN_CHROOT": "1"})
     assert chroot.returncode == 0 and "chroot" in chroot.stderr and fb.calls() == []
+
+
+# --------------------------------------------------------------------------- apt discipline (review finding: both retries hit apt at once)
+def test_firstboot_service_is_ordered_after_the_chrome_retry():
+    """oem-config ends -> both retry units are queued together; apt does not queue by itself, so this one waits."""
+    lines = [ln.strip() for ln in read_text(SERVICE).splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    after = next(ln for ln in lines if ln.startswith("After=")).split("=", 1)[1].split()
+    assert "lindos-browser-firstboot.service" in after and "network-online.target" in after
+    assert not any(ln.startswith(("Requires=", "BindsTo=", "Requisite=", "PartOf=")) for ln in lines), \
+        "ordering only: a failed Chrome retry must never stop the driver retry"
+
+
+def _record_env(fb: Firstboot, log: Path) -> None:
+    """Replace the fake driver tools by ones that also say what apt-related environment they were started with."""
+    record = ('{ printf "serialised=%s\n" "${LINDOS_APT_SERIALISED:-}"; '
+              '[ -f "${APT_CONFIG:-/nonexistent}" ] && tr "\n" " " <"${APT_CONFIG}"; printf "\n"; } >>"' + _msys(str(log)) + '"')
+    _fake(fb.bin, "ubuntu-drivers",
+          'printf "ubuntu-drivers %s\n" "$*" >> "$FAKE_LOG"\n' + record + '\nexit "${FAKE_UBUNTU_RC:-0}"\n')
+    _fake(fb.bin, "lindos-drivers",
+          'printf "lindos-drivers %s\n" "$*" >> "$FAKE_LOG"\n'
+          'case "$1" in\n'
+          '  autodetect) out="${FAKE_AUTODETECT:-}"; [ -n "${out}" ] || out="{}"; printf "%s\n" "${out}"; exit 0 ;;\n'
+          '  *) ' + record + '; exit "${FAKE_DRIVERS_RC:-0}" ;;\n'
+          'esac\n')
+
+
+@needs_bash
+@pytest.mark.parametrize("consent, tool, args", [
+    (False, "ubuntu-drivers", "install --free-only"),
+    (True, "lindos-drivers", "install --auto"),
+])
+def test_firstboot_retry_takes_its_turn_and_every_apt_get_it_starts_waits_for_the_dpkg_lock(tmp_path, consent, tool, args):
+    fb = Firstboot(tmp_path)
+    fb.enable_serialiser()
+    fb.write_state(drivers="pending")
+    if consent:
+        (fb.state_dir / "driver-proprietary-consent").write_text("", encoding="utf-8")
+    env_log = tmp_path / "tool-env.log"
+    _record_env(fb, env_log)
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, "FAKE_SB_STATE": "SecureBoot disabled"})
+    assert proc.returncode == 0, proc.stderr
+    calls = fb.flock_calls()
+    assert len(calls) == 1, calls
+    line = calls[0].replace("\\", "/")
+    # one flock on the shared lock, 3 minutes of queueing; the 15-minute limit sits INSIDE the queue
+    assert line.startswith("-o -w 180 -E 199 ") and "/run/lindos/apt.lock timeout -k 30 900 " + tool + " " + args in line, line
+    seen = env_log.read_text(encoding="utf-8")
+    assert "serialised=1" in seen and 'DPkg::Lock::Timeout "300";' in seen, seen      # what the tool's apt-get inherits
+    assert tool + " " + args in fb.calls()
+    assert fb.state()["steps"]["drivers"]["status"] == "done" and fb.marker.exists()
+
+
+@needs_bash
+def test_firstboot_a_busy_queue_delays_the_retry_but_never_skips_it_or_runs_it_twice(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.enable_serialiser()
+    fb.write_state(drivers="pending")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, "FAKE_FLOCK_BUSY": "1"})
+    assert proc.returncode == 0, proc.stderr
+    assert fb.calls().count("ubuntu-drivers install --free-only") == 1
+    assert fb.state()["steps"]["drivers"]["status"] == "done" and fb.marker.exists()
+    log = (fb.root / "var" / "log" / "lindos" / "driver-firstboot.log").read_text(encoding="utf-8")
+    assert "running anyway" in log
+
+
+@needs_bash
+def test_firstboot_the_queue_wait_is_tunable(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.enable_serialiser()
+    fb.write_state(drivers="pending")
+    assert fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, "LINDOS_DRIVER_LOCK_WAIT": "12"}).returncode == 0
+    assert " -w 12 " in fb.flock_calls()[0]
+
+
+@needs_bash
+def test_firstboot_a_failed_queued_retry_is_still_recorded_like_before(tmp_path):
+    """The queue must not change what a failing retry looks like: 'failed', attempt counted, no marker."""
+    fb = Firstboot(tmp_path)
+    fb.enable_serialiser()
+    fb.write_state(drivers="pending")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, "FAKE_UBUNTU_RC": "100"})
+    assert proc.returncode == 0, proc.stderr
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == "failed" and "exit 100" in entry["detail"]
+    assert not fb.marker.exists()
+    assert (fb.state_dir / "driver-firstboot.attempts").read_text(encoding="utf-8").strip() == "1"
+
+
+@needs_bash
+def test_firstboot_without_the_apt_helper_runs_the_retry_as_before(tmp_path):
+    fb = Firstboot(tmp_path)                 # a lindos-core without apt-serialise: nothing to queue behind
+    fb.write_state(drivers="pending")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT})
+    assert proc.returncode == 0, proc.stderr
+    assert "ubuntu-drivers install --free-only" in fb.calls() and fb.flock_calls() == []
+    assert fb.state()["steps"]["drivers"]["status"] == "done"

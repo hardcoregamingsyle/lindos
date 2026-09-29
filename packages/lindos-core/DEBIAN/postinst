@@ -10,6 +10,7 @@ UPDATE_NOTIFY="/usr/libexec/lindos/lindos-update-notify.sh"
 IS_LIVE_SESSION="/usr/libexec/lindos/is-live-session"
 OEM_CONFIG_PENDING="/usr/libexec/lindos/oem-config-pending"
 WAIT_FOR_NETWORK="/usr/libexec/lindos/wait-for-network"
+APT_SERIALISE="/usr/libexec/lindos/apt-serialise"
 STATE_DIR="/var/lib/lindos"
 LIVE_INHIBIT_UNIT="/usr/lib/systemd/system/lindos-live-inhibit.service"
 LIVE_INHIBIT_WANTS="/usr/lib/systemd/system/multi-user.target.wants"
@@ -32,6 +33,7 @@ case "$1" in
         [ -f "$IS_LIVE_SESSION" ] && chmod 0755 "$IS_LIVE_SESSION" 2>/dev/null || true
         [ -f "$OEM_CONFIG_PENDING" ] && chmod 0755 "$OEM_CONFIG_PENDING" 2>/dev/null || true
         [ -f "$WAIT_FOR_NETWORK" ] && chmod 0755 "$WAIT_FOR_NETWORK" 2>/dev/null || true
+        [ -f "$APT_SERIALISE" ] && chmod 0755 "$APT_SERIALISE" 2>/dev/null || true
 
         # install-state.json (lindos.installstate) lives here; the installer writes it, the
         # first-boot retries and Settings read it.

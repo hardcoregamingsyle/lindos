@@ -12,8 +12,10 @@ lindos-installer target-config hook + finalize.sh) can only be proven by running
                        the hook's network steps really run; Ubiquity powers the guest off when it is done
   phase 2  assert      the disk is mounted READ-ONLY and checked by build/qa/install_checks.py:
                        install-state.json, installer.log, oem-config armed, no autologin=oem, no leftovers,
-                       dpkg clean, Chrome vs browser marker, boot loader, kernel; the installer's logs are
-                       collected (secrets scrubbed) for the artifact
+                       dpkg clean, Chrome vs browser marker, every 'done' step's packages/files on the disk
+                       (against the repository's extras.json), the effects of the baked lindos.seed
+                       (user-setup/allow-password-empty back to false, i386 kept), boot loader, kernel; the
+                       installer's logs are collected (secrets scrubbed) for the artifact
   phase 3  first boot  the INSTALLED disk is booted (its own GRUB through SeaBIOS, or -kernel from the disk)
                        and must come up in Ubiquity's oem-config wizard - not LightDM, not the oem desktop,
                        not the Lindos first-run wizard, no installs; serial log + screenshot as evidence
@@ -42,12 +44,21 @@ Known limitations (a reproducible install log is the point; expect several round
   * Phase 3 patches the installed disk before booting it (a serial console on the kernel command line and a
     read-only observer unit, see ci-observer.sh); the read-only assertions of phase 2 run before that.
   * UEFI (``--firmware uefi``) is supported by the argument builders but has not been run.
+  * The ISO's OWN boot loaders (ISOLINUX/GRUB) are not run here: the kernel and initrd are booted directly with the
+    words of the shipped entry.  What is covered instead: the boot MENUS of the built ISO are checked structurally
+    (build/qa/menu_checks.py: labels, default entry, words, files, script syntax), the guest observer asserts that
+    the default 'Install Lindos' session is only the installer (no LightDM, no XFCE session, no lindos-setup, no
+    pkexec, the sleep inhibitor held) and build/qa/menu_test.py boots the ISO through SeaBIOS/OVMF (a separate CI job).
+  * ``--network off`` is the OFFLINE run: no NIC at all, so the hook must record online=false and every step
+    pending (install_checks ``strict_offline``); nothing is downloaded, so it is much faster and its first boot
+    can be left out (``--skip-phase3``).
 
 Usage (needs root for the loop mounts; as a normal user it uses ``sudo -n``):
     sudo python3 build/qa/install_test.py --iso 'out/lindos-*.iso' --out-dir out/qemu-install-test
         [--disk-size 32G] [--ram 6144] [--cpus 4] [--install-timeout 5400] [--install-budget 2400]
         [--boot-timeout 900] [--ubiquity-mode automatic|noninteractive] [--firmware bios|uefi]
-        [--network on|off] [--expect-online auto|yes|no] [--phase3-boot grub|kernel] [--skip-phase3]
+        [--network on|off] [--expect-online auto|yes|no] [--expect-i386 auto|yes|no] [--extras extras.json]
+        [--phase3-boot grub|kernel] [--skip-phase3]
         [--require-kernel-suffix=-lindos] [--allow-tcg] [--keep-disk]
 
 Exit codes: 0 pass - 1 the install or an assertion failed - 2 usage/environment error.
@@ -77,6 +88,7 @@ for _p in (str(HERE), str(HERE.parent / "lib")):
 
 import boot_test as bt  # noqa: E402  (same directory: QEMU monitor client, screenshots, kernel extraction)
 import install_checks as ic  # noqa: E402
+import menu_checks as mc  # noqa: E402  (same directory: the structural checks of the ISO's boot menus)
 
 try:  # the boot menu parser of the build (single source of truth for the GRUB entries)
     import boot_menu  # noqa: E402
@@ -85,6 +97,10 @@ except ImportError:  # pragma: no cover - only when build/lib is missing
 
 CI_INSTALL_FLAG = "lindos.ci_install_test"
 OBSERVER_SCRIPT = HERE / "ci-observer.sh"
+REPO_ROOT = HERE.parent.parent
+# the installer's package list (the installed system drops lindos-installer, so the checks read the repository copy)
+DEFAULT_EXTRAS = REPO_ROOT / "packages" / "lindos-installer" / "root" / "usr" / "share" / "lindos" / "installer" / "extras.json"
+CONFIG_ENV = HERE.parent / "config.env"
 OBSERVER_UNIT = "lindos-ci-observer.service"
 OBSERVER_BIN = "/usr/local/sbin/lindos-ci-observer"
 
@@ -105,6 +121,12 @@ HOOK_LOG_RE = re.compile(r"^LINDOS_HOOK_LOG (.*)$")
 OEM_READY_RE = re.compile(r"^LINDOS_OEM_READY(?: fails=(\d+))?")
 OEM_TIMEOUT_RE = re.compile(r"^LINDOS_OEM_TIMEOUT(?: fails=(\d+))?")
 OEM_DIAG_RE = re.compile(r"^LINDOS_OEM_(?:DIAG|PS) (.*)$")
+SESSION_CHECKED_RE = re.compile(r"^LINDOS_INSTALL_SESSION_CHECKED(?: fails=(\d+))?")
+SESSION_DIAG_RE = re.compile(r"^LINDOS_INSTALL_DIAG (.*)$")
+# What the default 'Install Lindos' session must prove, once, about two minutes in (ci-observer.sh live_checks): an
+# absent report is a failure too, otherwise a session whose observer never got that far would pass by staying silent.
+REQUIRED_SESSION_CHECKS: Tuple[str, ...] = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session",
+                                            "live-no-lindos-setup", "live-no-pkexec", "live-inhibitor-active")
 
 
 def log(msg: str) -> None:
@@ -482,11 +504,29 @@ def parse_install_serial(text: str) -> dict:
     """What the serial log of the install phase says about the run (observer lines and the kernel's own)."""
     res = {"booted": "Linux version" in text, "observer": False, "hook_lines": [], "failed": [], "ubiquity_exit": None,
            "power_down": "reboot: Power down" in text, "restarting": "reboot: Restarting system" in text,
-           "panic": "Kernel panic" in text, "finalized": False}
+           "panic": "Kernel panic" in text, "finalized": False, "checks": {}, "fail_logs": [], "session_checked": False,
+           "session_fails": None, "session_diag": []}
     for raw in text.splitlines():
         line = raw.strip()
         if OBSERVER_STARTED_RE.match(line):
             res["observer"] = True
+            continue
+        m = bt.CHECK_RE.match(line)
+        if m:
+            res["checks"][m.group(1)] = {"status": m.group(2), "rc": m.group(3)}
+            continue
+        m = bt.FAIL_LOG_RE.match(line)
+        if m:
+            res["fail_logs"].append(m.group(1))
+            continue
+        m = SESSION_CHECKED_RE.match(line)
+        if m:
+            res["session_checked"] = True
+            res["session_fails"] = int(m.group(1)) if m.group(1) else None
+            continue
+        m = SESSION_DIAG_RE.match(line)
+        if m:
+            res["session_diag"].append(m.group(1))
             continue
         if INSTALL_FINALIZED_RE.match(line):
             res["finalized"] = True
@@ -578,6 +618,34 @@ def judge_install_phase(outcome: dict, serial: dict) -> List[ic.Finding]:
     if serial.get("hook_lines"):
         out.append(ic.info("install-hook-log", "%d hook log lines on the serial console; last: %s"
                            % (len(serial["hook_lines"]), serial["hook_lines"][-1][:160])))
+    if serial.get("observer"):
+        out.extend(judge_install_session(serial, completed=how in ("exited", "finalized-no-poweroff")))
+    return out
+
+
+def judge_install_session(serial: dict, *, completed: bool) -> List[ic.Finding]:
+    """Findings about the SESSION the installation ran in (what ci-observer.sh live_checks printed once).
+
+    The install test boots the words of the shipped default entry ('Install Lindos': only-ubiquity), so this is where
+    that entry's promise is asserted: the live system is the installer and nothing else.  A check that was never
+    reported fails on a run that ran to its end (the observer's trigger did not fire: nothing was proven); on a run that
+    did not finish it is only noted, the install failure is the finding.
+    """
+    out: List[ic.Finding] = []
+    checks = serial.get("checks", {})
+    for name in REQUIRED_SESSION_CHECKS:
+        val = checks.get(name)
+        if val is None:
+            level = ic.fail if completed else ic.info
+            out.append(level("install-" + name, "never reported: the observer's one-shot session checks did not run "
+                                                "(the guest ended, or the observer died, before they fired)"))
+        elif val["status"] != "OK":
+            why = [ln.split(": ", 1)[1] for ln in serial.get("fail_logs", []) if ln.startswith(name + ": ")]
+            out.append(ic.fail("install-" + name, why[0] if why else "the observer reported FAIL rc=%s" % val.get("rc")))
+        else:
+            out.append(ic.ok("install-" + name))
+    if any(f.level == ic.FAIL for f in out) and serial.get("session_diag"):
+        out.append(ic.info("install-session-diag", "; ".join(serial["session_diag"][:6])[:600]))
     return out
 
 
@@ -1017,6 +1085,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--network", choices=("on", "off"), default="on", help="'off' boots without a NIC (offline install)")
     p.add_argument("--expect-online", choices=("auto", "yes", "no"), default="auto",
                    help="does the runner have internet? 'auto' probes it; decides whether Chrome MUST be installed")
+    p.add_argument("--expect-i386", choices=("auto", "yes", "no"), default="auto",
+                   help="must dpkg still have the i386 architecture on the installed system?  'auto' reads ENABLE_I386 "
+                        "(environment, else build/config.env's default); the seed's apt-setup/multiarch answer is judged by it")
+    p.add_argument("--extras", default=str(DEFAULT_EXTRAS),
+                   help="extras.json the installer used (the repository copy): what every 'done' step must have left on the disk")
     p.add_argument("--phase3-boot", choices=("grub", "kernel"), default="grub",
                    help="boot the installed disk through its own GRUB, or boot its kernel directly")
     p.add_argument("--skip-phase3", action="store_true", help="do not boot the installed disk")
@@ -1036,6 +1109,25 @@ def resolve_expect_online(choice: str, network: str, *, probe: Callable[[], bool
     if choice == "no":
         return False
     return probe()
+
+
+def resolve_expect_i386(choice: str, *, env: Optional[Mapping[str, str]] = None, config_env: Path = CONFIG_ENV) -> Optional[bool]:
+    """Is i386 enabled in the image?  ENABLE_I386 of the environment (the way build-iso.sh reads it), else the default
+    in build/config.env; None when neither can be read (the checks then only prove dpkg is consistent)."""
+    if choice == "yes":
+        return True
+    if choice == "no":
+        return False
+    value = (os.environ if env is None else env).get("ENABLE_I386")
+    if value is None:
+        try:
+            m = re.search(r'^:\s+"\$\{ENABLE_I386:=(\d)\}"', config_env.read_text(encoding="utf-8"), re.M)
+        except OSError:
+            return None
+        value = m.group(1) if m else None
+    if value is None:
+        return None
+    return value.strip() == "1"
 
 
 def _mib(n: int) -> str:
@@ -1087,6 +1179,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         log(f.line())
     if ic.failures(sections["preflight"]):
         return _finish(out_dir, sections, notes, "FAIL")
+    if not ns.skip_preflight:
+        # The ISO's own boot menus are never booted here (the kernel is started directly): check their STRUCTURE.  A
+        # failure is part of the verdict but does not stop the (expensive) install, whose evidence is wanted anyway.
+        sections["boot menus"] = mc.check_iso_menus(iso, work / "menus")
+        for f in sections["boot menus"]:
+            log(f.line())
 
     # ---- kernel/initrd + the overlay ---------------------------------------------------------
     try:
@@ -1106,6 +1204,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     expect_online = resolve_expect_online(ns.expect_online, ns.network)
     notes.append("the runner %s internet" % {True: "has", False: "has no", None: "may have"}[expect_online])
+    offline_run = ns.network == "off"
+    if offline_run:
+        notes.append("OFFLINE run (no network device): the hook must record online=false and every step pending")
+    extras = ic.load_extras(ns.extras)
+    expect_i386 = resolve_expect_i386(ns.expect_i386)
+    notes.append("extras.json: %s; i386 expected in the image: %s" % (
+        ns.extras if extras is not None else "NOT READABLE (%s): what the steps installed is not cross-checked" % ns.extras,
+        {True: "yes", False: "no", None: "unknown"}[expect_i386]))
     disk = work / "disk.raw"
     with open(disk, "wb") as fh:
         fh.truncate(_parse_size(ns.disk_size))
@@ -1139,7 +1245,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             system_found = True
             tree = ic.Tree(root)
             sections["disk"] = ic.run_all_checks(tree, expect_online=expect_online, mbr=read_mbr(disk),
-                                                 firmware=ns.firmware, esp=ic.Tree(esp) if esp else None)
+                                                 firmware=ns.firmware, esp=ic.Tree(esp) if esp else None,
+                                                 extras=extras, expect_i386=expect_i386, strict_offline=offline_run)
             copied = collect_logs(tree, out_dir / "installed-logs", [password])
             notes.append("collected %d log file(s) from the installed disk" % len(copied))
             kernels = ic.list_kernels(tree)

@@ -393,6 +393,14 @@ INSTALL_SERIAL = """\
 LINDOS_OBSERVER_STARTED mode=live uname=6.14.0-lindos
 LINDOS_HOOK_LOG 2026-09-29 10:00:00 lindos-installer: start (version 1.0.0, target /target, budget 2400s)
 LINDOS_HOOK_LOG 2026-09-29 10:05:00 lindos-installer: step browser: done - ok
+LINDOS_CHECK live-only-ubiquity=OK
+LINDOS_CHECK live-installer-up=OK
+LINDOS_CHECK live-no-lightdm=OK
+LINDOS_CHECK live-no-xfce-session=OK
+LINDOS_CHECK live-no-lindos-setup=OK
+LINDOS_CHECK live-no-pkexec=OK
+LINDOS_CHECK live-inhibitor-active=OK
+LINDOS_INSTALL_SESSION_CHECKED fails=0
 LINDOS_INSTALL_HEARTBEAT tick=12 ubiquity=active target=1024/9000KiB procs=9
 LINDOS_INSTALL_UBIQUITY_EXIT result=success
 [  900.000000] reboot: Power down
@@ -950,3 +958,223 @@ def test_the_harness_flags_used_by_the_workflow_exist():
     used = set(re.findall(r"--([a-z0-9-]+)", seg.split("install_test.py", 1)[1].split("- name:")[0]))
     known = {a.option_strings[0].lstrip("-") for a in it.build_parser()._actions if a.option_strings}
     assert used <= known, used - known
+
+
+# ============================================================================================ the Install session (serial grammar)
+SESSION_NAMES = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session", "live-no-lindos-setup",
+                 "live-no-pkexec", "live-inhibitor-active")
+
+
+def test_parse_install_serial_collects_the_session_checks():
+    got = it.parse_install_serial(INSTALL_SERIAL)
+    assert {k: v["status"] for k, v in got["checks"].items()} == {n: "OK" for n in SESSION_NAMES}
+    assert got["session_checked"] and got["session_fails"] == 0 and got["fail_logs"] == [] and got["session_diag"] == []
+    bad = it.parse_install_serial("LINDOS_OBSERVER_STARTED mode=live uname=x\nLINDOS_CHECK live-no-lightdm=FAIL rc=1\n"
+                                  "LINDOS_FAIL_LOG live-no-lightdm: LightDM is running\nLINDOS_INSTALL_DIAG ps: 812 lightdm\n"
+                                  "LINDOS_INSTALL_SESSION_CHECKED fails=1\n")
+    assert bad["checks"]["live-no-lightdm"] == {"status": "FAIL", "rc": "1"} and bad["fail_logs"] == ["live-no-lightdm: LightDM is running"]
+    assert bad["session_diag"] == ["ps: 812 lightdm"] and bad["session_fails"] == 1
+
+
+def test_a_healthy_install_session_is_judged_ok_per_check():
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 1800}, it.parse_install_serial(INSTALL_SERIAL))
+    assert not ic.failures(findings)
+    assert {f.name for f in findings if f.level == ic.OK} >= {"install-" + n for n in SESSION_NAMES}
+
+
+def test_the_default_install_session_that_starts_lightdm_fails_the_install_test():
+    text = INSTALL_SERIAL.replace("LINDOS_CHECK live-no-lightdm=OK", "LINDOS_CHECK live-no-lightdm=FAIL rc=1\n"
+                                  "LINDOS_FAIL_LOG live-no-lightdm: LightDM is running\nLINDOS_INSTALL_DIAG ps: 812 lightdm")
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 1800}, it.parse_install_serial(text))
+    bad = {f.name: f.detail for f in ic.failures(findings)}
+    assert list(bad) == ["install-live-no-lightdm"] and "LightDM is running" in bad["install-live-no-lightdm"]
+    assert any(f.name == "install-session-diag" and "812 lightdm" in f.detail for f in findings)
+
+
+def test_required_session_checks_are_the_ones_the_observer_prints():
+    obs = it.OBSERVER_SCRIPT.read_text(encoding="utf-8")
+    assert set(it.REQUIRED_SESSION_CHECKS) == set(SESSION_NAMES)
+    assert all("verdict %s " % n in obs for n in it.REQUIRED_SESSION_CHECKS)
+
+
+# ============================================================================================ seed effects: what the run expects
+def test_expect_i386_choices_and_the_image_default(tmp_path):
+    assert it.resolve_expect_i386("yes") is True and it.resolve_expect_i386("no") is False
+    assert it.resolve_expect_i386("auto", env={}) is True                       # build/config.env: ENABLE_I386 defaults to 1
+    assert it.resolve_expect_i386("auto", env={"ENABLE_I386": "0"}) is False
+    assert it.resolve_expect_i386("auto", env={"ENABLE_I386": "1"}) is True
+    cfg = tmp_path / "config.env"
+    cfg.write_text(': "${ENABLE_I386:=0}"   # off\n', encoding="utf-8")
+    assert it.resolve_expect_i386("auto", env={}, config_env=cfg) is False
+    cfg.write_text("# nothing about it\n", encoding="utf-8")
+    assert it.resolve_expect_i386("auto", env={}, config_env=cfg) is None       # unknown: the checks only prove dpkg is consistent
+    assert it.resolve_expect_i386("auto", env={}, config_env=tmp_path / "missing.env") is None
+
+
+def test_the_real_config_env_default_is_what_the_test_reads():
+    assert re.search(r'^:\s+"\$\{ENABLE_I386:=1\}"', it.CONFIG_ENV.read_text(encoding="utf-8"), re.M)
+    assert it.DEFAULT_EXTRAS.is_file() and ic.load_extras(it.DEFAULT_EXTRAS)["schema"] == 1
+
+
+def _fake_run(tmp_path, monkeypatch, *, menus=None):
+    """Everything main() needs, faked: a completed installation whose disk checks are captured, not run."""
+    iso = tmp_path / "x.iso"
+    iso.write_bytes(b"x")
+    monkeypatch.delenv("ENABLE_I386", raising=False)
+    monkeypatch.setattr(it.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(it.os, "access", lambda *a, **k: True)
+    monkeypatch.setattr(it, "find_ovmf", lambda: None)
+    monkeypatch.setattr(it, "preflight_iso", lambda *a, **k: ([ic.ok("iso-boot-entry")], list(it.FALLBACK_ENTRY_WORDS)))
+    seen = {"menus": 0, "phase1": [], "checks": []}
+
+    def fake_menus(iso_path, work, **k):
+        seen["menus"] += 1
+        return menus if menus is not None else [ic.ok("menu-grub-entries")]
+
+    def fake_extract(iso_path, dest, **k):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "vmlinuz").write_bytes(b"k")
+        (dest / "initrd").write_bytes(b"i")
+        return dest / "vmlinuz", dest / "initrd"
+
+    def fake_phase(argv, **k):
+        seen["phase1"].append(list(argv))
+        Path(k["serial_log"]).write_text(INSTALL_SERIAL, encoding="utf-8")       # a healthy install: only the menus can fail the run
+        return {"outcome": "exited", "seconds": 5, "rc": 0, "screenshots": []}
+
+    def fake_checks(tree, **k):
+        seen["checks"].append(k)
+        return [ic.ok("fake-disk-check")]
+
+    class FakeLoop:
+        def __init__(self, disk, work, **k):
+            self.work = Path(work)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def find_system(self, rw=False):
+            root = self.work / "sysroot"
+            root.mkdir(parents=True, exist_ok=True)
+            return root, None, "/dev/vda1"
+
+    monkeypatch.setattr(it.mc, "check_iso_menus", fake_menus)
+    monkeypatch.setattr(it.bt, "extract_casper", fake_extract)
+    monkeypatch.setattr(it, "run_install_phase", fake_phase)
+    monkeypatch.setattr(it.ic, "run_all_checks", fake_checks)
+    monkeypatch.setattr(it, "LoopDisk", FakeLoop)
+    return iso, seen
+
+
+def _main(iso, tmp_path, *args):
+    return it.main(["--iso", str(iso), "--out-dir", str(tmp_path / "out"), "--disk-size", "1M", "--skip-phase3", *args])
+
+
+def test_the_disk_checks_get_the_extras_the_i386_expectation_and_the_online_state(tmp_path, monkeypatch):
+    iso, seen = _fake_run(tmp_path, monkeypatch)
+    assert _main(iso, tmp_path, "--expect-online", "yes") == 0
+    kw = seen["checks"][0]
+    assert kw["extras"] == ic.load_extras(it.DEFAULT_EXTRAS) and kw["expect_i386"] is True
+    assert kw["strict_offline"] is False and kw["expect_online"] is True
+    notes = (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    assert "i386 expected in the image: yes" in notes and "OFFLINE run" not in notes
+
+
+def test_a_network_off_run_is_the_strict_offline_run(tmp_path, monkeypatch):
+    iso, seen = _fake_run(tmp_path, monkeypatch)
+    _main(iso, tmp_path, "--network", "off")
+    kw = seen["checks"][0]
+    assert kw["strict_offline"] is True and kw["expect_online"] is False
+    assert "OFFLINE run" in (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    assert "-nic" in seen["phase1"][0] and "none" in seen["phase1"][0]
+
+
+def test_i386_and_extras_options_reach_the_checks(tmp_path, monkeypatch):
+    iso, seen = _fake_run(tmp_path, monkeypatch)
+    _main(iso, tmp_path, "--expect-i386", "no", "--extras", str(tmp_path / "missing.json"))
+    kw = seen["checks"][0]
+    assert kw["expect_i386"] is False and kw["extras"] is None
+    assert "NOT READABLE" in (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    monkeypatch.setenv("ENABLE_I386", "0")
+    _main(iso, tmp_path)
+    assert seen["checks"][1]["expect_i386"] is False
+
+
+def test_a_failed_menu_check_fails_the_verdict_but_the_install_still_runs(tmp_path, monkeypatch, capsys):
+    """The structure of the ISO's own boot menus is judged in the preflight; the (expensive) install is still run for its evidence."""
+    iso, seen = _fake_run(tmp_path, monkeypatch, menus=[ic.fail("menu-grub-syntax", "'if' has no 'fi'")])
+    assert _main(iso, tmp_path) == 1
+    assert seen["menus"] == 1 and len(seen["phase1"]) == 1
+    summary = (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    assert "## boot menus" in summary and "menu-grub-syntax" in summary and summary.startswith("# Lindos install test: FAIL")
+    assert "[boot menus]" in capsys.readouterr().out
+
+
+def test_skipping_the_preflight_skips_the_menu_check_too(tmp_path, monkeypatch):
+    iso, seen = _fake_run(tmp_path, monkeypatch)
+    _main(iso, tmp_path, "--skip-preflight")
+    assert seen["menus"] == 0
+
+
+# ============================================================================================ ci.yml: the new jobs and steps
+def test_the_offline_install_job_is_opt_in_independent_and_offline():
+    doc = _yaml()
+    job = doc["jobs"]["install-test-offline"]
+    assert job["needs"] == "iso" and job["continue-on-error"] is True
+    cond = " ".join(str(job["if"]).split())
+    for part in ("needs.iso.result == 'success'", "github.event_name == 'workflow_dispatch'", "inputs.build_iso", "inputs.install_test_offline"):
+        assert part in cond
+    inputs = (doc.get(True) or doc.get("on"))["workflow_dispatch"]["inputs"]
+    assert inputs["install_test_offline"]["default"] is False and inputs["install_test_offline"]["type"] == "boolean"
+    steps = job["steps"]
+    run = "\n".join(str(s.get("run", "")) for s in steps)
+    assert "sudo env" in run and "build/qa/install_test.py" in run and "--network off" in run and "--skip-phase3" in run
+    assert "--out-dir out/qemu-install-test-offline" in run, "its own out dir: the online job's artifacts are never mixed with it"
+    assert "--require-kernel-suffix=-lindos" in run and "${{ inputs.install_budget }}" not in run
+    upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert upload and upload[0]["if"] == "always()" and upload[0]["with"]["name"] == "lindos-install-test-offline"
+    for need in ("summary.md", "serial-install.log", "installed-logs/**", "*.png", "work/menus/*.cfg"):
+        assert need in upload[0]["with"]["path"], need
+    assert "disk.raw" not in upload[0]["with"]["path"] and "work/**" not in upload[0]["with"]["path"]
+    assert any("GITHUB_STEP_SUMMARY" in str(s.get("run", "")) for s in steps)
+    text = _text()
+    seg = text[text.index("  install-test-offline:"):text.index("  menu-test:")]
+    for tool in ("qemu-system-x86", "xorriso", "python3-pil", "grub-common", "/dev/kvm"):
+        assert tool in seg, tool
+
+
+def test_the_offline_job_flags_exist():
+    text = _text()
+    seg = text[text.index("  install-test-offline:"):text.index("  menu-test:")]
+    used = set(re.findall(r"--([a-z0-9-]+)", seg.split("python3 build/qa/install_test.py", 1)[1].split("- name:")[0]))
+    known = {a.option_strings[0].lstrip("-") for a in it.build_parser()._actions if a.option_strings}
+    assert used and used <= known, used - known
+
+
+def test_the_online_job_still_runs_the_real_network_install():
+    """The online run is the one with internet: it must never grow the offline flags."""
+    text = _text()
+    seg = text[text.index("  install-test:"):text.index("  install-test-offline:")]
+    assert "--network off" not in seg and "--skip-phase3" not in seg
+    assert "grub-common" in seg and "work/menus/*.cfg" in seg
+
+
+def test_the_boot_test_job_checks_the_boot_menus_even_when_the_boot_failed():
+    doc = _yaml()
+    steps = doc["jobs"]["boot-test"]["steps"]
+    check = [s for s in steps if "build/qa/menu_checks.py" in str(s.get("run", ""))]
+    assert len(check) == 1 and check[0]["if"] == "always()"
+    assert "--iso 'out/lindos-*.iso'" in check[0]["run"] and "pipefail" in check[0]["run"], "a failing check must fail the step, not the tee"
+    assert steps.index(check[0]) > steps.index([s for s in steps if "build/qa/boot_test.py" in str(s.get("run", ""))][0])
+    upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")][0]
+    assert "menu-checks.txt" in upload["with"]["path"] and steps.index(upload) > steps.index(check[0])
+    assert "grub-common" in " ".join(str(s.get("run", "")) for s in steps)
+
+
+def test_the_lint_job_installs_grub_script_check_so_the_real_check_runs():
+    run = " ".join(str(s.get("run", "")) for s in _yaml()["jobs"]["lint-test"]["steps"])
+    assert "grub-common" in run
+    assert "shellcheck" in run                                                # the tools that were there stay

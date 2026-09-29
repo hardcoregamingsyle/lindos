@@ -21,6 +21,10 @@ Documentation=man:lindos-browser(1)
 # is reached before Wi-Fi/DHCP is up: the script waits for NetworkManager itself (wait-for-network,
 # bounded) before it calls the machine offline. Firefox stays the offline fallback (already on the
 # ISO); the user can still pick Edge/Firefox any time in Lindos Settings.
+# apt does not queue by itself and lindos-driver-firstboot.service (lindos-gaming) is queued in the same
+# transaction: that unit is ordered AFTER this one, and install-browser.sh also takes its turn behind every
+# other Lindos apt job (apt-serialise, a flock) and passes DPkg::Lock::Timeout to every apt-get, so a
+# lock somebody else holds is waited for instead of failing the install.
 ConditionKernelCommandLine=!boot=casper
 ConditionKernelCommandLine=!boot=live
 ConditionPathExists=!/lib/systemd/system/oem-config.target
@@ -33,8 +37,9 @@ After=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/lindos/browser-firstboot.sh
-# Best effort: never block or delay reaching the desktop.
-TimeoutStartSec=600
+# Best effort: never block or delay reaching the desktop.  Room for up to 3 minutes of queueing behind
+# another apt job, 5 of waiting for a held dpkg lock and the download itself.
+TimeoutStartSec=900
 Nice=10
 IOSchedulingClass=idle
 

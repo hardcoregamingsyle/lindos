@@ -20,21 +20,29 @@ Documentation=man:lindos-drivers(1)
 # as its very last step, right before it isolates graphical.target).
 # NetworkManager-wait-online is masked on Lindos, so network-online.target is reached before
 # Wi-Fi/DHCP is up: the script waits for NetworkManager itself (wait-for-network, bounded).
+# Ordered AFTER the Chrome retry (lindos-browser-firstboot.service): both are queued in the same
+# transaction the moment oem-config finishes and both end up in apt, which does not queue by itself
+# (a second apt-get fails with "Could not get lock /var/lib/dpkg/lock-frontend", and a lost driver
+# attempt is counted against its three tries).  If that unit is not queued (already done, or
+# lindos-core alone) the ordering is a no-op.  The script additionally takes its turn behind every other
+# Lindos apt job and waits for a dpkg lock somebody else holds (apt-serialise of lindos-core), so a
+# retry started by hand or by Settings meanwhile is safe too.
 ConditionKernelCommandLine=!boot=casper
 ConditionKernelCommandLine=!boot=live
 ConditionPathExists=!/lib/systemd/system/oem-config.target
 ConditionPathExists=!/var/lib/lindos/driver-firstboot.done
 ConditionVirtualization=!container
 Wants=network-online.target
-After=network-online.target
+After=network-online.target lindos-browser-firstboot.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/lindos/driver-firstboot.sh
 # Best effort: a driver retry must never block or fail the boot (the script itself stops a retry
-# after 15 minutes; this is the outer safety net).
-TimeoutStartSec=1200
+# after 15 minutes, once it has had its turn - up to 3 more minutes of queueing behind another apt
+# job; this is the outer safety net).  The clock starts when the unit starts, after the Chrome retry.
+TimeoutStartSec=1500
 Nice=10
 IOSchedulingClass=idle
 

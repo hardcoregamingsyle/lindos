@@ -99,6 +99,7 @@ def test_holds_pin_apt_conf_and_mounts_lifecycle(full) -> None:
     conf = (sb.state / "apt.conf.seen").read_text(encoding="utf-8")
     assert 'Dir::Etc::SourceList "/dev/null";' in conf and 'APT::Get::List-Cleanup "0";' in conf
     assert 'DPkg::Lock::Timeout "120";' in conf and '"--force-confold"' in conf
+    assert 'APT::Update::Error-Mode "any";' in conf, "stock apt-get update exits 0 after transient fetch failures"
     assert not (sb.target / "var/lib/lindos/installer-apt.conf").exists()
     assert not (sb.target / "usr/sbin/policy-rc.d").exists()
     assert (sb.target / "etc/resolv.conf").read_text(encoding="utf-8") == "# original resolv.conf\n"
@@ -219,6 +220,107 @@ def test_partly_refreshed_lists_never_make_an_up_to_date_or_not_available_claim(
     assert other.statuses() == {"updates": "done", "mode_extras": "done"}
 
 
+# apt-get update exits 0 when index fetches fail with TRANSIENT errors (timeouts, DNS, refused connections): it only
+# prints "Err:" / "W: Failed to fetch" lines.  What the hook concludes from lists that are missing or partial must
+# never be a terminal "done" - nothing would ever retry it.
+FAILED_FETCH = (
+    "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n"
+    "Err:2 http://security.ubuntu.com/ubuntu noble-security InRelease\n"
+    "  Connection failed [IP: 91.189.91.83 80]\n"
+    "Reading package lists...\n"
+    "W: Failed to fetch http://security.ubuntu.com/ubuntu/dists/noble-security/InRelease  Connection failed [IP: 91.189.91.83 80]\n"
+    "W: Some index files failed to download. They have been ignored, or old ones used instead.\n")
+CLEAN_UPDATE = (
+    "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n"
+    "Get:2 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]\n"
+    "Ign:3 http://archive.ubuntu.com/ubuntu noble/main Translation-en\n"
+    "Fetched 126 kB in 2s (63.0 kB/s)\n"
+    "Reading package lists...\n")
+
+
+def _update_output(sandbox: Sandbox, text: str) -> str:
+    f = sandbox.root / "update-output.txt"
+    f.write_text(text, encoding="utf-8", newline="\n")
+    return f.as_posix()
+
+
+def _update_calls(sandbox: Sandbox) -> int:
+    f = sandbox.state / "update-calls"
+    return int(f.read_text(encoding="utf-8").strip()) if f.is_file() else 0
+
+
+def test_an_update_that_exits_zero_after_failed_fetches_never_records_a_final_answer(sandbox: Sandbox) -> None:
+    """The reported failure: Wi-Fi flaps during 'apt-get update', apt exits 0, and updates/drivers/extras all said 'done'."""
+    out = _update_output(sandbox, FAILED_FETCH)
+    _ok(sandbox.run_hook(FAKE_UPDATE_RC="0", FAKE_UPDATE_OUT_FILE=out, FAKE_UPGRADES="libfoo", FAKE_NO_CANDIDATE="ananicy-cpp",
+                         LINDOS_INSTALLER_STEPS="drivers updates mode_extras"))
+    assert _update_calls(sandbox) == 2, "a failed fetch is retried once, like a non-zero exit"
+    st = sandbox.statuses()
+    assert st == {"drivers": "pending", "updates": "pending", "mode_extras": "pending"}, (st, sandbox.log_text()[-2000:])
+    for step in ("drivers", "updates", "mode_extras"):
+        assert "partly refreshed" in sandbox.step(step)["detail"], (step, sandbox.step(step))
+    assert sandbox.upgraded() == ["libfoo"], "what the lists did show is still installed"
+    # not final: the silent first-boot retry of the drivers still runs
+    assert not (sandbox.target / "var/lib/lindos/driver-firstboot.done").exists()
+    log = sandbox.log_text()
+    assert "reported failed fetches" in log and "Err:2 http://security.ubuntu.com" in log, "the reason is in the log"
+    assert "did not complete cleanly" in log
+
+
+def test_a_failed_fetch_that_the_retry_fixes_is_a_complete_update(sandbox: Sandbox) -> None:
+    out = _update_output(sandbox, FAILED_FETCH)
+    _ok(sandbox.run_hook(FAKE_UPDATE_OUT_FILE=out, FAKE_UPDATE_OUT_ONCE="1", LINDOS_INSTALLER_STEPS="updates"))
+    assert _update_calls(sandbox) == 2
+    assert sandbox.step("updates")["status"] == "done" and sandbox.step("updates")["detail"] == "already up to date"
+
+
+def test_the_ordinary_output_of_a_good_update_is_not_a_failure(sandbox: Sandbox) -> None:
+    """'Ign:' lines and translation misses are normal: only Err:/E:/'Failed to fetch' count."""
+    out = _update_output(sandbox, CLEAN_UPDATE)
+    _ok(sandbox.run_hook(FAKE_UPDATE_OUT_FILE=out, LINDOS_INSTALLER_STEPS="updates"))
+    assert _update_calls(sandbox) == 1
+    assert sandbox.step("updates")["status"] == "done"
+    assert "Fetched 126 kB" in sandbox.log_text(), "apt's output still reaches the log"
+
+
+def test_an_update_that_exits_zero_but_leaves_no_lists_stops_the_package_steps(sandbox: Sandbox) -> None:
+    for f in (sandbox.target / "var/lib/apt/lists").iterdir():
+        f.unlink()
+    _ok(sandbox.run_hook(FAKE_UPDATE_RC="0", LINDOS_INSTALLER_STEPS="browser updates"))
+    assert _update_calls(sandbox) == 2
+    assert sandbox.statuses() == {"browser": "pending", "updates": "pending"}
+    assert "package lists" in sandbox.step("updates")["detail"]
+    assert not any(c.startswith(("install-browser.sh", "apt-get -q -s upgrade")) for c in sandbox.call_log())
+    assert "exited 0 but no package list" in sandbox.log_text()
+
+
+def test_an_empty_list_file_is_no_list(sandbox: Sandbox) -> None:
+    lists = sandbox.target / "var/lib/apt/lists"
+    for f in lists.iterdir():
+        f.unlink()
+    (lists / "archive.ubuntu.com_ubuntu_dists_noble_main_binary-amd64_Packages").write_text("", encoding="utf-8")
+    _ok(sandbox.run_hook(FAKE_UPDATE_RC="0", LINDOS_INSTALLER_STEPS="updates"))
+    assert sandbox.step("updates")["status"] == "pending" and "package lists" in sandbox.step("updates")["detail"]
+
+
+def test_partly_refreshed_lists_do_not_silence_the_driver_retry(sandbox: Sandbox) -> None:
+    """'no drivers/firmware candidates' from incomplete lists is no answer: no marker, no terminal state."""
+    _ok(sandbox.run_hook(FAKE_UPDATE_RC="100", LINDOS_INSTALLER_STEPS="drivers"))
+    step = sandbox.step("drivers")
+    assert step["status"] == "pending" and "partly refreshed" in step["detail"] and "free drivers and firmware installed" in step["detail"]
+    assert not (sandbox.target / "var/lib/lindos/driver-firstboot.done").exists()
+    # the same for a step that would have been a (terminal) skip
+    other = Sandbox(sandbox.root / "second")
+    other.set_cmdline(CONSENT)
+    _ok(other.run_hook(FAKE_UPDATE_RC="100", FAKE_LSPCI=GPU_NVIDIA, FAKE_SB="SecureBoot enabled", LINDOS_INSTALLER_STEPS="drivers"))
+    assert other.step("drivers")["status"] == "pending" and "Secure Boot" in other.step("drivers")["detail"]
+    assert not (other.target / "var/lib/lindos/driver-firstboot.done").exists()
+    # complete lists: the same run ends as before
+    third = Sandbox(sandbox.root / "third")
+    _ok(third.run_hook(LINDOS_INSTALLER_STEPS="drivers"))
+    assert third.step("drivers")["status"] == "done" and (third.target / "var/lib/lindos/driver-firstboot.done").is_file()
+
+
 # --------------------------------------------------------------------------- failures
 def test_every_command_failing_still_exits_zero_prints_nothing_and_never_says_done(sandbox: Sandbox) -> None:
     _ok(sandbox.run_hook(FAKE_ALL_FAIL="1", FAKE_UPGRADES=UPGRADES, LINDOS_INSTALLER_STEPS="browser drivers updates mode_extras"))
@@ -274,8 +376,8 @@ def test_the_repair_removes_only_broken_new_packages(sandbox: Sandbox) -> None:
 def test_download_timeout_is_pending_and_the_hook_still_finishes_and_unholds(sandbox: Sandbox) -> None:
     started = time.time()
     _ok(sandbox.run_hook(FAKE_UPGRADES="libfoo", FAKE_SLEEP_UPGRADE="1", LINDOS_TIMEOUT_PCT="0",
-                         LINDOS_TIMEOUT_MIN="5", LINDOS_INSTALLER_STEPS="updates"))
-    assert time.time() - started < 200
+                         LINDOS_TIMEOUT_MIN="12", LINDOS_INSTALLER_STEPS="updates"))
+    assert time.time() - started < 400
     assert sandbox.step("updates")["status"] == "pending" and "in time" in sandbox.step("updates")["detail"]
     assert "timed out after" in sandbox.log_text() and sandbox.held() == []
     assert not any("--no-download upgrade" in c for c in sandbox.call_log()), "nothing is installed after a timed-out download"
@@ -462,6 +564,19 @@ def test_the_use_nonfree_answer_is_the_consent(sandbox: Sandbox) -> None:
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "GET ubiquity/use_nonfree" in proc.stdout and "GET mirror/http/proxy" in proc.stdout
     assert sandbox.calls_of("lindos-drivers") == ["lindos-drivers install --auto"]
+
+
+def test_consent_is_recorded_even_when_the_install_is_offline(sandbox: Sandbox) -> None:
+    proc = sandbox.run_hook(DEBIAN_HAS_FRONTEND="1", LINDOS_CONFMODULE=str(sandbox.confmodule), FAKE_USE_NONFREE="true",
+                            FAKE_NET_RC="4")
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert sandbox.statuses() == {s: "pending" for s in ALL_STEPS}
+    assert (sandbox.target / "var/lib/lindos/driver-proprietary-consent").exists()
+
+
+def test_no_consent_file_without_consent_when_offline(sandbox: Sandbox) -> None:
+    _ok(sandbox.run_hook(FAKE_NET_RC="4"))
+    assert not (sandbox.target / "var/lib/lindos/driver-proprietary-consent").exists()
 
 
 def test_sigterm_mid_run_still_releases_the_holds_and_exits_zero(sandbox: Sandbox) -> None:

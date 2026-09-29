@@ -41,6 +41,7 @@ LI_T0="$(date +%s)"
 LI_TMPD=""
 LI_DB=0
 LI_CHILD=""
+LI_CHILD_OUT=""   # when set, li_child writes the command's output there instead of to the live log (li_apt_update)
 LI_RC=0
 LI_DIRTY=0
 LI_AUDIT=""
@@ -251,7 +252,7 @@ li_child() {
     shift
     grace="$(li_scale 20)"
     li_enter_prefix
-    timeout -k "${grace}" "${secs}" "${LI_ENTER[@]}" "$@" </dev/null >>"${LI_LOG_LIVE}" 2>&1 3>&- &
+    timeout -k "${grace}" "${secs}" "${LI_ENTER[@]}" "$@" </dev/null >>"${LI_CHILD_OUT:-${LI_LOG_LIVE}}" 2>&1 3>&- &
     LI_CHILD=$!
     wait "${LI_CHILD}"
     LI_RC=$?
@@ -323,6 +324,9 @@ Acquire::Retries "2";
 Acquire::http::Timeout "20";
 Acquire::https::Timeout "20";
 Acquire::Languages "none";
+// Stock 'apt-get update' exits 0 when index fetches fail with transient errors (timeouts, DNS, refused
+// connections: only a "W: Failed to fetch" line).  With 'any' those failures are an exit status too.
+APT::Update::Error-Mode "any";
 DPkg::Lock::Timeout "120";
 Dpkg::Options { "--force-confdef"; "--force-confold"; };
 CONFEOF
@@ -335,6 +339,59 @@ li_apt_conf_remove() {
     rm -f "${TGT}${LI_APT_CONF_REL}" 2>/dev/null
     unset LINDOS_CHROOT_APT_CONFIG
     return 0
+}
+
+# li_lists_present - the target has at least one NON-EMPTY package list of a NETWORK source.  The medium's
+# own 'cdrom:' lists (apt-setup adds them) do not count: with only those, "nothing to upgrade" would be a
+# statement about the medium, not about the archives.
+li_lists_present() {
+    local f name
+    for f in "${TGT}"/var/lib/apt/lists/*Packages*; do
+        [ -s "${f}" ] || continue
+        name="${f##*/}"
+        case "${name}" in
+            cdrom*) continue ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
+# li_apt_update SECONDS - 'apt-get update' with an honest verdict: 0 only when the lists really are complete.
+# Stock apt exits 0 when index fetches fail with transient errors, so the exit status alone would let
+# missing or partial lists count as "up to date" (and every step that learns from them record a terminal
+# 'done').  Three independent checks, any of which fails the update:
+#   * the exit status - APT::Update::Error-Mode "any" (li_apt_conf_write) makes transient failures one;
+#   * the output - an 'Err:' or 'E:' line, "Failed to fetch", "index files failed to download" (the
+#     installer's apt runs with LC_ALL=C.UTF-8, so the words are English);
+#   * the lists themselves - at least one non-empty network Packages list must exist afterwards.
+# The output goes to the live log either way.
+li_apt_update() {
+    local out="" rc bad=0 sample
+    if [ -n "${LI_TMPD:-}" ] && : >"${LI_TMPD}/apt-update.out" 2>/dev/null; then
+        out="${LI_TMPD}/apt-update.out"
+    fi
+    LI_CHILD_OUT="${out}"
+    li_dl "$1" apt-get -y -q update
+    rc=$?
+    LI_CHILD_OUT=""
+    if [ -n "${out}" ]; then
+        cat "${out}" >>"${LI_LOG_LIVE}" 2>/dev/null
+        if grep -Eq '^(Err:|E: )|Failed to fetch|index files failed to download' "${out}" 2>/dev/null; then
+            sample="$(grep -E '^(Err:|E: )|Failed to fetch' "${out}" 2>/dev/null | head -n 3 | tr '\r\n' '  ')"
+            li_log "apt-get update (exit ${rc}) reported failed fetches: ${sample}"
+            bad=1
+        fi
+        rm -f "${out}" 2>/dev/null
+    fi
+    if [ "${rc}" -eq 0 ] && [ "${bad}" = 1 ]; then
+        rc=1
+    fi
+    if [ "${rc}" -eq 0 ] && ! li_lists_present; then
+        li_log "apt-get update exited 0 but no package list of a network source is there"
+        rc=1
+    fi
+    return "${rc}"
 }
 
 # --- network -----------------------------------------------------------------------------

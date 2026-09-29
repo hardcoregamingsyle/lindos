@@ -27,6 +27,11 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  A further autostart entry (lindos-live-session) acts in the live USB session
  only and turns off sleep, screen blanking, lock and lid-suspend there, so a
  long installation is never interrupted; installed sessions are untouched.
+ Another one (lindos-browser-default) runs 'lindos-browser sync-default' at
+ login: when Chrome was still to be downloaded while Lindos Setup ran, it makes
+ Chrome XFCE's preferred web browser once the silent retry has installed it
+ (the base system's own default says Firefox) - never over a browser the user
+ picked, and never in the live session.
  .
  It also keeps the base system's own branding from showing through: the
  base's Welcome Screen and Software Manager menu entries (duplicates of

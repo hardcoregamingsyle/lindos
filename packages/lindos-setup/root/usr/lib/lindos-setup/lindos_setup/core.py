@@ -590,9 +590,17 @@ def _exec_set_default_browser(step: Step, logf: LogFn) -> Any:
     if installed:
         return _ok(browsers.set_default(bid))
     if step.payload.get("pending") or browser_state(bid) == BROWSER_PENDING:
-        # not a failure: the choice is stored (config + system.json) and the background retry
-        # makes it the default once it lands.  The personal default is left alone on purpose, so
-        # the system-wide default that retry writes applies to this account too.
+        # not a failure: the choice is stored (config + system.json) and it becomes the default
+        # once the browser lands.  The personal default is left alone here on purpose (Firefox
+        # until then; nothing is pointed at a browser that is not installed).  Two things make
+        # the promise true, neither of which needs this wizard to be running any more:
+        #   * the silent retry (lindos-browser-firstboot.service) writes /etc/xdg/mimeapps.list
+        #     for GIO-based openers - but XFCE's own preferred web browser (exo-open, the browser
+        #     key, the menu's web search) reads xfce4/helpers.rc, and the system-wide one of the
+        #     base says Firefox, so
+        #   * `lindos-browser sync-default` - an autostart entry of lindos-desktop, run as this
+        #     user at every login and waiting for the retry - calls lindos.browsers.set_default
+        #     once the chosen browser is installed (never over a browser picked in the meantime).
         return True, ("%s is not installed yet; it becomes the default browser when it is added "
                       "(Firefox until then)" % bid)
     return False, "%s is not installed; default browser unchanged" % bid

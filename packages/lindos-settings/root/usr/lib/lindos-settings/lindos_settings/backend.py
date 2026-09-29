@@ -342,14 +342,31 @@ class Backend:
                 raw = None
         return model.normalize_install_state(raw)
 
+    def catalogue_apt_packages(self) -> list[str]:
+        """The apt apps of the OOBE catalogue (lindos-setup's apps.json: GIMP, Krita, Kdenlive) that the
+        installer adds for the Modes although no mode.json lists them.  Read from apps.json
+        (:func:`model.catalogue_apt_packages`, the rule of build/lib/installer_extras.py); when
+        lindos-setup or the file is missing or unreadable, the mirror :data:`model.SETUP_CATALOGUE_APT`."""
+        path = self.path("SETUP_APPS_JSON", model.SETUP_APPS_JSON)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                found = model.catalogue_apt_packages(json.load(fh))
+        except (OSError, ValueError):
+            found = None
+        return list(model.SETUP_CATALOGUE_APT) if found is None else found
+
     def mode_extras(self) -> tuple[list[str], list[str]]:
-        """The union of every Mode's apt packages and Flatpaks (what the installer tops up)."""
+        """Everything the installer's ``mode_extras`` / ``flatpaks`` steps add: the union of every Mode's
+        apt packages and Flatpaks, plus the catalogue apps preselected for a Mode (GIMP, Krita, Kdenlive:
+        in apps.json, in no mode.json) - the same derivation as build/lib/installer_extras.py, so every
+        pending package is offered and finished by Settings > Apps."""
         packages: list[str] = []
         flatpaks: list[str] = []
         for mode in self.load_modes().values():
             info = self.mode_as_dict(mode)
             packages.extend(str(p) for p in info.get("packages") or [])
             flatpaks.extend(str(f) for f in info.get("flatpaks") or [])
+        packages.extend(self.catalogue_apt_packages())
         return list(dict.fromkeys(packages)), list(dict.fromkeys(flatpaks))
 
     def installed_packages(self, names: Sequence[str]) -> set[str]:
@@ -382,14 +399,67 @@ class Backend:
                 log.debug("browsers.is_installed failed: %s", exc)
         if "compat" in waiting:
             st = self.compat_status()
-            have["compat"] = bool(st.get("wine") and st.get("umu"))
+            have["compat"] = {i for i in model.SETUP_COMPAT_ITEMS if st.get(i)}
         if "gaming" in waiting:
             have["gaming"] = {str(row["launcher"].id) for row in self.launcher_states() if row.get("installed")}
         if "mode_extras" in waiting:
             have["packages"] = self.installed_packages(packages)
         if "flatpaks" in waiting:
             have["flatpaks"] = self.flatpak_apps()
+        if "drivers" in waiting:
+            have["drivers"] = self.driver_setup_facts()
         return model.pending_setup_items(state, mode_packages=packages, mode_flatpaks=flatpaks, installed=have)
+
+    def secure_boot_state(self) -> str:
+        """``enabled`` | ``disabled`` | ``unknown`` - read like the installer's ``li_secure_boot``: ``mokutil
+        --sb-state``, else the EFI ``SecureBoot`` variable; no /sys/firmware/efi means a legacy-BIOS boot,
+        which has no Secure Boot.  Read-only, never raises."""
+        if self.which("mokutil"):
+            r = self.run(["mokutil", "--sb-state"], timeout=10)
+            text = f"{r.out}\n{r.err}"
+            if "SecureBoot enabled" in text:
+                return "enabled"
+            if "SecureBoot disabled" in text:
+                return "disabled"
+        efi = _sys_root() + "/sys/firmware/efi"
+        if not os.path.isdir(efi):
+            return "disabled"
+        for var in sorted(glob.glob(efi + "/efivars/SecureBoot-*")):
+            try:
+                with open(var, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if data[-1:] == b"\x01":
+                return "enabled"
+            if data[-1:] == b"\x00":
+                return "disabled"
+        return "unknown"
+
+    def driver_consent(self) -> bool:
+        """True when the user's consent to proprietary drivers was recorded while installing
+        (``/var/lib/lindos/driver-proprietary-consent``, written by the installer's drivers step)."""
+        return os.path.exists(self.path("DRIVER_CONSENT", "/var/lib/lindos/driver-proprietary-consent"))
+
+    def driver_setup_facts(self) -> dict[str, Any]:
+        """What :func:`model.driver_setup_plan` decides on: the vendor of every display adapter, the Secure
+        Boot state and the recorded consent.  A probe that fails counts as "unknown" (the cautious answer)."""
+        try:
+            vendors = [str(g.get("vendor") or "") for g in self.gpu_info()]
+        except Exception as exc:  # lspci/hardware probes must never break the Apps page
+            log.debug("gpu_info failed: %s", exc)
+            vendors = []
+        try:
+            secure_boot = self.secure_boot_state()
+        except Exception as exc:
+            log.debug("secure_boot_state failed: %s", exc)
+            secure_boot = "unknown"
+        return {"vendors": vendors, "secure_boot": secure_boot, "consent": self.driver_consent()}
+
+    def driver_setup_plan(self) -> dict[str, Any]:
+        """The live :func:`model.driver_setup_plan` for this PC."""
+        facts = self.driver_setup_facts()
+        return model.driver_setup_plan(facts["vendors"], facts["secure_boot"], facts["consent"])
 
     def install_setup_item(self, item: dict[str, Any]) -> HelperResult:
         """Finish one row of :meth:`setup_pending_items` through the existing helper actions."""
@@ -407,8 +477,14 @@ class Backend:
             return self.install_packages([str(i) for i in payload.get("packages") or []])
         if kind == "flatpaks":
             return self.install_flatpaks([str(i) for i in payload.get("flatpaks") or []])
-        if kind == "drivers":
-            return self.install_drivers("", "")
+        if kind in ("drivers", "hardware"):
+            # never trust the row (it may be stale, or forged): decide again, on this PC, exactly like the
+            # row did.  A GPU install is only ever the installer's own limits - recorded consent and no
+            # Secure Boot key enrolment - anything else belongs to Settings > Hardware.
+            plan = self.driver_setup_plan()
+            if kind == "hardware" or plan["kind"] != "drivers":
+                return HelperResult(False, "", str(plan["note"]), 2)
+            return self.run_privileged("install-drivers", dict(plan["payload"]))
         return HelperResult(False, "", f"unknown item {kind!r}", 2)
 
     # ------------------------------------------------------------------ processes
@@ -1092,9 +1168,9 @@ class Backend:
         self._flatpak_cache = None
         return self.run_privileged("install-gaming", {"items": [str(i) for i in items]})
 
-    def install_compat(self, items: Sequence[str] = ("wine", "umu")) -> HelperResult:
+    def install_compat(self, items: Sequence[str] = model.SETUP_COMPAT_ITEMS) -> HelperResult:
         """Windows app support: helper `install-compat` → /usr/libexec/lindos/install-compat.sh <items>
-        (lindos-compat).  Default items = Wine + Proton via umu, what the installer sets up."""
+        (lindos-compat).  Default items = Wine, winetricks and Proton via umu, what the installer sets up."""
         return self.run_privileged("install-compat", {"items": [str(i) for i in items]})
 
     def compat_status(self) -> dict[str, bool]:

@@ -42,7 +42,11 @@ Description: Lindos core library, privileged helper and command-line tools
  oem-config-pending are the shared shell tests for 'running from the install
  medium' and 'the first-boot account wizard has not finished'; wait-for-network
  gives those retries a bounded wait for NetworkManager (network-online.target
- comes too early here, wait-online being masked);
+ comes too early here, wait-online being masked); apt-serialise makes them take
+ turns (a flock) and wait for a held dpkg lock (DPkg::Lock::Timeout) instead
+ of failing at once, because apt does not queue by itself;
+ 'lindos-browser sync-default' (started at login by lindos-desktop) makes the
+ browser chosen in Lindos Setup XFCE's preferred one once it is installed;
  lindos-live-inhibit.service keeps a live USB session from suspending during
  an installation.
  .

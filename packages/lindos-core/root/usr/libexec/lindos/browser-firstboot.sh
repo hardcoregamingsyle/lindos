@@ -29,6 +29,14 @@
 #     standard xdg fallback consulted by any account without its own ~/.config/mimeapps.list) —
 #     it never touches an existing user's personal choice (xdg-settings/OOBE already covered that
 #     in the user's own session; this script runs as root with no user/session/$DISPLAY at all).
+#     That file only reaches GIO-based openers.  XFCE's own "preferred web browser" (exo-open, the
+#     browser key, the menu's web search) reads xfce4/helpers.rc, whose system-wide copy belongs to
+#     the base system and says Firefox: for a user whose Setup ran while Chrome was still pending,
+#     `lindos-browser sync-default` (an autostart entry of lindos-desktop, run as that user at
+#     login, waiting for this script's install to land) makes Chrome that user's preferred one.
+#   * apt does not queue: the install goes through install-browser.sh, which takes its turn behind
+#     every other Lindos apt job (apt-serialise, a flock) and waits for a held dpkg lock; the
+#     driver retry unit is ordered after this one.
 #
 # Usage: browser-firstboot.sh [--force]
 #   --force   ignore the marker file and run again (testing only)

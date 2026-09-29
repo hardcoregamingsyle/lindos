@@ -13,6 +13,7 @@ from installer_testlib import BASH, LIBEXEC, PKG_ROOT, REPO, SHARE, Sandbox, nee
 
 PKG = REPO / "packages" / "lindos-installer"
 SCRIPTS = ("lib.sh", "target-config.sh", "finalize.sh")
+DM_SCRIPT = "dm-noblank.sh"   # POSIX sh, run by ubiquity-dm itself (tests in test_dm_noblank.py)
 
 
 def _text(p: Path) -> str:
@@ -74,8 +75,13 @@ def test_the_hook_carries_the_contract_of_a_ubiquity_target_config_hook() -> Non
                    "systemd-inhibit", "DPkg::Lock::Timeout", "dpkg --configure -a", "-f install", "dpkg --audit",
                    "db_progress INFO", "db_x_loadtemplatefile", "db_subst", "trap li_on_exit EXIT",
                    "--in-installer --download-only", "--in-installer --no-download", "policy-rc.d",
-                   "lindos.install=off", "lindos.install_budget", "lindos.installstate"):
+                   "lindos.install=off", "lindos.install_budget", "lindos.installstate",
+                   "APT::Update::Error-Mode"):
         assert needle in both, needle
+    # 'apt-get update' exits 0 after transient fetch failures: the hook asks li_apt_update for the verdict (exit
+    # status + output + lists on disk) and never runs the update bare
+    assert "li_apt_update 600" in hook and "li_apt_update 300" in hook
+    assert "li_dl 600 apt-get -y -q update" not in hook and "li_dl 300 apt-get -y -q update" not in hook
     # downloads first (-d), installs from the download (--no-download), an upgrade never a dist-upgrade
     assert "-d upgrade" in hook and "--no-download upgrade" in hook and "--only-upgrade" not in hook
     code = "\n".join(ln for ln in both.splitlines() if not ln.lstrip().startswith("#"))
@@ -99,7 +105,7 @@ def test_hold_families_cover_installer_kernel_and_bootloader() -> None:
 
 
 @needs_bash
-@pytest.mark.parametrize("name", SCRIPTS)
+@pytest.mark.parametrize("name", SCRIPTS + (DM_SCRIPT,))
 def test_scripts_parse(name: str) -> None:
     res = subprocess.run([BASH, "-n", str(LIBEXEC / name)], capture_output=True, text=True, timeout=60)
     assert res.returncode == 0, res.stderr
@@ -218,6 +224,7 @@ def test_the_progress_template_is_one_text_line() -> None:
 
 def test_the_shipped_tree_has_only_what_the_flow_needs() -> None:
     files = sorted(p.relative_to(PKG_ROOT).as_posix() for p in PKG_ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
-    assert files == ["usr/libexec/lindos/installer/finalize.sh", "usr/libexec/lindos/installer/lib.sh",
+    assert files == ["usr/libexec/lindos/installer/dm-noblank.sh", "usr/libexec/lindos/installer/finalize.sh",
+                     "usr/libexec/lindos/installer/lib.sh",
                      "usr/libexec/lindos/installer/target-config.sh", "usr/share/lindos/installer/extras.json",
                      "usr/share/lindos/installer/lindos-installer.templates", "usr/share/lindos/installer/lindos.seed"]

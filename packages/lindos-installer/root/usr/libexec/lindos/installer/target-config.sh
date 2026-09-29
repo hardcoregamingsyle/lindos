@@ -138,8 +138,10 @@ li_on_signal() {
 #  the steps
 # ======================================================================================
 
-# Set when 'apt-get update' failed for some sources: what the steps learn from the lists is then incomplete,
-# and an "up to date" or "not in the archives" answer must not be recorded as a finished job.
+# Set when 'apt-get update' did not complete cleanly (li_apt_update: a non-zero exit, a failed fetch in its
+# output that apt only warned about, or no network list on disk): what the steps learn from the lists is then
+# incomplete, and an "up to date", "not in the archives" or "no drivers" answer (updates, mode_extras,
+# drivers) must not be recorded as a finished job.
 LI_LISTS_PARTIAL=0
 
 # li_step NAME MIN_SECONDS_LEFT FUNCTION - run one step if the budget allows, always record a result.
@@ -216,7 +218,7 @@ li_step_browser() {
 
 # --- drivers: free drivers + firmware always; proprietary ones only with consent -------------
 li_step_drivers() {
-    local consent=0 sb proprietary=0 note="" rc failed="" detail detected=1
+    local consent=0 sb proprietary=0 note="" rc failed="" detail status detected=1
     if ! li_free_ok 800000; then
         li_mark drivers pending "not enough disk space for drivers"
         return 0
@@ -282,8 +284,10 @@ li_step_drivers() {
         return 0
     fi
     if [ -n "${note}" ]; then
-        li_mark drivers skipped "${note}"
+        status=skipped
+        detail="${note}"
     else
+        status="done"
         if [ "${detected}" = 1 ]; then
             detail="free drivers and firmware installed"
         else
@@ -294,8 +298,14 @@ li_step_drivers() {
         elif [ "${consent}" = 0 ]; then
             detail="${detail} (a proprietary GPU driver needs your consent: Settings)"
         fi
-        li_mark drivers "done" "${detail}"
     fi
+    if [ "${LI_LISTS_PARTIAL}" = 1 ]; then
+        # "no firmware or driver candidates" says nothing about the archives when their lists are incomplete:
+        # not final, and no marker, so the silent first-boot retry and Settings still have this to do
+        li_mark drivers pending "${detail}, but the package lists were only partly refreshed: more drivers may be available"
+        return 0
+    fi
+    li_mark drivers "${status}" "${detail}"
     # only a terminal outcome silences the first-boot retry unit
     : >"${TGT}/var/lib/lindos/driver-firstboot.done"
     return 0
@@ -538,22 +548,6 @@ li_step_flatpaks() {
 # ======================================================================================
 #  main
 # ======================================================================================
-# li_lists_present - the target has at least one package list of a NETWORK source.  The medium's own
-# 'cdrom:' lists (apt-setup adds them) do not count: with only those, "nothing to upgrade" would be a
-# statement about the medium, not about the archives.
-li_lists_present() {
-    local f name
-    for f in "${TGT}"/var/lib/apt/lists/*Packages*; do
-        [ -e "${f}" ] || continue
-        name="${f##*/}"
-        case "${name}" in
-            cdrom*) continue ;;
-        esac
-        return 0
-    done
-    return 1
-}
-
 li_main() {
     local rc step
     li_log "start (version ${LI_VERSION}, target ${TGT}, budget ${LI_BUDGET}s)"
@@ -590,6 +584,12 @@ li_main() {
         return 0
     fi
 
+    # the user's consent is a fact about the user, not about the network: record it before any early return so
+    # Settings and the silent retry still know it after an offline install
+    if li_nonfree_consent; then
+        mkdir -p "${TGT}/var/lib/lindos" 2>/dev/null && : >"${TGT}/var/lib/lindos/driver-proprietary-consent" 2>/dev/null
+    fi
+
     li_say "Checking the internet connection..."
     if ! li_online; then
         li_say "No internet connection - downloads are skipped"
@@ -612,13 +612,15 @@ li_main() {
     li_pin_installer_family
 
     # Refresh the target's package lists: the medium carries none (they would be stale) and Ubiquity's
-    # own later steps (language packs, codecs) only see the archives after this.
+    # own later steps (language packs, codecs) only see the archives after this.  li_apt_update does not
+    # trust apt's exit status alone (apt exits 0 after transient fetch failures): a failed fetch in the
+    # output, or no network list on disk, is a failed update too, and is retried once like a non-zero exit.
     li_say "Refreshing package lists..."
-    li_dl 600 apt-get -y -q update
+    li_apt_update 600
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         li_settle
-        li_dl 300 apt-get -y -q update
+        li_apt_update 300
         rc=$?
     fi
     if [ "${rc}" -ne 0 ]; then
@@ -627,7 +629,7 @@ li_main() {
             li_mark_missing pending "the package lists could not be refreshed"
             return 0
         fi
-        li_log "apt-get update reported errors, continuing with the lists that arrived"
+        li_log "apt-get update did not complete cleanly, continuing with the lists that arrived: nothing learned from them is final"
         LI_LISTS_PARTIAL=1
     fi
 

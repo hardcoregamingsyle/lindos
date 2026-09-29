@@ -149,8 +149,11 @@ def _smoke_liveness_function() -> str:
 
 
 def _run_smoke_liveness(tmp_path: Path, cmdline: str, helper: Path) -> subprocess.CompletedProcess:
+    staged = tmp_path / "is-live-session"          # git keeps no exec bit; the package build (mkdeb) sets 0755
+    staged.write_bytes(helper.read_bytes())
+    staged.chmod(0o755)
     body = _smoke_liveness_function().replace("/proc/cmdline", cmdline)
-    body = body.replace("/usr/libexec/lindos/is-live-session", _msys(str(helper)))
+    body = body.replace("/usr/libexec/lindos/is-live-session", _msys(str(staged)))
     harness = tmp_path / "harness.sh"
     harness.write_text("#!/bin/bash\ncheck_live_session_helper() {\n" + body
                        + "}\ncheck_live_session_helper\necho RC=$?\n", encoding="utf-8", newline="\n")
@@ -265,6 +268,21 @@ def test_live_inhibit_unit_only_runs_in_the_live_session() -> None:
         assert what in exec_start, what
     assert exec_start.endswith("/usr/bin/sleep infinity")
     assert "Type=simple" in lines and "WantedBy=multi-user.target" in lines
+
+
+def test_live_inhibit_unit_does_not_claim_to_stop_x_blanking_and_names_who_does() -> None:
+    """A logind inhibitor cannot stop the X server's own screensaver/DPMS, which blank a bare X server (the
+    'Install Lindos' only-ubiquity session has no desktop) after ten minutes: the ubiquity-dm hook that the
+    build deploys does that, and the unit's own header must say so instead of implying full coverage."""
+    text = (SYSTEM_UNITS / "lindos-live-inhibit.service").read_text(encoding="utf-8")
+    header = " ".join(ln.lstrip("# ").strip() for ln in text.splitlines() if ln.startswith("#"))
+    assert "cannot stop the X server's own screensaver and DPMS" in header
+    assert "live-session-power.sh" in header
+    build = (_PKG_ROOT.parents[1] / "build" / "chroot" / "79-installer-flow.sh").read_text(encoding="utf-8")
+    dm_name = re.search(r'^DM_NAME="([^"]+)"$', build, re.M)
+    assert dm_name and dm_name.group(1) in header and "dm-scripts/install" in header
+    exec_start = next(ln for ln in _lines(SYSTEM_UNITS / "lindos-live-inhibit.service") if ln.startswith("ExecStart="))
+    assert "xset" not in exec_start, "the inhibitor is logind's; X blanking is the dm hook's job"
 
 
 def test_postinst_wires_the_live_inhibit_unit_and_the_new_helpers() -> None:

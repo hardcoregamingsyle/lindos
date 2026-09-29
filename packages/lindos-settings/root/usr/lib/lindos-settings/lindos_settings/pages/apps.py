@@ -71,9 +71,16 @@ class AppsPage(DelegatePage):
             self.toast("Another install is still running")
             return
         title = str(item.get("title") or "this item")
-        if not confirm(self.app.window, f"Install {title}?",
-                       "It is downloaded from its official source, so this PC needs an internet connection. "
-                       "The administrator password is asked once.", "Install now"):
+        if item.get("kind") == "hardware":
+            # nothing is installed from here (a proprietary GPU driver needs the consent and the Secure Boot
+            # explanation Settings > Hardware gives): the row only says why and leads there
+            self.app.show_page("hardware")
+            return
+        spec = item.get("confirm") if isinstance(item.get("confirm"), dict) else {}
+        if not confirm(self.app.window, str(spec.get("title") or f"Install {title}?"),
+                       str(spec.get("body") or "It is downloaded from its official source, so this PC needs an "
+                           "internet connection. The administrator password is asked once."),
+                       str(spec.get("accept") or "Install now")):
             return
         self._pending_busy = True
         self.toast(f"Installing {title}…")

@@ -19,6 +19,12 @@
 #     an interactive blue screen at the next boot) and the step is recorded as 'skipped'.
 # It never asks anything: the old "install offer" file is gone - nothing in Lindos read it.
 #
+# apt discipline: the Chrome retry (lindos-browser-firstboot.service) wakes up at the same moment and
+# the unit is ordered after it, but apt does not queue by itself, so the retry command also runs through
+# lindos-core's apt-serialise helper: it takes its turn behind every other Lindos apt job (flock) and
+# exports DPkg::Lock::Timeout, so the apt-get inside lindos-drivers / ubuntu-drivers waits for a dpkg lock
+# somebody else holds instead of failing at once - a lost attempt would be counted against the three tries.
+#
 # Never runs in the live session, in a chroot/container, or while Ubiquity's oem-config first-boot
 # wizard is still pending (the new user's account does not exist yet).  Guarded, idempotent
 # (marker /var/lib/lindos/driver-firstboot.done, attempt counter capped so a broken driver is not
@@ -31,6 +37,7 @@ LIBEXEC="${ROOT}/usr/libexec/lindos"
 IS_LIVE_SESSION="${LIBEXEC}/is-live-session"
 OEM_CONFIG_PENDING="${LIBEXEC}/oem-config-pending"
 WAIT_FOR_NETWORK="${LIBEXEC}/wait-for-network"
+APT_SERIALISE="${LIBEXEC}/apt-serialise"
 PY="${LINDOS_PYTHON:-python3}"
 STATE_DIR="${ROOT}/var/lib/lindos"
 MARKER="${STATE_DIR}/driver-firstboot.done"
@@ -39,6 +46,9 @@ CONSENT="${STATE_DIR}/driver-proprietary-consent"
 ATTEMPTS="${STATE_DIR}/driver-firstboot.attempts"
 MAX_ATTEMPTS=3
 RETRY_TIMEOUT="${LINDOS_DRIVER_RETRY_TIMEOUT:-900}"
+# how long the retry may queue behind another Lindos apt job before it runs anyway (the time limit above
+# starts only once it is its turn)
+LOCK_WAIT="${LINDOS_DRIVER_LOCK_WAIT:-180}"
 LOG_DIR="${ROOT}/var/log/lindos"
 LOG_FILE="${LOG_DIR}/driver-firstboot.log"
 FORCE=0
@@ -167,11 +177,17 @@ PY
 }
 
 # Run the retry command with a time limit; prints nothing to the user, output goes to the log.
-# Returns the command's exit status (124 = timed out).
+# Returns the command's exit status (124 = timed out).  It first takes its turn behind every other Lindos
+# apt job and gets a dpkg lock wait for every apt-get it starts (shared apt-serialise helper of
+# lindos-core; without it the command simply runs as before).  The time limit is inside the queue: it
+# counts from the moment the command really starts.
 run_retry() {
     local -a cmd=("$@")
     if have timeout; then
         cmd=(timeout -k 30 "${RETRY_TIMEOUT}" "${cmd[@]}")
+    fi
+    if [ -f "${APT_SERIALISE}" ]; then
+        cmd=(bash "${APT_SERIALISE}" --wait "${LOCK_WAIT}" -- "${cmd[@]}")
     fi
     log "retrying: ${cmd[*]}"
     local rc=0

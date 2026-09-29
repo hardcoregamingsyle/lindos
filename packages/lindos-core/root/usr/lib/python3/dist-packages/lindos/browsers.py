@@ -13,11 +13,14 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from . import config as lconfig
 from . import helper as lhelper
+from . import installstate
 from . import paths
+from . import session as lsession
 
 log = logging.getLogger("lindos.browsers")
 
@@ -233,6 +236,120 @@ def set_default(bid: str) -> bool:
     return ok
 
 
+# --- follow the choice made in Setup once the browser has landed (SPEC §4.4, §17) ---------------------
+#: how often :func:`sync_default` looks again while it waits, and for how long a login session waits at most
+SYNC_POLL_SECONDS = 30.0
+SYNC_MAX_WAIT_SECONDS = 7200.0
+
+#: outcomes of :func:`sync_default`; the first two mean "look again later" while a wait budget lasts
+SYNC_SETUP_PENDING = "setup-pending"      # Lindos Setup has not finished: the choice is not made yet
+SYNC_PENDING = "pending"                  # chosen, not installed yet, and the silent retry may still add it
+SYNC_UNAVAILABLE = "unavailable"          # chosen, not installed, and nothing will install it
+SYNC_ALREADY = "already"                  # the user's XFCE preferred browser already is the chosen one
+SYNC_PERSONAL = "personal"                # the user already has a personal choice: left alone
+SYNC_LIVE = "live"                        # live USB session / the temporary oem account: nothing to do
+SYNC_APPLIED = "applied"                  # made the default (xdg + xfce4 helpers.rc + config)
+SYNC_PARTIAL = "partial"                  # made the default, but a tool reported a problem (see the log)
+
+_HTTP_KEYS = ("x-scheme-handler/https", "x-scheme-handler/http")
+
+
+def _read_lines(path: str) -> List[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return [ln.strip() for ln in fh.read().splitlines()]
+    except OSError:
+        return []
+
+
+def user_helper_choice() -> Optional[str]:
+    """``WebBrowser=`` in the user's ``~/.config/xfce4/helpers.rc`` (XFCE's preferred web browser); None if unset.
+
+    Only the user's own file counts: the system-wide one (the base system's says ``firefox``) is the *default*, not a choice."""
+    value: Optional[str] = None
+    for line in _read_lines(paths.resolve("~/.config/xfce4/helpers.rc")):
+        if line.startswith("WebBrowser=") and line.split("=", 1)[1].strip():
+            value = line.split("=", 1)[1].strip()
+    return value
+
+
+def user_mime_choice() -> Optional[str]:
+    """The web browser the user's own ``~/.config/mimeapps.list`` names for https/http (first desktop id); None if unset."""
+    section = ""
+    found: Dict[str, str] = {}
+    for line in _read_lines(paths.resolve("~/.config/mimeapps.list")):
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+        elif section == "[Default Applications]" and "=" in line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            first = next((v.strip() for v in value.split(";") if v.strip()), "")
+            if key.strip() in _HTTP_KEYS and first:
+                found[key.strip()] = first
+    for key in _HTTP_KEYS:
+        if key in found:
+            return found[key]
+    return None
+
+
+def _retry_expected(bid: str) -> bool:
+    """True when something is still going to install *bid* by itself.
+
+    Only Chrome has a silent start-up retry (``lindos-browser-firstboot.service``), and only while the installer's
+    'browser' step is pending/failed/unknown; Edge is never installed by Lindos and Firefox is on the ISO."""
+    if bid != "chrome":
+        return False
+    return installstate.status("browser") not in installstate.TERMINAL
+
+
+def _sync_once(log: LogFn) -> str:
+    if lsession.is_live_session() or lsession.is_oem_temp_user():
+        return SYNC_LIVE
+    if not lconfig.is_setup_done():
+        return SYNC_SETUP_PENDING
+    bid = lconfig.effective_browser()
+    if bid not in BROWSERS:
+        return SYNC_UNAVAILABLE
+    # a choice the user already has always wins - and needs no waiting for the install
+    helper_choice = user_helper_choice()
+    if helper_choice == _XFCE_HELPER_IDS[bid]:
+        return SYNC_ALREADY
+    mime_choice = user_mime_choice()
+    if helper_choice or (mime_choice and mime_choice != BROWSERS[bid]["desktop"]):
+        log(f"the user already has a personal web browser choice ({helper_choice or mime_choice}); left alone")
+        return SYNC_PERSONAL
+    if not is_installed(bid):
+        return SYNC_PENDING if _retry_expected(bid) else SYNC_UNAVAILABLE
+    log(f"{BROWSERS[bid]['name']} is installed and is the browser chosen in Setup: making it the default")
+    return SYNC_APPLIED if set_default(bid) else SYNC_PARTIAL
+
+
+def sync_default(wait: float = 0.0, poll: float = SYNC_POLL_SECONDS, *, log: LogFn = lambda msg: None,
+                 sleep: Callable[[float], Any] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> str:
+    """Make the browser the user chose in Lindos Setup the default once it is installed; returns an ``SYNC_*`` outcome.
+
+    Why: Chrome is downloaded from Google's repository, so an offline install (or a failed one) leaves it *pending*
+    and Setup can only remember the choice.  The silent retry later installs it and points ``/etc/xdg/mimeapps.list``
+    at it, but XFCE's own "preferred web browser" (``exo-open``, the keyboard shortcut for the browser, the menu's web
+    search) reads ``xfce4/helpers.rc`` - and the system-wide one that ships with the base says Firefox.  A root job
+    cannot write into the user's home, so this runs as the user, at every login (an autostart entry) and, with
+    *wait*, keeps looking every *poll* seconds for at most *wait* seconds while Setup or the retry is still to come.
+
+    A personal choice always wins: a ``WebBrowser=`` line in the user's own ``helpers.rc``, or a different https/http
+    handler in the user's own ``mimeapps.list`` (whatever Setup, Settings, XFCE or Firefox wrote there), is never
+    overwritten.  Nothing happens in the live session, in the temporary ``oem`` account, or before Setup finished.
+    """
+    deadline = clock() + max(0.0, float(wait))
+    while True:
+        outcome = _sync_once(log)
+        if outcome not in (SYNC_SETUP_PENDING, SYNC_PENDING):
+            return outcome
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return outcome
+        sleep(min(float(poll), remaining))
+
+
 def default_browser() -> Optional[str]:
     """Browser id currently reported by ``xdg-settings`` (None when unknown/unavailable)."""
     xdg_settings = shutil.which("xdg-settings")
@@ -263,4 +380,6 @@ def list_browsers() -> List[Dict[str, Any]]:
 
 
 __all__ = ["BROWSERS", "is_installed", "install", "install_preflight", "set_default", "online", "dpkg_installed",
-           "default_browser", "list_browsers"]
+           "default_browser", "list_browsers", "sync_default", "user_helper_choice", "user_mime_choice",
+           "SYNC_POLL_SECONDS", "SYNC_MAX_WAIT_SECONDS", "SYNC_SETUP_PENDING", "SYNC_PENDING", "SYNC_UNAVAILABLE",
+           "SYNC_ALREADY", "SYNC_PERSONAL", "SYNC_LIVE", "SYNC_APPLIED", "SYNC_PARTIAL"]

@@ -27,12 +27,13 @@ GOOD_LINKS = {"etc/systemd/system/default.target": "/lib/systemd/system/oem-conf
 STATE_OK = {
     "schema": 1, "updated": "2026-09-29T10:25:00Z", "online": True,
     "steps": {
-        "updates": {"status": "done", "detail": "upgraded 212 packages", "time": "2026-09-29T10:10:00Z"},
-        "drivers": {"status": "done", "detail": "no proprietary driver needed", "time": "2026-09-29T10:12:00Z"},
+        "updates": {"status": "done", "detail": "212 packages upgraded", "time": "2026-09-29T10:10:00Z"},
+        "drivers": {"status": "done", "detail": "free drivers and firmware installed (a proprietary GPU driver needs your consent: Settings)",
+                    "time": "2026-09-29T10:12:00Z"},
         "browser": {"status": "done", "detail": "google-chrome-stable installed", "time": "2026-09-29T10:05:00Z"},
-        "compat": {"status": "done", "detail": "", "time": "2026-09-29T10:14:00Z"},
-        "gaming": {"status": "done", "detail": "", "time": "2026-09-29T10:15:00Z"},
-        "mode_extras": {"status": "done", "detail": "", "time": "2026-09-29T10:16:00Z"},
+        "compat": {"status": "done", "detail": "wine winetricks umu", "time": "2026-09-29T10:14:00Z"},
+        "gaming": {"status": "done", "detail": "steam lutris", "time": "2026-09-29T10:15:00Z"},
+        "mode_extras": {"status": "done", "detail": "4 packages installed", "time": "2026-09-29T10:16:00Z"},
         "flatpaks": {"status": "pending", "detail": "flatpak could not install in the chroot", "time": "2026-09-29T10:18:00Z"},
     },
 }
@@ -54,6 +55,16 @@ def dpkg_stanza(name: str, status: str = "install ok installed", version: str = 
         name, status, arch, version)
 
 
+# a small extras.json with one entry of every kind the disk checks know (the real one is checked in the tests below)
+EXTRAS = {
+    "schema": 1,
+    "apt": ["gimp", "libreoffice-writer", "libvulkan1", "steam-devices"],
+    "compat": ["wine", "winetricks", "umu"],
+    "gaming": ["steam", "lutris"],
+    "flatpaks": ["com.usebottles.bottles", "org.vinegarhq.Sober"],
+    "drivers": {"firmware": ["linux-firmware", "intel-microcode", "firmware-sof-signed"]},
+}
+
 GOOD_STATUS = "".join([
     dpkg_stanza("oem-config", version="24.04.3+mint18"),
     dpkg_stanza("oem-config-gtk", version="24.04.3+mint18"),
@@ -61,7 +72,33 @@ GOOD_STATUS = "".join([
     dpkg_stanza("coreutils", arch="amd64"),
     dpkg_stanza("libc6", arch="amd64"),
     dpkg_stanza("libc6", arch="i386"),
+    # what the 'done' steps of STATE_OK install
+    dpkg_stanza("gimp", arch="amd64"), dpkg_stanza("libreoffice-writer", arch="amd64"),
+    dpkg_stanza("libvulkan1", arch="amd64"), dpkg_stanza("steam-devices"),
+    dpkg_stanza("winehq-staging", arch="amd64"), dpkg_stanza("winetricks"),
+    dpkg_stanza("steam-launcher"), dpkg_stanza("lutris"),
+    dpkg_stanza("linux-firmware"), dpkg_stanza("intel-microcode", arch="amd64"), dpkg_stanza("firmware-sof-signed"),
 ])
+
+DEBCONF_CONFIG = """\
+Name: ubiquity/success_command
+Template: ubiquity/success_command
+Value: /usr/libexec/lindos/installer/finalize.sh
+Owners: ubiquity
+Flags: seen
+
+Name: user-setup/allow-password-empty
+Template: user-setup/allow-password-empty
+Value: false
+Owners: d-i
+Flags: seen
+"""
+
+DPKG_LOG = """\
+2026-09-29 10:02:00 install oem-config:all <none> 24.04.3+mint18
+2026-09-29 10:10:01 upgrade libc6:amd64 2.39-0ubuntu8.3 2.39-0ubuntu8.4
+2026-09-29 10:10:02 status installed libc6:amd64 2.39-0ubuntu8.4
+"""
 
 GRUB_MBR = b"\xeb\x63\x90" + b"\0" * 0x1e + b"GRUB \0Geom\0Read\0 Error\r\n" + b"\0" * 400
 GRUB_MBR = GRUB_MBR[:446].ljust(446, b"\0") + b"\0" * 64 + b"\x55\xaa"
@@ -103,6 +140,10 @@ def make_good_tree(root: Path) -> None:
     _w(root, "boot/grub/grub.cfg", GRUB_CFG)
     _w(root, "etc/os-release", 'PRETTY_NAME="Lindos 1.0 (Aurora)"\nID=linuxmint\n')
     _w(root, "etc/apt/sources.list", "# deb cdrom:[Lindos 1.0]/ noble main\n")
+    _w(root, ic.DEBCONF_CONFIG, DEBCONF_CONFIG)
+    _w(root, ic.DPKG_ARCH, "i386\n")
+    _w(root, ic.DPKG_LOG, DPKG_LOG)
+    _w(root, "usr/local/bin/umu-run", "#!/usr/bin/env python3\n")
     for d in ("proc", "sys", "run", "dev", "cdrom"):
         (root / d).mkdir(parents=True, exist_ok=True)
 
@@ -116,6 +157,8 @@ def tree(tmp_path: Path) -> ic.Tree:
 def run(tree: ic.Tree, **kw) -> List[ic.Finding]:
     kw.setdefault("expect_online", True)
     kw.setdefault("mbr", GRUB_MBR)
+    kw.setdefault("extras", EXTRAS)
+    kw.setdefault("expect_i386", True)
     return ic.run_all_checks(tree, **kw)
 
 
@@ -541,3 +584,290 @@ def test_findings_format_and_helpers():
     assert [f.line() for f in fs] == ["[ok  ] a", "[info] b: x", "[WARN] c: y", "[FAIL] d: z"]
     assert [f.name for f in ic.failures(fs)] == ["d"] and [f.name for f in ic.warnings(fs)] == ["c"]
     assert ic.format_findings(fs).count("\n") == 3
+
+
+def _edit_state(tmp_path: Path, mutate) -> None:
+    """Like _set_state, but starting from the state file that is on disk now (several edits add up)."""
+    data = json.loads((tmp_path / ic.INSTALL_STATE).read_text(encoding="utf-8"))
+    mutate(data)
+    _w(tmp_path, ic.INSTALL_STATE, json.dumps(data))
+
+
+# --------------------------------------------------------------------------------------------- 'failed' on an online run
+@pytest.mark.parametrize("step", ["updates", "drivers", "mode_extras"])
+def test_a_failed_archive_step_fails_an_online_run(tmp_path, tree, step):
+    """updates, drivers and the extra apps only need Ubuntu's archives: with internet a 'failed' is a real failure."""
+    _set_state(tmp_path, lambda d: d["steps"][step].update(status="failed", detail="apt-get exited 100"))
+    findings = run(tree)
+    assert "step-" + step in fails(findings) and "must not fail" in fails(findings)["step-" + step]
+    # ... but only when the runner really had internet (an unknown or offline network only records it)
+    assert "step-" + step not in fails(run(tree, expect_online=None)) and levels(run(tree, expect_online=None), "step-" + step) == [ic.WARN]
+
+
+@pytest.mark.parametrize("step", ["compat", "gaming", "flatpaks"])
+def test_third_party_steps_stay_warnings_even_online(tmp_path, tree, step):
+    _set_state(tmp_path, lambda d: d["steps"][step].update(status="failed", detail="download exit 1"))
+    findings = run(tree)
+    assert "step-" + step not in fails(findings) and levels(findings, "step-" + step) == [ic.WARN]
+
+
+# --------------------------------------------------------------------------------------------- the lindos.seed answers
+def test_a_correct_install_passes_both_seed_effects(tree):
+    findings = run(tree)
+    assert fails(findings) == {}
+    assert levels(findings, "seed-password-empty") == [ic.OK] and levels(findings, "seed-multiarch") == [ic.OK]
+
+
+def test_allow_password_empty_left_true_fails_the_run(tmp_path, tree):
+    """finalize.sh's fin_reset_seed only logs a WARNING when it cannot reset the answer; the disk must prove it worked."""
+    _w(tmp_path, ic.DEBCONF_CONFIG, DEBCONF_CONFIG.replace("Value: false", "Value: true"))
+    got = fails(run(tree))
+    assert "seed-password-empty" in got and "empty password" in got["seed-password-empty"]
+
+
+def test_password_empty_that_is_absent_or_unreadable_is_not_a_failure(tmp_path, tree):
+    _w(tmp_path, ic.DEBCONF_CONFIG, "Name: ubiquity/success_command\nValue: x\n")
+    findings = run(tree)
+    assert "seed-password-empty" not in fails(findings) and levels(findings, "seed-password-empty") == [ic.INFO]
+    (tmp_path / ic.DEBCONF_CONFIG).unlink()
+    findings = run(tree)
+    assert "seed-password-empty" not in fails(findings) and levels(findings, "seed-password-empty") == [ic.WARN]
+
+
+def test_parse_debconf_db_reads_stanzas_and_continuation_lines():
+    db = ic.parse_debconf_db("Name: a/b\nTemplate: a/b\nValue: one\n two\nFlags: seen\n\nName: c/d\nValue: true\n")
+    assert db["a/b"]["Value"] == "one\ntwo" and db["a/b"]["Flags"] == "seen" and db["c/d"]["Value"] == "true"
+    assert ic.parse_debconf_db("") == {}
+
+
+def test_i386_installed_but_removed_from_dpkg_fails(tmp_path, tree):
+    """apt-setup removing the foreign architecture (the baked apt-setup/multiarch did not reach it)."""
+    _w(tmp_path, ic.DPKG_ARCH, "")
+    got = fails(run(tree))
+    assert "seed-multiarch" in got and "libc6:i386" in got["seed-multiarch"]
+    (tmp_path / ic.DPKG_ARCH).unlink()
+    assert "seed-multiarch" in fails(run(tree))
+
+
+def test_i386_expected_but_missing_fails_even_without_i386_packages(tmp_path, tree):
+    _w(tmp_path, ic.DPKG_ARCH, "")
+    _w(tmp_path, "var/lib/dpkg/status", GOOD_STATUS.replace(dpkg_stanza("libc6", arch="i386"), ""))
+    assert "ENABLE_I386" in fails(run(tree, expect_i386=True))["seed-multiarch"]
+    findings = run(tree, expect_i386=False)
+    assert "seed-multiarch" not in fails(findings) and levels(findings, "seed-multiarch") == [ic.OK]
+    findings = run(tree, expect_i386=None)
+    assert "seed-multiarch" not in fails(findings) and levels(findings, "seed-multiarch") == [ic.INFO]
+
+
+# --------------------------------------------------------------------------------------------- 'done' must be installed
+def _without(status_text: str, *names: str) -> str:
+    for n in names:
+        status_text = status_text.replace(dpkg_stanza(n, arch="amd64"), "").replace(dpkg_stanza(n), "")
+    return status_text
+
+
+def test_every_done_step_of_a_correct_install_is_confirmed_on_the_disk(tmp_path, tree):
+    for app in EXTRAS["flatpaks"]:
+        _w(tmp_path, "%s/%s/x86_64/stable/active/files/x" % (ic.FLATPAK_APPS, app), "")
+    _set_state(tmp_path, lambda d: d["steps"]["flatpaks"].update(status="done", detail="2 Flatpak apps installed"))
+    findings = run(tree)
+    assert fails(findings) == {}
+    for name in ("disk-updates", "disk-drivers", "disk-mode_extras", "disk-compat", "disk-gaming", "disk-flatpaks"):
+        assert ic.OK in levels(findings, name), name
+
+
+def test_mode_extras_done_with_a_missing_package_fails(tmp_path, tree):
+    """'done' is derived from apt's exit codes: LibreOffice, Steam or the Flatpaks can be missing all the same."""
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "libreoffice-writer", "steam-devices"))
+    got = fails(run(tree))
+    assert "libreoffice-writer" in got["disk-mode_extras"] and "steam-devices" in got["disk-mode_extras"]
+
+
+def test_mode_extras_excuses_only_what_the_hook_says_the_archives_lack(tmp_path, tree):
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "steam-devices"))
+    _set_state(tmp_path, lambda d: d["steps"]["mode_extras"].update(detail="3 packages installed; not in the archives: steam-devices"))
+    findings = run(tree)
+    assert "disk-mode_extras" not in fails(findings) and levels(findings, "disk-mode_extras") == [ic.OK]
+    _set_state(tmp_path, lambda d: d["steps"]["mode_extras"].update(detail="3 packages installed; not in the archives: gimp"))
+    assert "steam-devices" in fails(run(tree))["disk-mode_extras"]
+
+
+@pytest.mark.parametrize("step, detail, name", [
+    ("mode_extras", "no extra packages defined", "disk-mode_extras"),
+    ("compat", "nothing to install", "disk-compat"),
+    ("gaming", "nothing to install", "disk-gaming"),
+    ("flatpaks", "no Flatpak apps defined", "disk-flatpaks"),
+])
+def test_a_step_that_lost_its_list_fails_against_a_non_empty_extras_json(tmp_path, tree, step, detail, name):
+    """li_extras_load swallows every error, so a missing/renamed extras.json makes the hook record 'done - nothing to
+    install': only a comparison with the repository's extras.json can tell that from the real thing."""
+    _set_state(tmp_path, lambda d: d["steps"][step].update(status="done", detail=detail))
+    got = fails(run(tree))
+    assert name in got and "lost its list" in got[name]
+    # ... and with an empty list in extras.json it IS the truth
+    assert name not in fails(run(tree, extras={"schema": 1, "apt": [], "compat": [], "gaming": [], "flatpaks": [], "drivers": {}}))
+
+
+def test_mode_extras_that_found_nothing_in_the_archives_is_suspicious_online(tmp_path, tree):
+    _set_state(tmp_path, lambda d: d["steps"]["mode_extras"].update(detail="none of the extra apps is available in the archives"))
+    assert "disk-mode_extras" in fails(run(tree, expect_online=True))
+    findings = run(tree, expect_online=None)
+    assert "disk-mode_extras" not in fails(findings) and levels(findings, "disk-mode_extras") == [ic.WARN]
+
+
+def test_compat_and_gaming_items_need_their_own_evidence(tmp_path, tree):
+    (tmp_path / "usr/local/bin/umu-run").unlink()
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "steam-launcher", "winetricks"))
+    got = fails(run(tree))
+    assert "umu" in got["disk-compat"] and "winetricks" in got["disk-compat"] and "wine (" not in got["disk-compat"]
+    assert "steam" in got["disk-gaming"] and "lutris" not in got["disk-gaming"]
+
+
+def test_the_fallbacks_of_the_install_scripts_count_as_installed(tmp_path, tree):
+    """Ubuntu's own wine, the deb of umu, Ubuntu's steam-installer and the Lutris Flatpak are all legitimate outcomes."""
+    (tmp_path / "usr/local/bin/umu-run").unlink()
+    _w(tmp_path, "usr/bin/umu-run", "#!/bin/sh\n")
+    status = _without(GOOD_STATUS, "winehq-staging", "steam-launcher", "lutris") + dpkg_stanza("wine", arch="amd64") + dpkg_stanza("steam-installer", arch="amd64")
+    _w(tmp_path, "var/lib/dpkg/status", status)
+    _w(tmp_path, ic.FLATPAK_APPS + "/net.lutris.Lutris/x86_64/stable/active/files/x", "")
+    findings = run(tree)
+    assert "disk-compat" not in fails(findings) and "disk-gaming" not in fails(findings)
+
+
+def test_flatpaks_done_needs_the_app_directories(tmp_path, tree):
+    _set_state(tmp_path, lambda d: d["steps"]["flatpaks"].update(status="done", detail="2 Flatpak apps installed"))
+    got = fails(run(tree))
+    assert "com.usebottles.bottles" in got["disk-flatpaks"] and "org.vinegarhq.Sober" in got["disk-flatpaks"]
+    _w(tmp_path, ic.FLATPAK_APPS + "/com.usebottles.bottles/x86_64/stable/active/files/x", "")
+    assert "com.usebottles.bottles" not in fails(run(tree))["disk-flatpaks"]
+
+
+def test_drivers_done_needs_a_firmware_package(tmp_path, tree):
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "linux-firmware", "intel-microcode", "firmware-sof-signed"))
+    assert "linux-firmware" in fails(run(tree))["disk-drivers"]
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "intel-microcode"))
+    findings = run(tree)
+    assert "disk-drivers" not in fails(findings) and levels(findings, "disk-drivers") == [ic.INFO]      # the hook leaves out what no archive has
+
+
+def test_updates_done_needs_an_upgrade_line_in_dpkg_log(tmp_path, tree):
+    _w(tmp_path, ic.DPKG_LOG, "2026-09-29 10:02:00 install oem-config:all <none> 24.04.3+mint18\n")
+    assert "no 'upgrade' line" in fails(run(tree))["disk-updates"]
+    (tmp_path / ic.DPKG_LOG).unlink()
+    findings = run(tree)
+    assert "disk-updates" not in fails(findings) and levels(findings, "disk-updates") == [ic.WARN]
+    _set_state(tmp_path, lambda d: d["steps"]["updates"].update(detail="already up to date"))
+    assert "disk-updates" not in {f.name for f in run(tree)}          # nothing was claimed, nothing to prove
+
+
+def test_steps_that_are_not_done_promise_nothing(tmp_path, tree):
+    for step in ("compat", "gaming", "mode_extras", "updates", "drivers"):
+        _edit_state(tmp_path, lambda d, step=step: d["steps"][step].update(status="pending", detail="offline while installing"))
+    _w(tmp_path, "var/lib/dpkg/status", _without(GOOD_STATUS, "winehq-staging", "lutris", "gimp"))
+    assert not [n for n in fails(run(tree)) if n.startswith("disk-")]
+
+
+def test_without_extras_json_the_cross_check_is_said_to_be_skipped(tree):
+    findings = run(tree, extras=None)
+    assert levels(findings, "disk-steps") == [ic.INFO] and fails(findings) == {}
+
+
+def test_load_extras(tmp_path):
+    good = tmp_path / "extras.json"
+    good.write_text(json.dumps(EXTRAS), encoding="utf-8")
+    assert ic.load_extras(good) == EXTRAS
+    good.write_text("[1]", encoding="utf-8")
+    assert ic.load_extras(good) is None
+    good.write_text("{nope", encoding="utf-8")
+    assert ic.load_extras(good) is None and ic.load_extras(tmp_path / "missing.json") is None
+
+
+REPO = HERE.parent.parent
+REAL_EXTRAS = REPO / "packages" / "lindos-installer" / "root" / "usr" / "share" / "lindos" / "installer" / "extras.json"
+
+
+def test_every_item_of_the_real_extras_json_has_disk_evidence():
+    """A new compat/gaming item must come with the packages that prove it is installed - otherwise it is never checked."""
+    extras = ic.load_extras(REAL_EXTRAS)
+    assert extras is not None
+    for step in ("compat", "gaming"):
+        for item in extras[step]:
+            assert (step, item) in ic.ITEM_EVIDENCE, "%s item %r has no entry in install_checks.ITEM_EVIDENCE" % (step, item)
+
+
+def test_the_evidence_names_are_what_the_install_scripts_install():
+    compat = (REPO / "packages" / "lindos-compat" / "root" / "usr" / "libexec" / "lindos" / "install-compat.sh").read_text(encoding="utf-8")
+    gaming = (REPO / "packages" / "lindos-gaming" / "root" / "usr" / "libexec" / "lindos" / "install-gaming.sh").read_text(encoding="utf-8")
+    for pkg in ic.ITEM_EVIDENCE[("compat", "wine")].pkgs + ("winetricks",):
+        assert pkg in compat, pkg
+    assert "/usr/local/bin/umu-run" in (REPO / "packages" / "lindos-compat" / "root" / "usr" / "lib" / "lindos-compat" / "lindos_compat" /
+                                       "installers.py").read_text(encoding="utf-8")
+    for pkg in ic.ITEM_EVIDENCE[("gaming", "steam")].pkgs + ("lutris",):
+        assert pkg in gaming, pkg
+    assert "net.lutris.Lutris" in gaming
+
+
+def test_the_real_extras_json_is_fully_verified_on_a_complete_installation(tmp_path):
+    """Every package, Flatpak and firmware package of the shipped extras.json, installed: nothing is reported missing."""
+    extras = ic.load_extras(REAL_EXTRAS)
+    make_good_tree(tmp_path)
+    names = list(extras["apt"]) + list(extras["drivers"]["firmware"]) + ["winehq-staging", "winetricks", "steam-launcher", "lutris"]
+    _w(tmp_path, "var/lib/dpkg/status", GOOD_STATUS + "".join(dpkg_stanza(n, arch="amd64") for n in names))
+    for app in extras["flatpaks"]:
+        _w(tmp_path, "%s/%s/x86_64/stable/active/files/x" % (ic.FLATPAK_APPS, app), "")
+    _set_state(tmp_path, lambda d: d["steps"]["flatpaks"].update(status="done", detail="%d Flatpak apps installed" % len(extras["flatpaks"])))
+    findings = run(ic.Tree(tmp_path, GOOD_LINKS), extras=extras)
+    assert fails(findings) == {}
+    assert ic.OK in levels(findings, "disk-mode_extras") and ic.OK in levels(findings, "disk-flatpaks")
+
+
+# --------------------------------------------------------------------------------------------- the offline path
+def _offline_tree(tmp_path: Path) -> ic.Tree:
+    """What a guest without a network device leaves: online=false, every step pending, no Chrome, no retry markers."""
+    make_good_tree(tmp_path)
+    state = json.loads(json.dumps(STATE_OK))
+    state["online"] = False
+    for step in ic.STEPS:
+        state["steps"][step] = {"status": "pending", "detail": "offline while installing", "time": "2026-09-29T10:00:00Z"}
+    _w(tmp_path, ic.INSTALL_STATE, json.dumps(state))
+    for rel in (ic.BROWSER_MARKER, ic.DRIVER_MARKER, "opt/google/chrome/chrome"):
+        (tmp_path / rel).unlink()
+    _w(tmp_path, "var/lib/dpkg/status", GOOD_STATUS.replace(dpkg_stanza("google-chrome-stable", version="130.0.1", arch="amd64"), ""))
+    return ic.Tree(tmp_path, GOOD_LINKS)
+
+
+def test_a_correct_offline_install_passes_the_strict_offline_checks(tmp_path):
+    findings = run(_offline_tree(tmp_path), expect_online=False, strict_offline=True)
+    assert fails(findings) == {}
+    assert levels(findings, "state-offline") == [ic.OK]
+    assert ic.OK in levels(findings, "oem-armed")                        # the machine still arms oem-config
+
+
+def test_offline_run_where_a_step_claims_done_fails(tmp_path):
+    tree = _offline_tree(tmp_path)
+    _edit_state(tmp_path, lambda d: d["steps"]["mode_extras"].update(status="done", detail="4 packages installed"))
+    got = fails(run(tree, expect_online=False, strict_offline=True))
+    assert "mode_extras is 'done'" in got["state-offline"]
+
+
+def test_offline_run_where_the_hook_saw_a_network_fails(tmp_path):
+    tree = _offline_tree(tmp_path)
+    _edit_state(tmp_path, lambda d: d.update(online=True))
+    got = fails(run(tree, expect_online=False, strict_offline=True))
+    assert "no network at all" in got["state-offline"]
+    # without the strict flag the old, softer behaviour stays (the runner's probe may be wrong): a warning
+    assert "state-offline" not in fails(run(tree, expect_online=False))
+
+
+def test_offline_pending_steps_should_say_they_were_offline(tmp_path):
+    tree = _offline_tree(tmp_path)
+    _edit_state(tmp_path, lambda d: d["steps"]["updates"].update(status="pending", detail="time budget used up"))
+    findings = run(tree, expect_online=False, strict_offline=True)
+    assert "state-offline" not in fails(findings) and levels(findings, "state-offline-detail") == [ic.WARN]
+
+
+def test_offline_install_with_chrome_on_the_disk_fails(tmp_path):
+    tree = _offline_tree(tmp_path)
+    _w(tmp_path, "var/lib/dpkg/status", GOOD_STATUS)
+    _w(tmp_path, "opt/google/chrome/chrome", "binary")
+    assert "chrome-vs-state" in fails(run(tree, expect_online=False, strict_offline=True))

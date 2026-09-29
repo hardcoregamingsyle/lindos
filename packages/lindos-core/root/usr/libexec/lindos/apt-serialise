@@ -1,0 +1,111 @@
+#!/bin/bash
+# apt-serialise - run ONE command that uses apt/dpkg behind every other Lindos apt job, and patient
+# with a dpkg lock somebody else holds.
+#
+# Why: the first boot after the installer runs several silent apt jobs at the same moment - the Chrome
+# retry (browser-firstboot.sh -> install-browser.sh) and the driver retry (driver-firstboot.sh ->
+# lindos-drivers / ubuntu-drivers) both wake up when oem-config ends and the network is up - and the user
+# can start more ("Install now" in Settings, 'lindos-browser install').  apt does not queue by itself: a
+# second apt-get fails at once with "Could not get lock /var/lib/dpkg/lock-frontend" (exit 100), and a
+# lost driver attempt is even counted against its three tries.
+#
+# What it does:
+#   1. flock(1) on <root>/run/lindos/apt.lock - every command started through this helper takes its
+#      turn, waiting at most --wait seconds (default 180); when the turn does not come in time the
+#      command runs anyway (2. still applies) instead of never.
+#   2. Unless the caller already has an APT_CONFIG (the installer's own apt.conf sets the same option),
+#      APT_CONFIG points to a one-line file that sets DPkg::Lock::Timeout (default 300 s), so EVERY
+#      apt-get the command starts - also the ones inside lindos-drivers or ubuntu-drivers, which this
+#      package does not control - waits for a lock somebody else (unattended upgrades, the Update
+#      Manager) holds instead of failing at once.
+#   3. LINDOS_APT_SERIALISED=1 in the command's environment: a wrapped script that calls another wrapped
+#      script (or re-runs itself) never waits for a lock its own parent holds - nested calls only run.
+#
+# Usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--] COMMAND [ARGS...]
+#   --wait N        seconds to wait for our turn            (default $LINDOS_APT_LOCK_WAIT, else 180; 0 = do not queue)
+#   --dpkg-wait N   DPkg::Lock::Timeout for the command     (default $LINDOS_APT_DPKG_WAIT, else 300; 0 = leave apt's own)
+# Exit status: the command's own status; 2 = usage.
+# Best effort by design: no flock(1) or an unwritable lock directory only means the command runs
+# without queueing (2. still applies) - this helper never stops a job from running.
+# Test overrides: LINDOS_ROOT prefixes /run; LINDOS_FLOCK=<program> is run instead of flock.
+set -Eeuo pipefail
+
+ROOT="${LINDOS_ROOT:-}"
+LOCK_DIR="${ROOT}/run/lindos"
+LOCK_FILE="${LOCK_DIR}/apt.lock"
+FLOCK="${LINDOS_FLOCK:-flock}"
+# flock's "could not get the lock in time" exit status: told apart from the command's own statuses
+GAVE_UP=199
+WAIT="${LINDOS_APT_LOCK_WAIT:-180}"
+DPKG_WAIT="${LINDOS_APT_DPKG_WAIT:-300}"
+
+note() { printf 'lindos apt-serialise: %s\n' "$*" >&2; }
+
+usage() {
+    printf 'usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--] COMMAND [ARGS...]\n' >&2
+    exit 2
+}
+
+is_number() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    return 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --wait) [ $# -ge 2 ] || usage; WAIT="$2"; shift 2 ;;
+        --dpkg-wait) [ $# -ge 2 ] || usage; DPKG_WAIT="$2"; shift 2 ;;
+        --) shift; break ;;
+        -h|--help) usage ;;
+        -*) usage ;;
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || usage
+is_number "${WAIT}" || WAIT=180
+is_number "${DPKG_WAIT}" || DPKG_WAIT=300
+
+# Nested: the outer helper holds the lock and set APT_CONFIG - just run (waiting for our own parent's lock would deadlock).
+if [ "${LINDOS_APT_SERIALISED:-}" = 1 ]; then
+    exec "$@"
+fi
+export LINDOS_APT_SERIALISED=1
+
+mkdir -p "${LOCK_DIR}" 2>/dev/null || true
+
+# 2. patience for the dpkg lock, for every apt-get the command starts.  The file lives on /run (a tmpfs:
+# gone at the next boot even if this shell is killed before it can clean up).
+conf=""
+cleanup() {
+    if [ -n "${conf}" ]; then
+        rm -f "${conf}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+if [ -z "${APT_CONFIG:-}" ] && [ "${DPKG_WAIT}" -gt 0 ]; then
+    conf="$(mktemp "${LOCK_DIR}/apt-config.XXXXXX" 2>/dev/null || mktemp 2>/dev/null || true)"
+    if [ -n "${conf}" ] && printf '// Written by lindos apt-serialise for one command; removed afterwards.\nDPkg::Lock::Timeout "%s";\n' "${DPKG_WAIT}" >"${conf}" 2>/dev/null; then
+        chmod 0644 "${conf}" 2>/dev/null || true
+        export APT_CONFIG="${conf}"
+    else
+        rm -f "${conf}" 2>/dev/null || true
+        conf=""
+    fi
+fi
+
+# 1. queue.  -o: the command does not inherit the lock descriptor (a daemon a maintainer script starts
+# must not keep the lock for ever); -E: "gave up waiting" is not mistaken for the command's own status.
+rc=0
+if [ "${WAIT}" -gt 0 ] && command -v "${FLOCK}" >/dev/null 2>&1 && { : >>"${LOCK_FILE}"; } 2>/dev/null; then
+    "${FLOCK}" -o -w "${WAIT}" -E "${GAVE_UP}" "${LOCK_FILE}" "$@" || rc=$?
+    if [ "${rc}" -eq "${GAVE_UP}" ]; then
+        note "another Lindos apt job still holds ${LOCK_FILE} after ${WAIT}s - running anyway (apt's own lock wait applies)"
+        rc=0
+        "$@" || rc=$?
+    fi
+else
+    "$@" || rc=$?
+fi
+exit "${rc}"

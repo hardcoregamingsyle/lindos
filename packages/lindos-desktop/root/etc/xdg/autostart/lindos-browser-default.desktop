@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Default Browser
+Comment=Makes the browser you chose in Lindos Setup the default once it is installed (Chrome is downloaded after the installation when the PC was offline); never overrides a browser you picked yourself
+Exec=lindos-browser sync-default --wait
+TryExec=lindos-browser
+Icon=web-browser
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Phase=Applications
+X-GNOME-Autostart-Delay=15
+StartupNotify=false
+X-Lindos-Component=desktop

@@ -7,6 +7,9 @@ for the account.  packages/lindos-installer ships the scripts; this hook (runs i
 
   * /usr/lib/ubiquity/target-config/50lindos-install - Ubiquity runs executable files WITHOUT a '.' in the
     name; git on Windows loses exec bits, so the hook is COPIED with 'install -m 0755' under the dot-less name;
+  * /usr/lib/ubiquity/dm-scripts/install/50lindos-noblank - ubiquity-dm runs the executable, dot-less files of
+    that directory once the installer's own X server is up: the 'Install Lindos' (only-ubiquity) session has no
+    desktop, so nothing else keeps X's screensaver/DPMS from blanking the display after ten minutes;
   * the image's debconf database gets oem-config/enable, ubiquity/success_command, ... (lindos.seed);
   * an audit of what Ubiquity will run is logged.
 
@@ -122,6 +125,33 @@ def test_the_deployed_name_is_dotless_and_is_a_ubiquity_target_config_name() -> 
     assert 'HOOK_DIR="${ROOT}/usr/lib/ubiquity/target-config"' in _text(HOOK)
 
 
+def test_the_ubiquity_dm_hook_name_and_directory_follow_ubiquity_dms_rules() -> None:
+    """bin/ubiquity-dm run_hooks: every entry of dm-scripts/install WITHOUT a '.', exec'd directly (no shell)."""
+    t = _text(HOOK)
+    m = re.search(r'^DM_NAME="([^"]+)"$', t, re.M)
+    assert m, "DM_NAME must be spelled out"
+    assert "." not in m.group(1), "ubiquity-dm skips entries with a '.' in their name"
+    assert re.fullmatch(r"[0-9]{2}[A-Za-z0-9_-]+", m.group(1))
+    assert 'DM_DIR="${ROOT}/usr/lib/ubiquity/dm-scripts/install"' in t
+    assert 'DM_HOOK="${DM_DIR}/${DM_NAME}"' in t
+    # it is deployed, in the step list, next to the target-config hook
+    assert re.search(r"^step_hook\nstep_dm_hook\nstep_seed\n", t, re.M)
+
+
+def test_the_ubiquity_dm_hook_is_installed_with_mode_0755_and_checked_like_the_other_hook() -> None:
+    t = _text(HOOK)
+    body = t[t.index("step_dm_hook() {"):t.index("# 4. debconf selections")]
+    assert 'install -m 0755 -o root -g root "${src}" "${DM_HOOK}"' in body and 'install -m 0755 "${src}" "${DM_HOOK}"' in body
+    assert "install -d -m 0755" in body, "the hook runs as the unprivileged live user: its directories must be searchable"
+    assert "ln -s" not in body
+    assert "sed -i 's/\\r$//'" in body, "a CR in the shebang makes ubiquity-dm's exec fail silently"
+    assert 'sh -n "${DM_HOOK}"' in body and '"#!/bin/sh"' in body
+    assert body.count("die ") >= 8, "every way the hook could be skipped or hollow must fail the build"
+    for setting in ("'xset'", "'s off'", "'s noblank'", "'-dpms'"):
+        assert setting in body, "the deploy assertion must check %s" % setting
+    assert "/usr/bin/xset" in body
+
+
 def test_the_hook_is_installed_with_mode_0755_not_symlinked() -> None:
     t = _text(HOOK)
     assert "install -m 0755" in t, "git on Windows loses exec bits: the build sets them"
@@ -204,9 +234,11 @@ def _put(path: Path, data: bytes, mode: int = 0o644) -> Path:
     return path
 
 
-def _fake_image(tmp: Path, *, crlf: bool = False, package: bool = True, ubiquity: bool = True) -> Path:
-    """A root with what the hook expects: Ubiquity's directory and the lindos-installer package files."""
+def _fake_image(tmp: Path, *, crlf: bool = False, package: bool = True, ubiquity: bool = True, xset: bool = True) -> Path:
+    """A root with what the hook expects: Ubiquity's directory, xset and the lindos-installer package files."""
     root = tmp / "root"
+    if xset:
+        _put(root / "usr" / "bin" / "xset", b"#!/bin/sh\n", 0o755)
     if ubiquity:
         (root / "usr" / "lib" / "ubiquity" / "target-config").mkdir(parents=True)
         for stock in ("20xconfig", "30accessibility", "45jackd2"):
@@ -257,6 +289,7 @@ def _snapshot(root: Path) -> Dict[str, str]:
 
 
 DEPLOYED = "usr/lib/ubiquity/target-config/50lindos-install"
+DM_DEPLOYED = "usr/lib/ubiquity/dm-scripts/install/50lindos-noblank"
 
 
 @needs_bash
@@ -279,6 +312,14 @@ def test_full_run_deploys_the_hook_and_bakes_the_selections(tmp_path: Path) -> N
     # the audit logs what Ubiquity will find
     assert "target-config directory" in res.stderr and "50lindos-install" in res.stderr
     assert "installer flow wired" in res.stderr
+    # ... and what ubiquity-dm will find: the hook that keeps the installer's X server from blanking
+    dm = root / DM_DEPLOYED
+    assert dm.is_file() and "." not in dm.name
+    assert dm.read_bytes() == (PKG_LIBEXEC / "dm-noblank.sh").read_bytes(), "a plain copy of the package's script"
+    assert dm.read_bytes().startswith(b"#!/bin/sh\n"), "ubiquity-dm execs it without a shell"
+    assert sorted(p.name for p in dm.parent.iterdir()) == ["50lindos-noblank"]
+    assert "ubiquity-dm's dm-scripts/install directory" in res.stderr and "50lindos-noblank" in res.stderr
+    assert "xset s off, s noblank, -dpms" in res.stderr
 
 
 @needs_bash
@@ -289,7 +330,12 @@ def test_the_deployed_hook_is_executable_even_when_the_package_file_is_not(tmp_p
     assert _run(tmp_path, root).returncode == 0
     assert os.access(root / DEPLOYED, os.X_OK), "Ubiquity silently skips non-executable target-config entries"
     assert (root / DEPLOYED).stat().st_mode & 0o777 == 0o755
-    for name in ("target-config.sh", "lib.sh", "finalize.sh"):
+    # the ubiquity-dm hook: exec'd directly by ubiquity-dm as the unprivileged live user
+    assert os.access(root / DM_DEPLOYED, os.X_OK), "ubiquity-dm cannot run a file without the exec bit"
+    assert (root / DM_DEPLOYED).stat().st_mode & 0o777 == 0o755
+    for d in ("usr/lib/ubiquity/dm-scripts", "usr/lib/ubiquity/dm-scripts/install"):
+        assert (root / d).stat().st_mode & 0o777 == 0o755, d
+    for name in ("target-config.sh", "lib.sh", "finalize.sh", "dm-noblank.sh"):
         assert os.access(root / "usr/libexec/lindos/installer" / name, os.X_OK), "finalize.sh is Ubiquity's success_command"
 
 
@@ -300,6 +346,8 @@ def test_a_crlf_package_is_normalised_because_a_cr_in_the_shebang_kills_the_hook
     assert res.returncode == 0, res.stderr
     assert b"\r" not in (root / DEPLOYED).read_bytes()
     assert (root / DEPLOYED).read_bytes().startswith(b"#!/bin/bash\n")
+    assert b"\r" not in (root / DM_DEPLOYED).read_bytes(), "ubiquity-dm's exec would fail on '#!/bin/sh<CR>' without a word"
+    assert (root / DM_DEPLOYED).read_bytes().startswith(b"#!/bin/sh\n")
 
 
 @needs_bash
@@ -312,13 +360,14 @@ def test_second_run_changes_nothing(tmp_path: Path) -> None:
 
 
 @needs_bash
-@pytest.mark.parametrize("missing", ["target-config.sh", "lib.sh", "finalize.sh"])
+@pytest.mark.parametrize("missing", ["target-config.sh", "lib.sh", "finalize.sh", "dm-noblank.sh"])
 def test_a_missing_package_script_fails_the_build(tmp_path: Path, missing: str) -> None:
     root = _fake_image(tmp_path)
     (root / "usr/libexec/lindos/installer" / missing).unlink()
     res = _run(tmp_path, root)
     assert res.returncode != 0 and missing in res.stderr and "lindos-installer" in res.stderr
     assert not (root / DEPLOYED).exists(), "no half-wired image"
+    assert not (root / DM_DEPLOYED).exists()
 
 
 @needs_bash
@@ -362,6 +411,59 @@ def test_a_hook_without_a_bash_shebang_fails_the_build(tmp_path: Path) -> None:
     script.write_bytes(script.read_bytes().replace(b"#!/bin/bash", b"#!/bin/sh", 1))
     res = _run(tmp_path, root)
     assert res.returncode != 0 and "#!/bin/bash" in res.stderr
+
+
+def _dm_script(root: Path) -> Path:
+    return root / "usr/libexec/lindos/installer/dm-noblank.sh"
+
+
+@needs_bash
+def test_an_image_without_xset_fails_the_build(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path, xset=False)
+    res = _run(tmp_path, root)
+    assert res.returncode != 0 and "xset" in res.stderr and "x11-xserver-utils" in res.stderr
+
+
+@needs_bash
+def test_a_syntax_error_in_the_ubiquity_dm_hook_fails_the_build(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    script = _dm_script(root)
+    script.write_bytes(script.read_bytes() + b"\nif then fi (\n")
+    res = _run(tmp_path, root)
+    assert res.returncode != 0 and "ubiquity-dm hook has a syntax error" in res.stderr
+
+
+@needs_bash
+def test_an_ubiquity_dm_hook_with_errexit_fails_the_build(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    script = _dm_script(root)
+    script.write_bytes(script.read_bytes().replace(b"\nXSET=", b"\nset -e\nXSET=", 1))
+    res = _run(tmp_path, root)
+    assert res.returncode != 0 and "ubiquity-dm hook uses 'set -e'" in res.stderr
+
+
+@needs_bash
+def test_an_ubiquity_dm_hook_without_a_sh_shebang_fails_the_build(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    script = _dm_script(root)
+    script.write_bytes(script.read_bytes().replace(b"#!/bin/sh", b"#!/bin/bash", 1))
+    res = _run(tmp_path, root)
+    assert res.returncode != 0 and "#!/bin/sh" in res.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("setting", [b"s off", b"s noblank", b"-dpms"])
+def test_an_ubiquity_dm_hook_that_does_not_switch_the_blanking_off_fails_the_build(tmp_path: Path, setting: bytes) -> None:
+    """Deployed but hollow would look fine in a build log and blank after ten minutes on every install."""
+    root = _fake_image(tmp_path)
+    script = _dm_script(root)
+    # only the code changes (the header comment still names the setting): the assertion must ignore comments
+    text = script.read_bytes()
+    code_line = b'for setting in "s off" "s noblank" "-dpms"; do'
+    assert code_line in text
+    script.write_bytes(text.replace(code_line, code_line.replace(b'"' + setting + b'"', b'"s nothing"')))
+    res = _run(tmp_path, root)
+    assert res.returncode != 0 and "does not use xset '%s'" % setting.decode() in res.stderr, res.stderr
 
 
 @needs_bash

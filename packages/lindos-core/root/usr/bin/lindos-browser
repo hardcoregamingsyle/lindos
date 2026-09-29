@@ -7,6 +7,12 @@
         Edge/Chrome are downloaded from Microsoft's / Google's official apt repositories
         (needs internet + admin password via polkit); Firefox ships on the ISO.
   lindos-browser set-default <edge|chrome|firefox>
+  lindos-browser sync-default [--wait [SECONDS]] [--json]
+        Make the browser chosen in Lindos Setup the XFCE/xdg default once it is installed - for a
+        Chrome that was still to be downloaded when Setup ran.  Never overrides a personal choice,
+        does nothing in the live session or before Setup finished.  --wait keeps looking (default
+        for up to two hours) while Setup or the silent Chrome retry is still to come.  Started at
+        every login by /etc/xdg/autostart/lindos-browser-default.desktop (lindos-desktop).
   lindos-browser status [--json]            online? installed set? default?
 
 Exit codes: 0 ok · 1 error (install failed, offline, unknown id) · 2 usage.
@@ -108,6 +114,22 @@ def cmd_set_default(ns: argparse.Namespace) -> int:
     return EXIT_OK if ok else EXIT_ERROR
 
 
+def cmd_sync_default(ns: argparse.Namespace) -> int:
+    lines: List[str] = []
+
+    def log(msg: str) -> None:
+        lines.append(msg)
+        if not ns.json:
+            print(msg, flush=True)
+
+    outcome = lbrowsers.sync_default(wait=ns.wait, log=log)
+    if ns.json:
+        _emit({"outcome": outcome, "log": lines})
+    else:
+        print(f"sync-default: {outcome}")
+    return EXIT_ERROR if outcome == lbrowsers.SYNC_PARTIAL else EXIT_OK
+
+
 def cmd_status(ns: argparse.Namespace) -> int:
     effective = lconfig.effective_browser()
     data = {
@@ -149,6 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("browser", choices=ids)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_set_default)
+    p = sub.add_parser("sync-default", help="make the browser chosen in Setup the default once it is installed",
+                       description="Make the browser chosen in Lindos Setup the XFCE/xdg default once it is installed "
+                                   "(a Chrome that was still to be downloaded when Setup ran).  Never overrides a "
+                                   "personal choice; does nothing in the live session or before Setup finished.")
+    p.add_argument("--wait", nargs="?", type=float, const=lbrowsers.SYNC_MAX_WAIT_SECONDS, default=0.0,
+                   metavar="SECONDS", help="keep looking for at most this long (no value: two hours)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_sync_default)
     p = sub.add_parser("status", help="online / installed / default overview")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_status)

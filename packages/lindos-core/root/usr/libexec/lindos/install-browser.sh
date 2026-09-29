@@ -27,6 +27,16 @@
 #                 touches the network.  The installer never kills this phase mid-transaction.
 # Exit codes: 0 installed (or already installed / repo staged) · 1 failure · 2 usage / not root
 #             · 3 offline
+#
+# apt discipline (the first boot runs the Chrome retry and the driver retry at the same moment, and
+# the user can start an install from Settings meanwhile - apt does not queue by itself):
+#   * every apt-get here passes -o DPkg::Lock::Timeout=N: a dpkg lock somebody else holds is waited
+#     for instead of failing at once (exit 100);
+#   * the whole run takes its turn behind every other Lindos apt job (libexec/apt-serialise, a flock
+#     on /run/lindos/apt.lock; it also exports the same lock timeout to anything apt starts);
+#   * 'apt-get update' - whose lists lock DPkg::Lock::Timeout does not cover - is retried a few times
+#     before the machine is called offline.
+# The installer (--in-installer) is one sequential hook: it keeps its own apt.conf and time boxes.
 set -Eeuo pipefail
 
 PROG="install-browser"
@@ -41,6 +51,15 @@ LIST_CHANGED=0
 # --in-installer: never read the 'deb cdrom:' source, never clean the lists of the medium, fail fast
 APT_EXTRA=()
 BROWSER=""
+ORIG_ARGS=("$@")
+SELF="${BASH_SOURCE[0]}"
+APT_SERIALISE="$(dirname "${SELF}")/apt-serialise"
+# seconds to wait for a held dpkg lock (same value the installer's apt.conf uses when --in-installer)
+APT_LOCK_TIMEOUT="${LINDOS_APT_LOCK_TIMEOUT:-300}"
+APT_LOCK_OPT=()
+# 'apt-get update' attempts and the pause between them (the lists lock is not covered by the dpkg lock wait)
+APT_UPDATE_TRIES="${LINDOS_APT_UPDATE_TRIES:-3}"
+APT_UPDATE_DELAY="${LINDOS_APT_UPDATE_RETRY_DELAY:-15}"
 
 # --- vendor metadata (must match lindos/browsers.py BROWSERS) ---------------------------------
 EDGE_PACKAGE="microsoft-edge-stable"
@@ -158,21 +177,29 @@ write_list() {
 }
 
 apt_update_list() {
-    # apt_update_list <list-file> — refresh only this source (fast, no full 'apt-get update')
-    local list="$1"
+    # apt_update_list <list-file> — refresh only this source (fast, no full 'apt-get update').
+    # Retried a few times: another apt job (the driver retry, apt-daily, the Update Manager) may hold
+    # the lists lock, which DPkg::Lock::Timeout does not cover, and a lock is not "offline".
+    local list="$1" attempt=1
     if [[ "${NO_UPDATE}" -eq 1 ]]; then
         return 0
     fi
-    run apt-get update -qq \
+    while ! run apt-get update "${APT_LOCK_OPT[@]}" -qq \
         -o "Dir::Etc::sourcelist=${list}" \
         -o "Dir::Etc::sourceparts=-" \
-        -o "APT::Get::List-Cleanup=0" \
-        || die "apt-get update for ${list} failed (offline or repository unreachable)" 3
+        -o "APT::Get::List-Cleanup=0"; do
+        if [[ "${attempt}" -ge "${APT_UPDATE_TRIES}" ]]; then
+            die "apt-get update for ${list} failed (offline or repository unreachable)" 3
+        fi
+        log "apt-get update failed (attempt ${attempt} of ${APT_UPDATE_TRIES}; another apt job may hold the lists lock) - trying again in ${APT_UPDATE_DELAY}s"
+        sleep "${APT_UPDATE_DELAY}" || true
+        attempt=$((attempt + 1))
+    done
 }
 
 apt_install() {
     if [[ "${IN_INSTALLER}" -eq 0 ]]; then
-        run apt-get install -y -q \
+        run apt-get install "${APT_LOCK_OPT[@]}" -y -q \
             -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
             || die "apt-get install $* failed" 1
         return 0
@@ -180,12 +207,12 @@ apt_install() {
     # The installer runs this in two phases (see --download-only / --no-download): a download that
     # may be killed on a timeout, then a dpkg run from the downloaded files that never is.
     if [[ "${NO_DOWNLOAD}" -eq 0 ]]; then
-        run apt-get install -y -q -d "${APT_EXTRA[@]}" \
+        run apt-get install "${APT_LOCK_OPT[@]}" -y -q -d "${APT_EXTRA[@]}" \
             -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
             || die "apt-get download of $* failed" 1
     fi
     if [[ "${DOWNLOAD_ONLY}" -eq 0 ]]; then
-        run apt-get install -y -q --no-download "${APT_EXTRA[@]}" \
+        run apt-get install "${APT_LOCK_OPT[@]}" -y -q --no-download "${APT_EXTRA[@]}" \
             -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
             || die "apt-get install $* failed" 1
     fi
@@ -267,7 +294,7 @@ install_firefox() {
     # never the snap: Mint ships firefox as a .deb from its own repository; if a Ubuntu transitional
     # 'firefox' snap-wrapper is pinned away this still resolves to the Mint package.
     if [[ "${NO_UPDATE}" -eq 0 ]]; then
-        run apt-get update -qq || log "apt-get update failed; trying with current lists"
+        run apt-get update "${APT_LOCK_OPT[@]}" -qq || log "apt-get update failed; trying with current lists"
     fi
     apt_install "${FIREFOX_PACKAGE}"
     log "Mozilla Firefox installed"
@@ -310,6 +337,19 @@ main() {
     fi
     if [[ "${DRY_RUN}" -eq 0 && "$(id -u)" -ne 0 ]]; then
         die "must run as root (the lindos helper calls this through pkexec)" 2
+    fi
+    if [[ "${IN_INSTALLER}" -eq 1 ]]; then
+        # one sequential hook with its own apt.conf (the same lock wait) and time boxes: no retries here
+        APT_LOCK_TIMEOUT="${LINDOS_APT_LOCK_TIMEOUT:-120}"
+        APT_UPDATE_TRIES=1
+    fi
+    APT_LOCK_OPT=(-o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+    # Take our turn behind every other Lindos apt job (the driver retry, another browser install): re-run
+    # this very command once under apt-serialise.  Not for a dry run (nothing to protect), the installer
+    # hook (sequential) or the ISO build's --repo-only (a chroot with no other apt job).
+    if [[ "${LINDOS_APT_SERIALISED:-}" != "1" && "${DRY_RUN}" -eq 0 && "${IN_INSTALLER}" -eq 0 \
+          && "${REPO_ONLY}" -eq 0 && -f "${APT_SERIALISE}" ]]; then
+        exec bash "${APT_SERIALISE}" -- bash "${SELF}" "${ORIG_ARGS[@]}"
     fi
     export DEBIAN_FRONTEND=noninteractive
     log "install ${BROWSER}${DRY_RUN:+ (dry-run=${DRY_RUN})}${REPO_ONLY:+ (repo-only=${REPO_ONLY})}"

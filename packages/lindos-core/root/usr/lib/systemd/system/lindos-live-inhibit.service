@@ -10,6 +10,11 @@ Documentation=man:systemd-inhibit(1)
 # session has its own live-only settings: lindos-live-session.desktop in lindos-desktop).
 # It does not run on an installed system (ConditionKernelCommandLine is positive here) or in a
 # container.  Shutting down or rebooting is not affected, only suspend/hibernate and the lid.
+# WHAT IT DOES NOT COVER: a logind inhibitor cannot stop the X server's own screensaver and DPMS, which
+# blank the display after ten minutes without input.  In the only-ubiquity session (ubiquity-dm's bare
+# X server, no desktop) the ubiquity-dm hook /usr/lib/ubiquity/dm-scripts/install/50lindos-noblank does
+# that ('xset s off s noblank -dpms'; lindos-installer's dm-noblank.sh, deployed by build/chroot/
+# 79-installer-flow.sh); in the live desktop session live-session-power.sh does.
 ConditionKernelCommandLine=|boot=casper
 ConditionKernelCommandLine=|boot=live
 ConditionVirtualization=!container

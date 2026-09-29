@@ -5,6 +5,7 @@ must never hang, and must fail SAFE: arming oem-config only when oem-config is r
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from installer_testlib import LIBEXEC, Sandbox, needs_bash
 pytestmark = needs_bash
 
 TWO = "browser drivers"
+RESET_SEED = "d-i user-setup/allow-password-empty boolean false\n"
+NOTICE = "home/oem/Desktop/LINDOS-ACCOUNT-SETUP-FAILED.txt"
 
 
 def _finalize(sb: Sandbox, **env: str):
@@ -20,6 +23,24 @@ def _finalize(sb: Sandbox, **env: str):
     assert proc.returncode == 0, proc.stderr[-2500:]
     assert proc.stdout == "", "the success command wrote to stdout: %r" % proc.stdout[:200]
     return proc
+
+
+def _installer_log(sb: Sandbox) -> str:
+    return (sb.target / "var/log/lindos/installer.log").read_text(encoding="utf-8", errors="replace")
+
+
+def _shadow_field(sb: Sandbox) -> str:
+    for line in (sb.target / "etc/shadow").read_text(encoding="utf-8").splitlines():
+        if line.startswith("oem:"):
+            return line.split(":")[1]
+    raise AssertionError("no oem entry in the fake shadow file")
+
+
+def _generated_password(sb: Sandbox) -> str:
+    """What the finalizer handed to chpasswd on stdin ('oem:PASSWORD'), the only place a password may travel."""
+    lines = [ln for ln in (sb.state / "chpasswd-stdin").read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == 1 and lines[0].startswith("oem:"), lines
+    return lines[0][len("oem:"):]
 
 
 def _link_target(sb: Sandbox) -> str:
@@ -36,6 +57,7 @@ def test_arms_oem_config_and_cleans_up(sandbox: Sandbox) -> None:
     (t / "var/lib/lindos/installer-holds").write_text("ubiquity\ncasper\n", encoding="utf-8", newline="\n")
     (sandbox.state / "held").write_text("ubiquity\ncasper\nother\n", encoding="utf-8", newline="\n")
     (t / "var/cache/lindos-installer").mkdir(parents=True)
+    assert (t / "usr/lib/ubiquity/dm-scripts/install/50lindos-noblank").is_file()
     _finalize(sandbox)
     # oem-config's units are in place and enabled, and it is the default target (oem-config-prepare, minus its harm)
     for unit in ("oem-config.service", "oem-config.target"):
@@ -54,6 +76,7 @@ def test_arms_oem_config_and_cleans_up(sandbox: Sandbox) -> None:
     assert (t / "home/oem/.config/lindos/setup-done").is_file()
     # leftovers of the installer are removed: hook copy, version pin, holds, cache
     assert not (t / "usr/lib/ubiquity/target-config/50lindos-install").exists()
+    assert not (t / "usr/lib/ubiquity/dm-scripts").exists(), "the ubiquity-dm hook (X blanking) is only useful in the installer"
     assert not (t / "etc/apt/preferences.d/00lindos-installer.pref").exists()
     assert not (t / "var/cache/lindos-installer").exists()
     assert sandbox.held() == ["other"] and not (t / "var/lib/lindos/installer-holds").exists()
@@ -93,18 +116,107 @@ def test_the_hook_and_the_finalisation_make_one_consistent_installation(sandbox:
     assert log.index("step browser: done") < log.index("finalize: start") < log.index("oem-config is armed")
 
 
-def test_without_oem_config_nothing_is_locked_or_stripped(sandbox: Sandbox) -> None:
+def test_without_oem_config_the_desktop_stays_but_the_temporary_account_is_not_left_open(sandbox: Sandbox) -> None:
+    """The fallback: no first-boot wizard, so the machine keeps signing in as 'oem' - whose password the installer's
+    page told the user to leave EMPTY, in the sudo group, forever.  The desktop stays usable, the account is closed."""
     sandbox.make_oem_target(with_oem_config=False)
     t = sandbox.target
-    _finalize(sandbox)
-    assert "autologin-user=oem" in (t / "etc/lightdm/lightdm.conf").read_text(encoding="utf-8"), \
-        "the temporary account must stay usable: a machine nobody can log in to is worse"
-    assert not any("passwd -l oem" in c for c in sandbox.call_log())
+    assert _shadow_field(sandbox) == "", "the fixture starts with the empty password the installer page asks for"
+    proc = _finalize(sandbox)
+    # a machine nobody can log in to is worse: the autologin and everything else of the desktop stay as they are
+    assert "autologin-user=oem" in (t / "etc/lightdm/lightdm.conf").read_text(encoding="utf-8")
     assert not any(c.startswith("systemctl") for c in sandbox.call_log())
     assert not (t / "etc/systemd/system/default.target").exists() and not (t / "lib/systemd/system/oem-config.target").exists()
-    assert "CRITICAL" in (t / "var/log/lindos/installer.log").read_text(encoding="utf-8", errors="replace")
-    assert "oem-config is not in the new system" in (t / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
     assert not (t / "usr/lib/ubiquity/target-config/50lindos-install").exists(), "cleanup still happens"
+    # ... but the account is not open: a random password went to chpasswd (stdin only), nothing was locked
+    pw = _generated_password(sandbox)
+    assert re.fullmatch(r"[A-Za-z0-9]{18}", pw), pw
+    assert _shadow_field(sandbox) not in ("", "!"), "the empty password is gone"
+    assert f"chroot {t.as_posix()} chpasswd" in sandbox.calls_of("chroot")
+    assert not any("passwd -l oem" in c for c in sandbox.call_log()), "locking would strand the screen-lock unlock"
+    # the reason is recorded (first line, as before), with what was done to the account (no secret in it)
+    marker = (t / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8").splitlines()
+    assert marker[0] == "oem-config is not in the new system and no bundled copy could be installed", marker
+    assert marker[1] == "temporary account: the temporary account got a random password", marker
+    # loud: CRITICAL in the log, and the person at the keyboard is told on the desktop of the account
+    log = _installer_log(sandbox)
+    assert "CRITICAL" in log and "temporary 'oem' account" in log and "random password" in log
+    notice = (t / NOTICE).read_text(encoding="utf-8")
+    assert pw in notice and "passwd" in notice and marker[0] in notice
+    # the password lives in the root-only file and on the account's own desktop - nowhere else
+    assert (t / "var/lib/lindos/oem-temporary-password").read_text(encoding="utf-8") == pw + "\n"
+    for where in (log, sandbox.log_text(), marker[0] + marker[1], proc.stdout, proc.stderr, "\n".join(sandbox.call_log())):
+        assert pw not in where
+    if os.name != "nt":
+        assert (t / "var/lib/lindos/oem-temporary-password").stat().st_mode & 0o777 == 0o600
+        assert (t / NOTICE).stat().st_mode & 0o777 == 0o600
+    # the installer-only answer is reset on this path too
+    assert (sandbox.state / "debconf-selections").read_text(encoding="utf-8") == RESET_SEED
+
+
+def test_a_password_the_user_chose_is_kept_and_a_locked_account_stays_locked(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False, shadow="oem:$6$user$chosen:19000:0:99999:7:::")
+    _finalize(sandbox)
+    assert _shadow_field(sandbox) == "$6$user$chosen"
+    assert not sandbox.calls_of("chpasswd") and not any("passwd -l" in c for c in sandbox.call_log())
+    marker = (sandbox.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+    assert "keeps the password chosen during the installation" in marker
+    notice = (sandbox.target / NOTICE).read_text(encoding="utf-8")
+    assert "keeps the password chosen" in notice and "$6$" not in notice
+    assert not (sandbox.target / "var/lib/lindos/oem-temporary-password").exists()
+    other = Sandbox(sandbox.root / "second")
+    other.make_oem_target(with_oem_config=False, shadow="oem:!:19000:0:99999:7:::")
+    _finalize(other)
+    assert _shadow_field(other) == "!" and not other.calls_of("chpasswd")
+    assert "the temporary account is locked" in (other.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+
+
+def test_when_chpasswd_fails_the_temporary_account_is_locked_instead(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False)
+    _finalize(sandbox, FAKE_CHPASSWD_RC="1")
+    assert any("passwd -l oem" in c for c in sandbox.call_log())
+    assert _shadow_field(sandbox) == "!"
+    assert "autologin-user=oem" in (sandbox.target / "etc/lightdm/lightdm.conf").read_text(encoding="utf-8")
+    assert not (sandbox.target / "var/lib/lindos/oem-temporary-password").exists(), "no password was set: none is kept"
+    log = _installer_log(sandbox)
+    assert "could not give the temporary account a random password" in log and "CRITICAL" in log
+    marker = (sandbox.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+    assert "temporary account: the temporary account is locked" in marker
+    assert "is locked" in (sandbox.target / NOTICE).read_text(encoding="utf-8")
+
+
+def test_when_the_tools_of_the_new_system_fail_the_shadow_file_is_edited_directly(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False)
+    _finalize(sandbox, FAKE_CHPASSWD_RC="1", FAKE_PASSWD_RC="1")
+    assert _shadow_field(sandbox) == "!"
+    assert "by editing /etc/shadow" in (sandbox.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+    assert "root:*:19000" in (sandbox.target / "etc/shadow").read_text(encoding="utf-8"), "the rest of the file is untouched"
+
+
+def test_an_account_that_cannot_be_closed_is_reported_critical_and_the_finalizer_still_ends(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False, shadow=None)
+    proc = _finalize(sandbox, FAKE_CHPASSWD_RC="1", FAKE_PASSWD_RC="1")
+    assert "may still have an EMPTY password" in (sandbox.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+    assert "could neither set a password nor lock it" in _installer_log(sandbox) and "finalize: done" in _installer_log(sandbox)
+    assert proc.stdout == ""
+
+
+def test_a_random_source_that_gives_nothing_never_yields_a_short_or_empty_password(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False)
+    empty = sandbox.root / "no-randomness"
+    empty.write_bytes(b"")
+    _finalize(sandbox, LINDOS_URANDOM=empty.as_posix())
+    assert not sandbox.calls_of("chpasswd"), "an empty password must never reach chpasswd"
+    assert _shadow_field(sandbox) == "!"
+
+
+def test_two_fallback_installs_never_share_a_password(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False)
+    _finalize(sandbox)
+    other = Sandbox(sandbox.root / "second")
+    other.make_oem_target(with_oem_config=False)
+    _finalize(other)
+    assert _generated_password(sandbox) != _generated_password(other)
 
 
 def test_a_service_whose_program_is_missing_counts_as_not_installed(sandbox: Sandbox) -> None:
@@ -113,6 +225,7 @@ def test_a_service_whose_program_is_missing_counts_as_not_installed(sandbox: San
     _finalize(sandbox)
     assert (sandbox.target / "var/lib/lindos/oem-config-not-armed").is_file()
     assert "autologin-user=oem" in (sandbox.target / "etc/lightdm/lightdm.conf").read_text(encoding="utf-8")
+    assert _shadow_field(sandbox) != "", "the fallback closes the account whatever the reason for it was"
 
 
 def test_the_bundled_copy_is_installed_when_the_pool_did_not_deliver(sandbox: Sandbox) -> None:
@@ -141,10 +254,15 @@ def test_a_normal_installation_is_not_armed(sandbox: Sandbox) -> None:
     """No temporary 'oem' account: somebody installed without OEM mode - there is no wizard to arm."""
     sandbox.make_oem_target(with_user=False)
     _finalize(sandbox)
-    assert not any(c.startswith(("systemctl", "chroot")) for c in sandbox.call_log())
+    assert not any(c.startswith(("systemctl", "passwd", "chpasswd", "apt-mark")) for c in sandbox.call_log())
+    # the only thing done in the new system: the installer-only debconf answer is reset (it was baked for the
+    # temporary account's page; whichever account the installer made, nothing should read 'empty is fine' later)
+    assert sandbox.calls_of("chroot") == [f"chroot {sandbox.target.as_posix()} debconf-set-selections"]
+    assert (sandbox.state / "debconf-selections").read_text(encoding="utf-8") == RESET_SEED
     assert not (sandbox.target / "lib/systemd/system/oem-config.target").exists()
     assert "autologin-user=oem" in (sandbox.target / "etc/lightdm/lightdm.conf").read_text(encoding="utf-8")
     assert not (sandbox.target / "usr/lib/ubiquity/target-config/50lindos-install").exists()
+    assert not (sandbox.target / "usr/lib/ubiquity/dm-scripts").exists()
 
 
 def test_the_reset_never_sees_ubiquitys_own_debconf_variables(sandbox: Sandbox) -> None:
@@ -202,5 +320,9 @@ def test_finalize_source_is_short_guarded_and_never_fails() -> None:
         if re.search(r"systemctl --root|chroot [\"$]", line):
             assert "timeout -k" in line, line
     assert "apt-get" not in code, "no package work in the success command (it freezes the installer window)"
+    # a password only ever travels on stdin: never as an argument of a command, never through li_log
+    assert "printf '%s:%s\\n' \"$1\" \"$2\" | timeout -k" in code
+    assert not re.search(r"li_log[^\n]*(\$\{?pw\b|FIN_TEMP_PW)", code)
+    assert not re.search(r"(chpasswd|passwd)[^|\n]*\$\{?pw\b", code)
     # the essentials of oem-config-prepare WITHOUT its deletion of the saved network connections
     assert "system-connections" not in code and "70-persistent" not in code

@@ -115,6 +115,12 @@ done < "$FAKE_PROCS"
 
 FAKE_TAIL = "#!/bin/bash\nexit 0\n"        # 'tail -F' would run for ever behind the pipes of the live mode
 
+FAKE_INHIBIT = r"""#!/bin/bash
+# systemd-inhibit --list --no-legend: the table of held inhibitors, from a file of the fake systemd state
+cat "$FAKE_SYSTEMD/inhibit" 2>/dev/null
+exit 0
+"""
+
 
 def _tool(bin_dir: Path, name: str, body: str) -> None:
     f = bin_dir / name
@@ -142,7 +148,7 @@ class Guest:
         self.is_live.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8", newline="\n")
         for name, body in (("pgrep", FAKE_PGREP), ("systemctl", FAKE_SYSTEMCTL), ("runuser", FAKE_RUNUSER),
                            ("xfconf-query", FAKE_XFCONF), ("id", FAKE_ID), ("journalctl", "#!/bin/bash\nexit 0\n"),
-                           ("ps", FAKE_PS)):
+                           ("ps", FAKE_PS), ("systemd-inhibit", FAKE_INHIBIT)):
             _tool(self.bin, name, body)
         if tail:
             _tool(self.bin, "tail", FAKE_TAIL)
@@ -553,3 +559,147 @@ def test_observer_scripts_are_read_only_and_never_use_set_e():
                     r"systemctl +(start|stop|restart|enable|disable)", r"\bsudo\b", r"\bmount +", r"\bchmod\b",
                     r"flatpak +install"):
         assert not re.search(pattern, code), pattern
+
+
+# ============================================================================================ ci-observer.sh (live): the Install session
+# The default 'Install Lindos' entry is only-ubiquity: ubiquity-dm starts the installer on its OWN X server with its own window
+# manager (xfwm4 --compositor=off) and nothing else - no LightDM, no XFCE session, no first-run wizard, no pkexec.
+SESSION_PROCS = [
+    "root|python3|/usr/bin/python3 /usr/lib/ubiquity/bin/ubiquity-dm vt1 :0 ubuntu /usr/bin/ubiquity --only",
+    "root|python3|/usr/bin/python3 /usr/bin/ubiquity --only",
+    "root|Xorg|/usr/lib/xorg/Xorg :0 vt1",
+    "root|xfwm4|xfwm4 --compositor=off",
+]
+SESSION_CHECKS = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session", "live-no-lindos-setup",
+                  "live-no-pkexec", "live-inhibitor-active")
+INHIBIT_LIST = ("Lindos 0 root 512 systemd-inhibit sleep:idle:handle-lid-switch:handle-suspend-key:handle-hibernate-key "
+                "Live session: do not interrupt the installation block")
+
+
+def install_session_guest(tmp_path: Path) -> Guest:
+    g = live_observer_guest(tmp_path)
+    g.set_procs(SESSION_PROCS)
+    g.cmdline.write_text("BOOT_IMAGE=/casper/vmlinuz boot=casper only-ubiquity oem-config/enable=true username=liveuser "
+                         "hostname=lindos lindos.ci_install_test --\n", encoding="utf-8")
+    g.state("active.lindos-live-inhibit.service", "active")
+    g.state("inhibit", INHIBIT_LIST)
+    return g
+
+
+def session_run(g: Guest, tmp_path: Path, **extra: str) -> str:
+    env = {"LINDOS_CI_UBIQUITY_VERSION": (tmp_path / "version").as_posix(), "LINDOS_CI_LIVE_CHECK_TICKS": "1", "LINDOS_CI_MAX_TICKS": "3"}
+    env.update(extra)
+    return g.run(OBSERVER, "live", **env)
+
+
+def completed(parsed: dict) -> dict:
+    """The serial facts of an install that ran to its end (a kernel booted, the guest powered off)."""
+    return dict(parsed, booted=True, power_down=True)
+
+
+def test_the_install_session_is_judged_once_and_a_correct_one_passes_every_check(tmp_path):
+    out = session_run(install_session_guest(tmp_path), tmp_path)
+    assert {k: v for k, v in checks_of(out).items() if k.startswith("live-")} == {name: "OK" for name in SESSION_CHECKS}
+    assert out.count("LINDOS_INSTALL_SESSION_CHECKED fails=0") == 1 and "LINDOS_INSTALL_DIAG" not in out
+    # ubiquity-dm's own xfwm4 is what a healthy only-ubiquity session runs: it must not count as a desktop session
+    assert "xfwm4" in (tmp_path / "procs").read_text(encoding="utf-8")
+    parsed = it.parse_install_serial(out)
+    assert parsed["session_checked"] and parsed["session_fails"] == 0
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 1800}, completed(parsed))
+    assert not ic_failures(findings) and {f.name for f in findings if f.level == "ok"} >= {"install-" + n for n in SESSION_CHECKS}
+
+
+def test_the_session_checks_wait_for_their_moment_and_run_only_once(tmp_path):
+    g = install_session_guest(tmp_path)
+    out = g.run(OBSERVER, "live", LINDOS_CI_UBIQUITY_VERSION=(tmp_path / "version").as_posix(), LINDOS_CI_MAX_TICKS="3")     # default: 24 probes
+    assert "LINDOS_CHECK live-" not in out and "LINDOS_INSTALL_SESSION_CHECKED" not in out
+    out = session_run(g, tmp_path, LINDOS_CI_MAX_TICKS="6")
+    assert out.count("LINDOS_INSTALL_SESSION_CHECKED") == 1 and out.count("LINDOS_CHECK live-no-lightdm=") == 1
+
+
+@pytest.mark.parametrize("extra_proc, check, needle", [
+    ("root|lightdm|/usr/sbin/lightdm", "live-no-lightdm", "LightDM is running"),
+    ("liveuser|xfce4-session|xfce4-session", "live-no-xfce-session", "desktop session runs"),
+    ("liveuser|xfce4-panel|xfce4-panel --disable-wm-check", "live-no-xfce-session", "desktop session runs"),
+    ("liveuser|xfdesktop|xfdesktop", "live-no-xfce-session", "desktop session runs"),
+    ("liveuser|python3|python3 /usr/lib/lindos-setup/main.py --first-run", "live-no-lindos-setup", "first-run wizard"),
+    ("liveuser|pkexec|pkexec /usr/libexec/lindos/install-browser.sh", "live-no-pkexec", "pkexec is running"),
+])
+def test_a_session_that_is_more_than_the_installer_fails_the_matching_check(tmp_path, extra_proc, check, needle):
+    g = install_session_guest(tmp_path)
+    g.set_procs(SESSION_PROCS + [extra_proc])
+    out = session_run(g, tmp_path)
+    assert checks_of(out)[check] == "FAIL" and needle in why(out, check)
+    assert "LINDOS_INSTALL_SESSION_CHECKED fails=1" in out and "LINDOS_INSTALL_DIAG ps:" in out      # the process list follows a failure
+    parsed = it.parse_install_serial(out)
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 1800}, completed(parsed))
+    assert "install-" + check in {f.name for f in ic_failures(findings)}
+    assert any(f.name == "install-session-diag" for f in findings)
+
+
+def test_the_default_entry_must_really_be_only_ubiquity(tmp_path):
+    g = install_session_guest(tmp_path)
+    g.cmdline.write_text("boot=casper oem-config/enable=true username=liveuser --\n", encoding="utf-8")      # the Try entry's words
+    out = session_run(g, tmp_path)
+    assert checks_of(out)["live-only-ubiquity"] == "FAIL" and "not the 'Install Lindos' session" in why(out, "live-only-ubiquity")
+
+
+def test_no_installer_process_means_the_session_never_started(tmp_path):
+    g = install_session_guest(tmp_path)
+    g.set_procs(["root|Xorg|/usr/lib/xorg/Xorg :0 vt1"])
+    assert checks_of(session_run(g, tmp_path))["live-installer-up"] == "FAIL"
+
+
+def test_a_short_lived_helper_is_not_a_desktop_session(tmp_path):
+    """The 'gone' test needs the process on all three looks: something that is there for one probe only passes."""
+    g = install_session_guest(tmp_path)
+    # a pgrep that finds lightdm on the first look only
+    fake = g.bin / "pgrep"
+    body = fake.read_text(encoding="utf-8")
+    fake.write_text(body.replace('n=0\n', 'n=0\nif [ "$exact" = 1 ] && [ "$pat" = lightdm ] && [ ! -e "$FAKE_SYSTEMD/looked" ]; then : > "$FAKE_SYSTEMD/looked"; echo 1; exit 0; fi\n', 1),
+                    encoding="utf-8", newline="\n")
+    out = session_run(g, tmp_path)
+    assert checks_of(out)["live-no-lightdm"] == "OK"
+
+
+@pytest.mark.parametrize("unit_state, listing", [
+    ("inactive", INHIBIT_LIST),                       # the unit is not active
+    ("active", ""),                                    # ... or it is, but nothing holds a lock
+    ("active", "Lindos installer 0 root 700 systemd-inhibit sleep Installing Lindos block"),    # only the hook's own lock: not the live one
+    ("active", "Lindos 0 root 512 systemd-inhibit idle Live session: do not interrupt the installation block"),   # not on sleep
+])
+def test_the_sleep_inhibitor_must_be_active_and_listed(tmp_path, unit_state, listing):
+    g = install_session_guest(tmp_path)
+    g.state("active.lindos-live-inhibit.service", unit_state)
+    g.state("inhibit", listing)
+    out = session_run(g, tmp_path)
+    assert checks_of(out)["live-inhibitor-active"] == "FAIL" and "inhibitor" in why(out, "live-inhibitor-active")
+
+
+def test_a_session_that_never_got_its_checks_fails_only_a_completed_run(tmp_path):
+    parsed = it.parse_install_serial("LINDOS_OBSERVER_STARTED mode=live uname=6.14\nLinux version x\nreboot: Power down\n")
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 60}, parsed)
+    assert {"install-" + n for n in SESSION_CHECKS} <= {f.name for f in ic_failures(findings)}
+    findings = it.judge_install_phase({"outcome": "timeout", "seconds": 5400}, parsed)
+    assert not {f.name for f in ic_failures(findings)} & {"install-" + n for n in SESSION_CHECKS}      # the timeout is the finding
+    assert any(f.name == "install-live-no-lightdm" and f.level == "info" for f in findings)
+    # no observer at all: the existing warning covers it, no invented session failures
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 60}, it.parse_install_serial("Linux version x\nreboot: Power down\n"))
+    assert not any(f.name.startswith("install-live-") for f in findings)
+
+
+def test_the_inhibitor_the_observer_looks_for_is_the_one_the_shipped_unit_takes():
+    """ci-observer.sh matches the WHO/WHY of lindos-live-inhibit.service: keep the two in step."""
+    unit = (REPO / "packages" / "lindos-core" / "root" / "usr" / "lib" / "systemd" / "system" / "lindos-live-inhibit.service").read_text(encoding="utf-8")
+    assert "--who=Lindos" in unit and '--why="Live session:' in unit and "--what=sleep:" in unit
+    obs = OBSERVER.read_text(encoding="utf-8")
+    assert "lindos-live-inhibit.service" in obs and '*"Live session"*' in obs and "*sleep*" in obs
+
+
+def test_the_serial_grammar_of_the_session_checks_is_the_one_install_test_parses():
+    obs = OBSERVER.read_text(encoding="utf-8")
+    for token in ("LINDOS_INSTALL_SESSION_CHECKED", "LINDOS_INSTALL_DIAG", "LINDOS_CHECK"):
+        assert token in obs, token
+    for name in SESSION_CHECKS:
+        assert name in obs and name in it.REQUIRED_SESSION_CHECKS, name
+    assert set(it.REQUIRED_SESSION_CHECKS) == set(SESSION_CHECKS)

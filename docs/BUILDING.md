@@ -186,7 +186,7 @@ pkg_available svc_disable svc_mask svc_enable fetch online`).
 | `70-gaming.sh` | always: `mesa-vulkan-drivers:i386 libgl1-mesa-dri:i386 libvulkan1:i386 steam-devices vulkan-tools mesa-utils` (+ `mangohud:i386` best effort); `INCLUDE_STEAM=1` → `install-gaming.sh --from-chroot ${GAMING_ITEMS}`; `INCLUDE_FLATPAK_LAUNCHERS=1` → Flatpaks. NVIDIA drivers are **not** preinstalled (the installer's `drivers` step installs proprietary GPU drivers only with consent and never when Secure Boot would need a key enrolment; otherwise mintdrivers / `lindos-drivers` on demand) |
 | `77-mint-sweep.sh` | last pass over what still says "Linux Mint" — see *Mint sweep* below: re-runs `apply-branding.sh --files-only` over the final image, checks Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when `apt-get -s purge` shows nothing else would go with them, prints an audit of everything left; every step guarded, idempotent, never fails the build |
 | `78-installer-brand.sh` | rebrands the live installer (Ubiquity): product name, launcher, artwork, slideshow, GTK skin — see *Installer branding* below; every step guarded (a missing file is a warning), idempotent |
-| `79-installer-flow.sh` | wires the installer flow into Ubiquity — see *Installer flow* below: refuses a host outside the chroot; **dies** if Chrome/Edge is installed in the image (SPEC §0.1), if the `lindos-installer` files or `/usr/lib/ubiquity` are missing, or if the deployed hook would be skipped by Ubiquity (a `.` in the name, not executable, a symlink, a syntax error, `set -e`); `install -m 0755` of `target-config.sh` as `/usr/lib/ubiquity/target-config/50lindos-install`; `debconf-set-selections` of `lindos.seed` and a read-back of `ubiquity/success_command`; logs the target-config directory and the ubiquity version; idempotent. Test seams `LINDOS_INSTALLER_ROOT`, `LINDOS_DEBCONF_SET`, `LINDOS_DEBCONF_COMMUNICATE`, `LINDOS_DPKG_QUERY` |
+| `79-installer-flow.sh` | wires the installer flow into Ubiquity — see *Installer flow* below: refuses a host outside the chroot; **dies** if Chrome/Edge is installed in the image (SPEC §0.1), if the `lindos-installer` files or `/usr/lib/ubiquity` are missing, or if the deployed hook would be skipped by Ubiquity (a `.` in the name, not executable, a symlink, a syntax error, `set -e`); `install -m 0755` of `target-config.sh` as `/usr/lib/ubiquity/target-config/50lindos-install`; `install -m 0755` of `dm-noblank.sh` as `/usr/lib/ubiquity/dm-scripts/install/50lindos-noblank` (the ubiquity-dm hook that runs `xset s off s noblank -dpms` in the `only-ubiquity` session; the build **dies** if `xset` is not in the image, if the file would be skipped by ubiquity-dm — a `.` in the name, not executable, a symlink, CRs, not `#!/bin/sh`, a syntax error, `set -e` — or if it does not really set the three things); `debconf-set-selections` of `lindos.seed` and a read-back of `ubiquity/success_command`; logs the target-config directory and the ubiquity version; idempotent. Test seams `LINDOS_INSTALLER_ROOT`, `LINDOS_DEBCONF_SET`, `LINDOS_DEBCONF_COMMUNICATE`, `LINDOS_DPKG_QUERY` |
 | `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists (**on purpose, still**: the base ISO's lists are stale by install time and cost ~100 MB in the squashfs; the installer hook refreshes the new system's lists as its first step), machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
 
 ### Installer branding (Ubiquity)
@@ -246,6 +246,7 @@ The mechanism is **Ubiquity in OEM mode** plus two scripts of the medium-only pa
 | `packages/lindos-installer/.../installer/target-config.sh` | copied by `79-installer-flow.sh` to `/usr/lib/ubiquity/target-config/50lindos-install` (mode 0755, no `.` in the name) | the **hook**: downloads and installs into `/target` |
 | `.../installer/lib.sh` | `/usr/libexec/lindos/installer/lib.sh` | helpers (logging, time boxes, entering the target, install-state, holds, repair); also the runner `bash lib.sh --enter TARGET CMD…` |
 | `.../installer/finalize.sh` | `/usr/libexec/lindos/installer/finalize.sh` | `ubiquity/success_command`: arms oem-config, <5 s |
+| `.../installer/dm-noblank.sh` | copied by `79-installer-flow.sh` to `/usr/lib/ubiquity/dm-scripts/install/50lindos-noblank` (mode 0755, no `.` in the name) | the **ubiquity-dm hook**: `xset s off s noblank -dpms` in the `only-ubiquity` session (no desktop, so nothing else stops X's screensaver/DPMS; a logind inhibitor cannot). `finalize.sh` removes the copy from the new system |
 | `.../share/lindos/installer/lindos.seed` | baked into the image's debconf database by `79` | `oem-config/enable`, `ubiquity/success_command`, `download_updates=false`, `apt-setup/multiarch=i386`, `user-setup/allow-password-empty=true` |
 | `.../share/lindos/installer/lindos-installer.templates` | same path | the one-line status template (`db_progress INFO`) |
 | `.../share/lindos/installer/extras.json` | same path | union of every Mode's extras (generated by `build/lib/installer_extras.py --write`; `--check` fails when stale) |
@@ -273,26 +274,51 @@ path, no mount left behind (private mount namespace), markers only after verifie
 deployed name that contains a `.` or lacks the exec bit makes Ubiquity skip the hook **silently** —
 `79` refuses both (and a `set -e`, a syntax error, a symlink) and logs `ls -l` of the directory.
 
+**The ubiquity-dm hook** (`dm-noblank.sh`). The `Install Lindos` boot entries (`only-ubiquity`) start no desktop
+session: `ubiquity.service` runs `ubiquity-dm`, which starts a bare `X -br -ac -noreset -nolisten tcp` and the
+installer on it. Nothing configures that server's screensaver or DPMS, whose defaults blank the display after ten
+minutes without input, and `lindos-live-inhibit.service` (a logind inhibitor) cannot stop them. `ubiquity-dm`
+runs every executable file without a `.` in `/usr/lib/ubiquity/dm-scripts/install` once, after X is up and before
+the installer window exists, as the live user, with `subprocess.call` (no shell: the shebang and the exec bit
+matter; its output goes to `/var/log/installer/dm`); it waits for it and ignores the status, so the hook is
+time-boxed (`timeout`), always exits 0 and makes one `xset` call per setting. `-noreset` keeps the settings after
+`xset` exits. Only the install pass runs this directory (`oem-config`'s first boot uses `dm-scripts/oem`); the
+*Try Lindos* desktop has `live-session-power.sh` instead.
+
 **Ubiquity's OEM mode, in short.** With `oem-config/enable=true` the installer's account page becomes a
 *temporary* account (`oem`, computer name, password, empty allowed here through
 `user-setup/allow-password-empty=true`) — a preseed cannot hide that page. OEM mode does **not** arm the
 first-boot wizard by itself (upstream a human runs `oem-config-prepare`), so `finalize.sh` does its
 essentials: units to `/lib/systemd/system`, enable, `set-default oem-config.target`, but *without* its
 deletion of the NetworkManager profiles; it also strips the stale `autologin-user=oem` from
-`lightdm.conf`, locks `oem` and resets `allow-password-empty` (SPEC §17.7).
+`lightdm.conf`, locks `oem` and resets `allow-password-empty` (SPEC §17.7; the reset runs first, on every path,
+because the seed that lets the temporary account keep an empty password is only for the installer's page).
+**When oem-config is missing or arming fails** the machine still boots into `oem`'s autologin desktop (a machine
+nobody can log in to is worse), but that account has an empty password when the user followed the page, and is
+in `sudo`: `finalize.sh` therefore gives it a random password through `chpasswd` (stdin only, never in a log;
+kept root-only in `/var/lib/lindos/oem-temporary-password` and printed on the account's own desktop in
+`LINDOS-ACCOUNT-SETUP-FAILED.txt`), or locks it (`passwd -l`, then a direct `/etc/shadow` edit) when that fails; a
+password the user chose is left alone. It logs `CRITICAL` and writes the reason plus what it did to
+`/var/lib/lindos/oem-config-not-armed`.
 
 **Steps, states and switches.** Steps run `browser drivers updates compat gaming mode_extras flatpaks`
 and end in `/var/lib/lindos/install-state.json` as `done | pending | skipped | failed`
 (`lindos-config install-state [--json]`; `python3 -m lindos.installstate [--root DIR] show`). Kernel
 words: `lindos.install=off`, `lindos.install_budget=SECONDS` (default 2700),
 `lindos.proprietary_drivers=1` (consent, SPEC §17.5). The hook refreshes the new system's apt lists
-first, holds the families it must not touch, and does `apt-get upgrade` (never `dist-upgrade`).
+first, holds the families it must not touch, and does `apt-get upgrade` (never `dist-upgrade`). Stock
+`apt-get update` exits 0 after *transient* index failures, so the exit status alone is not the verdict
+(`li_apt_update` in `lib.sh`): the installer's apt.conf sets `APT::Update::Error-Mode "any"`, the output is
+scanned for `Err:` / `E:` / "Failed to fetch", and at least one non-empty network `Packages` list must exist; any
+of these failing retries the update once, and if it still fails the steps that learn from the lists (updates,
+drivers, extra apps) end *pending*, never *done*.
 
 **Logs.** `/var/log/lindos/installer-hook.log` (live environment, written while installing — open a
 terminal in the *Try* session to follow it), `/target/var/log/lindos/installer.log` = `/var/log/lindos/
 installer.log` after the reboot (the same lines plus `finalize.sh`'s), Ubiquity's own
 `/var/log/installer/syslog`, the install scripts' `/var/log/lindos/install-*.log`. On a failure to
-arm oem-config: `/var/lib/lindos/oem-config-not-armed` holds the reason.
+arm oem-config: `/var/lib/lindos/oem-config-not-armed` holds the reason (and, on line 2, what was done to the
+temporary account); `/var/log/installer/dm` has the output of the ubiquity-dm hook.
 
 **Build-time guards** (`build-iso.sh`): the first `grub.cfg` entry must keep `only-ubiquity
 oem-config/enable=true`; no `username=mint`/`hostname=mint` anywhere in `boot/grub` or `isolinux`;
@@ -342,7 +368,10 @@ the mechanism** — this is the QEMU procedure, expect several rounds:
    'oem-config*'` lists both packages (and `-find /lindos/oem-debs` when a fallback set was used).
 2. *Boot both menus.* `make qemu-uefi` and `make qemu` (BIOS): entry 1 must go straight to the installer
    (no desktop), entry 3 must give the live desktop with an *Install Lindos* icon and **no** Lindos Setup
-   window; the desktop must never blank or suspend (`lindos-live-inhibit.service`, `live-session-power.sh`).
+   window; the desktop must never blank or suspend (`lindos-live-inhibit.service`, `live-session-power.sh`). In
+   entry 1 wait more than ten minutes at the first page: the screen must stay on, `grep lindos-noblank
+   /var/log/installer/dm` shows the hook ran (from a second terminal, `DISPLAY=:0 xset q` says `timeout: 0` and
+   `DPMS is Disabled`); `ls -l /usr/lib/ubiquity/dm-scripts/install` shows `50lindos-noblank`, mode 0755.
 3. *Install online.* `build/test-qemu.sh --uefi --disk 30` (or `--disk` with BIOS), Try entry so you have a
    terminal: start *Install Lindos*, follow `tail -f /var/log/lindos/installer-hook.log` and watch the
    installer's status line change per step. Accept the temporary-account page (empty password).

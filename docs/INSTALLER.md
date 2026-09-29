@@ -17,7 +17,7 @@ built and unit-tested without a Linux machine and has not yet been run end to en
 
 | Phase | What you see | What happens |
 |---|---|---|
-| **1. The USB session** | The installer and nothing else (*Install Lindos*), or a live desktop (*Try Lindos*) with an *Install Lindos* icon | No first-run wizard, no package installs, no password prompts. The live session is set up so that the PC does not sleep, blank or lock (a closed laptop lid should not suspend it), so a long install is not interrupted. |
+| **1. The USB session** | The installer and nothing else (*Install Lindos*), or a live desktop (*Try Lindos*) with an *Install Lindos* icon | No first-run wizard, no package installs, no password prompts. The live session is set up so that the PC does not sleep, blank or lock (a closed laptop lid should not suspend it), so a long install is not interrupted: a logind inhibitor covers sleep and the lid in both entries, a small Ubiquity-DM hook switches the screen blanking off in the *Install Lindos* session (which has no desktop), the *Try Lindos* desktop has its own live power settings. |
 | **2. Installing** | Ubiquity's pages: language, keyboard, Wi-Fi (if needed), what to install, disk, time zone, a *temporary* account page, then the slideshow with a one-line status | Files are copied, then Lindos' installer step downloads and installs everything heavy into the new system (below), then the boot loader is set up and the first-boot account wizard is armed. |
 | **3. First boot** | Remove the stick and reboot: the **account setup** (name, password, computer name, …), then the desktop, then **Lindos Setup** | Only settings are saved. Nothing is installed or updated at first boot (except a silent background retry of anything the installer could not do, below). |
 
@@ -60,7 +60,8 @@ wizard for you.
 **temporary** account (named `oem`) and the real account is created at the first boot. Ubiquity shows a
 page for that temporary account (computer name and a password) that cannot be hidden: **leave the
 password empty and press Continue.** The temporary account is locked when the installation ends and is
-deleted at the first boot. The window title may say "OEM mode, for manufacturers only": that is
+deleted at the first boot. (If the account setup could not be prepared, the account cannot be locked away
+because it is then your only way in: it gets a random password instead, see the troubleshooting table.) The window title may say "OEM mode, for manufacturers only": that is
 Ubiquity's own text and it does not mean anything is wrong.
 
 **What the installer window shows.** After the files are copied, the slideshow keeps playing and the
@@ -155,7 +156,9 @@ Logs: while installing, `/var/log/lindos/installer-hook.log` (open a terminal in
 | Symptom | What to look at |
 |---|---|
 | The installer looks stuck on "Configuring target system" / a status line | It is probably downloading; the log says what. It stops by itself after the 45-minute budget. |
-| The first boot lands on a desktop as the user `oem` instead of the account wizard | The wizard could not be armed. `/var/lib/lindos/oem-config-not-armed` holds the reason and `/var/log/lindos/installer.log` the details. If oem-config is installed, `sudo oem-config-prepare` (then reboot) arms it by hand — it also deletes saved Wi-Fi profiles; if the reason says oem-config is missing, it cannot. Please report it. |
+| The first boot lands on a desktop as the user `oem` instead of the account wizard | The wizard could not be armed. `/var/lib/lindos/oem-config-not-armed` holds the reason (line 1) and what was done to the account (line 2), `/var/log/lindos/installer.log` the details (`CRITICAL`). The desktop is kept, but the temporary account is **not left open**: its password was empty (the page told you to leave it so), so it gets a **random password** — printed in `LINDOS-ACCOUNT-SETUP-FAILED.txt` on that desktop (readable by that account only; change it with `passwd`, then delete the note) and kept root-only in `/var/lib/lindos/oem-temporary-password`; a password you typed yourself is kept, and if none can be set the account is locked (administrator tasks then need the wizard fixed first). If oem-config is installed, `sudo oem-config-prepare` (then reboot) arms it by hand — it also deletes saved Wi-Fi profiles; if the reason says oem-config is missing, it cannot. Please report it. |
+| Updates, drivers or extra apps say *pending* although the PC was online | The package lists could not be refreshed completely (a source timed out or the connection dropped during `apt-get update`): the installer does not trust an "up to date" or "no drivers" answer from incomplete lists, records the step as pending and retries it later. `/var/log/lindos/installer.log` names the failed fetches. |
+| The installer screen goes dark after about ten minutes | Input wakes it. It should not happen: the *Install Lindos* session runs `50lindos-noblank` (`xset s off s noblank -dpms`); `grep lindos-noblank /var/log/installer/dm` in a terminal shows what it did. Please report it. |
 | Chrome or a driver is missing | `lindos-config install-state`; then Settings › Apps › Left to finish from setup. |
 | The first boot starts offline | Connect on the wizard's Wi-Fi page; the retries then run on their own. |
 
@@ -218,6 +221,12 @@ These are the unverified assumptions; each one has a check in the QEMU procedure
 * That the private mount namespace (`unshare --mount --propagation private`, proc/sysfs/`/dev`/fresh `/run`
   plus `chroot`) leaves no mount behind and does not disturb Ubiquity's later steps, that name resolution
   works inside the chroot, and that `resolv.conf` is restored.
+* `apt-get update` verdicts: stock apt exits 0 after transient index failures (timeouts, DNS, refused
+  connections), so the hook asks for `APT::Update::Error-Mode "any"` (from apt's manual, apt 2.7 on noble; not run
+  here) **and** does not trust the exit status alone: an `Err:` / `E:` / "Failed to fetch" line in the output, or no
+  non-empty network `Packages` list on disk, also makes the update incomplete (retried once, then the steps that
+  depend on the lists - updates, drivers, extra apps - stay *pending*). Whether real apt output matches those
+  patterns on every failure mode is unverified.
 * Real apt/dpkg behaviour: the apt configuration that ignores the medium's `cdrom:` source; download first
   then `--no-download` install; holds and the version pin of ~300 names; that `apt-get upgrade` keeps back
   what it must; that the repair pass really leaves dpkg clean after a killed or failed run and that
@@ -226,6 +235,13 @@ These are the unverified assumptions; each one has a check in the QEMU procedure
 * Debconf: that `db_x_loadtemplatefile` + `db_subst` + `db_progress INFO` really renders a one-line status in
   the GTK window; `db_get ubiquity/use_nonfree`; the confmodule file-descriptor handling under
   `systemd-inhibit`.
+* The `only-ubiquity` session has no desktop, so only two things keep it awake: `lindos-live-inhibit.service`
+  (a logind inhibitor: sleep, idle action, lid and suspend keys - it cannot stop the X server's own
+  screensaver/DPMS) and the ubiquity-dm hook `/usr/lib/ubiquity/dm-scripts/install/50lindos-noblank`
+  (`xset s off s noblank -dpms`, from `dm-noblank.sh`). Unverified: that ubiquity-dm really runs the hook (it is
+  read in its source: every dot-less executable of that directory, once, after X is up, as the live user) and
+  that the display then stays on for a long idle install (`DISPLAY=:0 xset q` must say `timeout: 0` and
+  `DPMS is Disabled`; the hook logs the same to `/var/log/installer/dm`).
 * `systemd-inhibit` from the hook in the `only-ubiquity` boot (no logind user session), and
   `lindos-live-inhibit.service`, the live-session power settings (xfconf property names, a
   `Phase=Initialization` autostart running before xfce4-power-manager reads them) and the `Exec` of
@@ -245,6 +261,8 @@ These are the unverified assumptions; each one has a check in the QEMU procedure
   `user-setup/allow-password-empty` lands in the database the wizard reads; that `oem-config.target` is removed
   before `graphical.target` is isolated (the silent retries depend on that); that
   `filesystem.manifest-remove` with `lindos-installer` appended makes Ubiquity remove it in OEM mode.
+  The fallback when the wizard cannot be armed (random password through `chpasswd` inside the chroot, the
+  autologin desktop still signing in, the note on the desktop) has only run against fake targets.
 * **The base ISO**: that its pool carries `oem-config` and `oem-config-gtk` (and `aptdaemon` with its GTK
   widgets) at exactly the squashfs's Ubiquity version, and that `.disk/cd_type` and `dists/` look as
   `build/lib/verify_oem_pool.py` expects (the build asserts this; the source of the assumption is the file

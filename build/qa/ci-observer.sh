@@ -11,6 +11,13 @@
 #                            LINDOS_HOOK_LOG ...              the installer hook's own log, as it grows
 #                            LINDOS_UBIQUITY_LOG ...          error-looking lines of Ubiquity's debug log
 #                            LINDOS_INSTALL_HEARTBEAT ...     every minute: Ubiquity state, target disk use
+#                            LINDOS_CHECK live-* =OK|FAIL     ONCE, about two minutes in: the session really is the
+#                                                             default 'Install Lindos' one (only-ubiquity: the
+#                                                             installer on its own X server; no LightDM, no XFCE
+#                                                             session, no first-run wizard, no pkexec) and the
+#                                                             logind sleep inhibitor is held
+#                            LINDOS_INSTALL_SESSION_CHECKED fails=N   after those checks (LINDOS_INSTALL_DIAG lines
+#                                                             with the process list precede it when one failed)
 #                            LINDOS_INSTALL_FINALIZED         finalize.sh (ubiquity/success_command) has run: only
 #                                                             the unmount and the poweroff are left
 #                            LINDOS_INSTALL_FAILED ...        ubiquity.service ended with an error
@@ -24,7 +31,9 @@
 #  LINDOS_CI_OUT ('-' = stdout), LINDOS_CI_STEP (seconds between probes), LINDOS_CI_OEM_WAIT (probes
 #  before giving up), LINDOS_CI_SETTLE (seconds to wait after the wizard appeared), LINDOS_CI_BEAT_EVERY
 #  (probes between heartbeats), LINDOS_CI_MAX_TICKS (stop after that many probes; 0 = never),
-#  LINDOS_CI_HOOK_LOG, LINDOS_CI_UBIQUITY_DEBUG, LINDOS_CI_UBIQUITY_VERSION (the files 'live' reads).
+#  LINDOS_CI_HOOK_LOG, LINDOS_CI_UBIQUITY_DEBUG, LINDOS_CI_UBIQUITY_VERSION (the files 'live' reads),
+#  LINDOS_CI_CMDLINE (the kernel command line 'live' reads), LINDOS_CI_LIVE_CHECK_TICKS (probes before the one-shot
+#  session checks; 24 x 5 s = two minutes: Xorg and the installer window are up by then).
 # ============================================================================
 set -u
 
@@ -46,6 +55,8 @@ MAX_TICKS="${LINDOS_CI_MAX_TICKS:-0}"
 HOOK_LOG="${LINDOS_CI_HOOK_LOG:-/var/log/lindos/installer-hook.log}"
 UBIQUITY_DEBUG="${LINDOS_CI_UBIQUITY_DEBUG:-/var/log/installer/debug}"
 UBIQUITY_VERSION="${LINDOS_CI_UBIQUITY_VERSION:-/var/log/installer/version}"
+CMDLINE="${LINDOS_CI_CMDLINE:-/proc/cmdline}"
+LIVE_CHECK_TICKS="${LINDOS_CI_LIVE_CHECK_TICKS:-24}"
 FAILS=0
 
 OUT="${LINDOS_CI_OUT:-${DEFAULT_OUT}}"
@@ -102,8 +113,75 @@ live_heartbeat() {
     echo "LINDOS_INSTALL_HEARTBEAT tick=${tick} ubiquity=${state:-unknown} target=${used:-not-mounted} procs=$(pgrep -fc ubiquity 2>/dev/null)"
 }
 
+# gone KIND PATTERN - no process matches on at least one of three looks (a short-lived helper is not a session).
+# KIND x: an exact process name, f: a pattern against the whole command line.
+gone() {
+    local i=0
+    while [ "${i}" -lt 3 ]; do
+        if [ "$1" = x ]; then
+            running_x "$2" || return 0
+        else
+            running "$2" || return 0
+        fi
+        i=$((i + 1))
+        [ "${i}" -lt 3 ] && sleep "${STEP}"
+    done
+    return 1
+}
+
+# live_inhibitor - lindos-live-inhibit.service is active and systemd-inhibit lists its block on sleep (the 'Install Lindos'
+# boot has no desktop session, so this unit is the only thing that keeps a laptop lid or an idle timeout from suspending
+# the machine half-way through the installation)
+live_inhibitor() {
+    local list
+    systemctl is-active --quiet lindos-live-inhibit.service 2>/dev/null || return 1
+    list="$(systemd-inhibit --list --no-legend 2>/dev/null)"
+    case "${list}" in
+        *"Live session"*) ;;
+        *) return 1 ;;
+    esac
+    case "${list}" in
+        *sleep*) return 0 ;;
+    esac
+    return 1
+}
+
+live_diag() {
+    pgrep -af 'ubiquity|lightdm|xfce4|xfwm4|xfdesktop|lindos|pkexec|Xorg' 2>/dev/null | prefixed "LINDOS_INSTALL_DIAG ps:" 40
+    echo "LINDOS_INSTALL_DIAG inhibit: unit=$(systemctl is-active lindos-live-inhibit.service 2>&1) list=$(systemd-inhibit --list --no-legend 2>&1 | head -n 5 | tr '\n' ';')"
+}
+
+# live_checks - the session this installation runs in must be the default 'Install Lindos' boot entry and nothing else.
+# (xfwm4 is NOT a sign of a desktop here: ubiquity-dm starts its own window manager, 'xfwm4 --compositor=off', for the
+# installer window; the session proper is xfce4-session, its panel and xfdesktop.)
+live_checks() {
+    local only=1 w
+    local -a words=()
+    read -r -a words <"${CMDLINE}" 2>/dev/null || true       # no trailing newline makes read fail but still fill words
+    for w in "${words[@]+"${words[@]}"}"; do
+        [ "${w}" = only-ubiquity ] && only=0
+    done
+    verdict live-only-ubiquity "${only}" "the kernel command line has no only-ubiquity: this is not the 'Install Lindos' session"
+    running 'bin/ubiquity|ubiquity-dm'
+    verdict live-installer-up $? "no Ubiquity process runs: the installer session never started"
+    gone x lightdm
+    verdict live-no-lightdm $? "LightDM is running: the installer boot must not start a display manager (or the installer already quit)"
+    gone f 'xfce4-session|xfce4-panel|xfdesktop'
+    verdict live-no-xfce-session $? "a desktop session runs (xfce4-session, xfce4-panel or xfdesktop): the installer boot must not start one"
+    gone f 'lindos-setup'
+    verdict live-no-lindos-setup $? "the first-run wizard runs in the installer session"
+    gone x pkexec
+    verdict live-no-pkexec $? "pkexec is running: something asks for privileges inside the installer session"
+    live_inhibitor
+    verdict live-inhibitor-active $? "no sleep inhibitor: lindos-live-inhibit.service is not active or systemd-inhibit does not list it"
+    if [ "${FAILS}" -gt 0 ]; then
+        live_diag
+    fi
+    echo "LINDOS_INSTALL_SESSION_CHECKED fails=${FAILS}"
+}
+
 live_mode() {
-    local tick=0 active result reported="" finalized=0
+    local tick=0 active result reported="" finalized=0 checked=0
     echo "LINDOS_OBSERVER_STARTED mode=live uname=$(uname -r)"
     # the hook's log, whole and as it grows; Ubiquity's debug log is huge in automatic mode, so only its errors
     tail -n +1 -F "${HOOK_LOG}" 2>/dev/null | sed -u 's/^/LINDOS_HOOK_LOG /' &
@@ -134,6 +212,10 @@ live_mode() {
             finalized=1
         fi
         tick=$((tick + 1))
+        if [ "${checked}" -eq 0 ] && [ "${tick}" -ge "${LIVE_CHECK_TICKS}" ]; then
+            live_checks
+            checked=1
+        fi
         if [ $((tick % BEAT_EVERY)) -eq 0 ]; then
             live_heartbeat "${tick}"
         fi

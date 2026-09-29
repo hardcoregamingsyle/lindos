@@ -41,6 +41,9 @@ BASE_PACKAGES = [
     "flatpak", "apt", "dpkg",
 ]
 
+#: oem's line in the fake /etc/shadow when the user left the temporary account's password empty
+EMPTY_PASSWORD_SHADOW = "oem::19000:0:99999:7:::"
+
 #: the shim behind every faked command (installed under many names, told apart by $0)
 FAKE_COMMAND = r'''#!/bin/bash
 name="$(basename "$0")"
@@ -116,7 +119,22 @@ case "${name}" in
     lindos-drivers)
         exit "${FAKE_LINDOS_DRIVERS_RC:-0}" ;;
     passwd)
-        exit "${FAKE_PASSWD_RC:-0}" ;;
+        [ "${FAKE_PASSWD_RC:-0}" = 0 ] || exit "${FAKE_PASSWD_RC}"
+        # 'passwd -l USER' prefixes the password field with '!' (the fake target's /etc/shadow)
+        if [ "$1" = "-l" ] && [ -f "${FAKE_TARGET}/etc/shadow" ]; then
+            sed -i "s/^$2:/&!/" "${FAKE_TARGET}/etc/shadow"
+        fi
+        exit 0 ;;
+    chpasswd)
+        # 'USER:PASSWORD' arrives on stdin (the real one takes it there too); the fake keeps every line for the tests
+        cat >>"${st}/chpasswd-stdin"
+        [ "${FAKE_CHPASSWD_RC:-0}" = 0 ] || exit "${FAKE_CHPASSWD_RC}"
+        if [ -f "${FAKE_TARGET}/etc/shadow" ]; then
+            user="$(tail -n 1 "${st}/chpasswd-stdin" | cut -d: -f1)"
+            hash='$6$fakesalt$fakehash'
+            sed -i "s|^${user}:[^:]*:|${user}:${hash}:|" "${FAKE_TARGET}/etc/shadow"
+        fi
+        exit 0 ;;
     debconf-set-selections)
         env | grep '^DEBCONF_' >"${st}/debconf-env" || : >"${st}/debconf-env"
         cat >>"${st}/debconf-selections"
@@ -232,7 +250,18 @@ case "${name}" in
             esac
         done
         case "${verb}" in
-            update) exit "${FAKE_UPDATE_RC:-0}" ;;
+            update)
+                # every call is counted; FAKE_UPDATE_OUT_FILE is what apt printed (only on the first call with
+                # FAKE_UPDATE_OUT_ONCE=1), FAKE_UPDATE_RC_FIRST the exit status of the first call only
+                n=0
+                [ -f "${st}/update-calls" ] && n="$(cat "${st}/update-calls")"
+                n=$((n + 1))
+                echo "${n}" >"${st}/update-calls"
+                if [ -n "${FAKE_UPDATE_OUT_FILE:-}" ] && { [ "${FAKE_UPDATE_OUT_ONCE:-0}" != 1 ] || [ "${n}" = 1 ]; }; then
+                    cat "${FAKE_UPDATE_OUT_FILE}"
+                fi
+                if [ "${n}" = 1 ] && [ -n "${FAKE_UPDATE_RC_FIRST:-}" ]; then exit "${FAKE_UPDATE_RC_FIRST}"; fi
+                exit "${FAKE_UPDATE_RC:-0}" ;;
             clean) exit 0 ;;
             upgrade)
                 if [ "${sim}" = 1 ]; then
@@ -289,7 +318,7 @@ exit 0
 
 #: names the fake command is installed under
 FAKE_NAMES = ["ln", "readlink", "wget", "curl", "getent", "id", "sync", "mount", "lspci", "mokutil", "ubuntu-drivers", "lindos-drivers",
-              "passwd", "debconf-set-selections", "chroot", "unshare", "systemd-inhibit", "systemctl", "flatpak", "apt-mark", "apt-cache",
+              "passwd", "chpasswd", "debconf-set-selections", "chroot", "unshare", "systemd-inhibit", "systemctl", "flatpak", "apt-mark", "apt-cache",
               "dpkg-query", "dpkg", "apt-get"]
 
 #: LINDOS_TARGET_RUNNER: plays 'enter the target': the "chroot" is the host, absolute paths map into the fake target
@@ -399,12 +428,19 @@ class Sandbox:
             write_exec(t / "usr" / "libexec" / "lindos" / name, FAKE_INSTALL_SCRIPT)
         write_exec(t / "usr" / "libexec" / "lindos" / "browser-firstboot.sh", FAKE_BROWSER_FIRSTBOOT)
 
-    def make_oem_target(self, *, with_oem_config: bool = True, with_user: bool = True, autologin: bool = True) -> None:
-        """What Ubiquity's OEM mode leaves in /target before the success command runs."""
+    def make_oem_target(self, *, with_oem_config: bool = True, with_user: bool = True, autologin: bool = True,
+                        shadow: Optional[str] = EMPTY_PASSWORD_SHADOW) -> None:
+        """What Ubiquity's OEM mode leaves in /target before the success command runs.
+
+        ``shadow`` is oem's line in /etc/shadow: by default an EMPTY password (what the installer's page tells the
+        user to leave), ``None`` = no shadow file at all.
+        """
         t = self.target
         (t / "etc" / "passwd").write_text(
             "root:x:0:0:root:/root:/bin/bash\n" + ("oem:x:29999:29999:OEM Configuration:/home/oem:/bin/bash\n" if with_user else ""),
             encoding="utf-8", newline="\n")
+        if shadow is not None:
+            (t / "etc" / "shadow").write_text("root:*:19000:0:99999:7:::\n" + shadow + "\n", encoding="utf-8", newline="\n")
         if with_oem_config:
             (t / "usr" / "lib" / "oem-config").mkdir(parents=True, exist_ok=True)
             (t / "usr" / "lib" / "oem-config" / "oem-config.service").write_text(
@@ -419,6 +455,7 @@ class Sandbox:
         lines += ["greeter-session=slick-greeter\n"]
         (t / "etc" / "lightdm" / "lightdm.conf").write_text("".join(lines), encoding="utf-8", newline="\n")
         write_exec(t / "usr" / "lib" / "ubiquity" / "target-config" / "50lindos-install", "#!/bin/sh\n")
+        write_exec(t / "usr" / "lib" / "ubiquity" / "dm-scripts" / "install" / "50lindos-noblank", "#!/bin/sh\n")
 
     # -- environment -------------------------------------------------------------------------
     def env(self, **over: str) -> Dict[str, str]:
