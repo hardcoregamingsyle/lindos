@@ -12,6 +12,7 @@
 #    python  : python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0
 #    system  : polkitd pkexec flatpak xdg-desktop-portal-gtk fonts-noto-color-emoji
 #              winbind cabextract icoutils zenity librsvg2-bin curl wget gpg
+#    best effort: one GUI polkit agent (policykit-1-gnome | mate-polkit | lxpolkit)
 #  Everything is installed with --no-install-recommends (RAM/size budget);
 #  a second best-effort pass installs "nice to have" packages one by one so a
 #  missing package on a mirror can never abort the build.  EXTRA_PACKAGES
@@ -143,6 +144,34 @@ NICE=(
 )
 apt_try_install "${NICE[@]}"
 
+# A graphical polkit authentication agent (best effort; the first one that installs is enough).
+# Every Lindos password prompt (first-boot setup, Settings, Windows-app installers, updates) goes
+# through pkexec, which needs an agent registered for the desktop session to show a real dialog -
+# without one it falls back to a text prompt.  /etc/xdg/autostart/lindos-polkit-agent.desktop
+# (lindos-desktop) starts whichever of these is installed; no polkit rule is added, the password
+# is still asked.  noble universe: policykit-1-gnome (/usr/lib/policykit-1-gnome/...), mate-polkit,
+# lxpolkit.
+POLKIT_AGENTS=(policykit-1-gnome mate-polkit lxpolkit)
+polkit_agent=""
+for p in "${POLKIT_AGENTS[@]}"; do
+    if pkg_installed "${p}"; then
+        polkit_agent="${p}"
+        break
+    fi
+done
+if [ -z "${polkit_agent}" ]; then
+    for p in "${POLKIT_AGENTS[@]}"; do
+        apt_try_install "${p}"
+        if pkg_installed "${p}"; then
+            polkit_agent="${p}"
+            break
+        fi
+    done
+fi
+if [ -z "${polkit_agent}" ]; then
+    warn "no graphical polkit authentication agent could be installed (${POLKIT_AGENTS[*]}); password prompts will fall back to pkexec's text prompt"
+fi
+
 # ---------------------------------------------------------------------------
 # Laptop hardware-enablement packages (SPEC §8; build/config.env LAPTOP_ESSENTIALS) — best
 # effort, same as NICE above.  Covers firmware (linux-firmware, Intel SOF audio DSP + its
@@ -186,5 +215,8 @@ for p in xfce4-docklike-plugin xfce4-panel-profiles picom systemd-zram-generator
         warn "MISSING after install: ${p}"
     fi
 done
+if [ -n "${polkit_agent}" ]; then
+    log "ok: polkit authentication agent ${polkit_agent}"
+fi
 
 hook_end

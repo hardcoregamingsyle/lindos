@@ -10,10 +10,17 @@
 #     default.plymouth via update-alternatives (initramfs is NOT rebuilt unless
 #     --update-initramfs is given; build/chroot/40-theme.sh does that once).
 #   * Default wallpaper alternative "desktop-background" → aurora-dark.svg.
+#   * The "Mint sweep" (rebrand-base.py, next to this script): display fields of /etc/lsb-release,
+#     /etc/linuxmint/info and /etc/casper.conf, the Mint tools' menu/autostart entries, Firefox's
+#     Linux Mint start page.  IDs, codenames and package names are never touched.
 #
-# Called by the lindos-desktop postinst and by build/chroot/40-theme.sh; safe to re-run.
-# Runs as root (no sudo inside).  Options: --dry-run, --revert, --update-initramfs, --quiet.
-# Env: LINDOS_ROOT (prefix for tests), LINDOS_OS_RELEASE_FRAGMENT (alternate fragment).
+# Called by the lindos-desktop postinst, by build/chroot/40-theme.sh and — with --files-only — by
+# /etc/apt/apt.conf.d/99lindos-branding after every apt run (so a base-files/Mint package update
+# cannot bring "Linux Mint" back); safe to re-run.
+# Runs as root (no sudo inside).  Options: --dry-run, --revert, --update-initramfs, --quiet,
+# --files-only (skip the Plymouth/wallpaper alternatives: a user's own choice must survive apt runs).
+# Env: LINDOS_ROOT (prefix for tests), LINDOS_OS_RELEASE_FRAGMENT (alternate fragment),
+# LINDOS_REBRAND_SCRIPT (alternate rebrand-base.py), LINDOS_PYTHON (alternate python3).
 set -Eeuo pipefail
 
 ROOT="${LINDOS_ROOT:-}"
@@ -32,6 +39,10 @@ DRY_RUN=0
 REVERT=0
 UPDATE_INITRAMFS=0
 QUIET=0
+FILES_ONLY=0
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+REBRAND_SCRIPT="${LINDOS_REBRAND_SCRIPT:-${SELF_DIR}/rebrand-base.py}"
+PYTHON="${LINDOS_PYTHON:-$(command -v python3 || true)}"
 
 log() { [ "${QUIET}" -eq 1 ] || printf 'apply-branding: %s\n' "$*" >&2; }
 warn() { printf 'apply-branding: WARNING: %s\n' "$*" >&2; }
@@ -43,7 +54,8 @@ while [ $# -gt 0 ]; do
         --revert) REVERT=1; shift ;;
         --update-initramfs) UPDATE_INITRAMFS=1; shift ;;
         --quiet|-q) QUIET=1; shift ;;
-        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --files-only) FILES_ONLY=1; shift ;;
+        -h|--help) sed -n '2,/^set -Eeuo/p' "$0" | grep -v '^set -Eeuo' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -164,6 +176,25 @@ apply_issue() {
     fi
 }
 
+# apply_rebrand — the Mint sweep (menu/autostart entries, lsb-release, Firefox start page, ...).
+# Never fails the caller: a missing script or python3 is a warning.
+apply_rebrand() {
+    local args=()
+    if [ ! -f "${REBRAND_SCRIPT}" ]; then
+        warn "${REBRAND_SCRIPT} not found; skipping the Mint sweep"
+        return 0
+    fi
+    if [ -z "${PYTHON}" ]; then
+        warn "python3 not found; skipping the Mint sweep"
+        return 0
+    fi
+    [ -z "${ROOT}" ] || args+=(--root "${ROOT}")
+    args+=(--fragment "${FRAGMENT}")
+    [ "${DRY_RUN}" -eq 0 ] || args+=(--dry-run)
+    [ "${QUIET}" -eq 0 ] || args+=(--quiet)
+    "${PYTHON}" "${REBRAND_SCRIPT}" "${args[@]}" || warn "rebrand-base.py reported a problem (ignored)"
+}
+
 apply_plymouth() {
     if [ -n "${ROOT}" ]; then
         log "LINDOS_ROOT set; skipping update-alternatives (plymouth)"
@@ -234,6 +265,13 @@ revert_all() {
         update-alternatives --remove default.plymouth "${PLYMOUTH_THEME}" >/dev/null 2>&1 || true
         update-alternatives --remove desktop-background "${WALLPAPER}" >/dev/null 2>&1 || true
     fi
+    if [ -f "${REBRAND_SCRIPT}" ] && [ -n "${PYTHON}" ]; then
+        local rargs=(--revert)
+        [ -z "${ROOT}" ] || rargs+=(--root "${ROOT}")
+        [ "${DRY_RUN}" -eq 0 ] || rargs+=(--dry-run)
+        [ "${QUIET}" -eq 0 ] || rargs+=(--quiet)
+        "${PYTHON}" "${REBRAND_SCRIPT}" "${rargs[@]}" || warn "rebrand-base.py --revert reported a problem (ignored)"
+    fi
     log "branding reverted"
 }
 
@@ -244,8 +282,11 @@ main() {
     fi
     apply_os_release
     apply_issue
-    apply_plymouth
-    apply_wallpaper_alternative
+    apply_rebrand
+    if [ "${FILES_ONLY}" -eq 0 ]; then
+        apply_plymouth
+        apply_wallpaper_alternative
+    fi
     log "branding applied"
 }
 

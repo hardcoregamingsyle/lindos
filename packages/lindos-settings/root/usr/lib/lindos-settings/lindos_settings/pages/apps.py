@@ -94,7 +94,7 @@ class AppsPage(DelegatePage):
                     card.set_button_label("Install")
                     card.button.set_sensitive(True)
                     card.button.set_tooltip_text("Adds the vendor's apt repository and installs the package through the Lindos helper (administrator password)"
-                                                 if bid != "firefox" else "Installs Mint's firefox package through the Lindos helper")
+                                                 if bid != "firefox" else "Installs the firefox package from the system repositories through the Lindos helper")
                 card.set_subtitle(sub)
 
         run_async(self.backend.browsers, _done, name="browsers")

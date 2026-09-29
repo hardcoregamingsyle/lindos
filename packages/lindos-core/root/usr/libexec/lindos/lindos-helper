@@ -11,6 +11,10 @@ Usage:  lindos-helper <action> [<json-payload> | -]      ('-' reads the payload 
         lindos-helper --list | --version
 Exit codes: 0 ok · 1 error (an action step failed / not root) · 2 usage or invalid payload.
 
+``run-batch`` runs a validated list of the other actions, in order, in this one root process (one
+pkexec = one password prompt).  A failed step does not stop the rest; a flushed
+``@@lindos-batch {...}`` line is printed when each step starts and finishes.
+
 ``LINDOS_HELPER_DRYRUN=1`` runs without root and prints what *would* be executed (tests).
 """
 
@@ -26,6 +30,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -85,6 +90,8 @@ class Ctx:
         self.env.setdefault("LC_ALL", "C.UTF-8")
         self.env["LINDOS_HELPER"] = "1"
         self._online: Optional[bool] = None
+        self.apt_updated = False           # one 'apt-get update' per helper process is enough
+        self._captured: Optional[List[str]] = None
 
     # -- output --------------------------------------------------------------------------
     def say(self, message: str) -> None:
@@ -99,6 +106,16 @@ class Ctx:
     def error(self, message: str) -> None:
         print(f"error: {message}", file=sys.stderr, flush=True)
         log.error(message)
+        if self._captured is not None:
+            self._captured.append(message)
+
+    def begin_capture(self) -> None:
+        """Start remembering :meth:`error` messages (``run-batch`` reports the last one per step)."""
+        self._captured = []
+
+    def end_capture(self) -> List[str]:
+        captured, self._captured = self._captured or [], None
+        return captured
 
     # -- tools ---------------------------------------------------------------------------
     def which(self, name: str) -> Optional[str]:
@@ -265,9 +282,11 @@ def apt_install(ctx: Ctx, packages: List[str], *, offline: bool = False) -> bool
         ctx.error("apt-get not found")
         return False
     ctx.say(f"installing packages: {' '.join(missing)}")
-    ok_update, _ = ctx.run(["apt-get", "update", "-qq"], timeout=900)
-    if not ok_update:
-        ctx.warn("apt-get update failed; trying to install with the current lists")
+    if not ctx.apt_updated:
+        ok_update, _ = ctx.run(["apt-get", "update", "-qq"], timeout=900)
+        ctx.apt_updated = ok_update
+        if not ok_update:
+            ctx.warn("apt-get update failed; trying to install with the current lists")
     # "--" ends option parsing: defense in depth so a caller-controlled "package" name can never
     # be parsed as an apt-get option even if the client-side PACKAGE_RE whitelist were bypassed.
     ok, tail = ctx.run(["apt-get", "install", "-y", "-q",
@@ -943,6 +962,81 @@ def act_install_local_debs(ctx: Ctx, p: Dict[str, Any]) -> int:
     return EXIT_OK if (ok and ok2) else EXIT_ERROR
 
 
+# --- run-batch: one root process, one password prompt, many whitelisted actions ----------------
+def _batch_event(**fields: Any) -> None:
+    """One machine-readable progress line (column 0, flushed) for ``lindos.helper.run_privileged_batch``."""
+    print(lhelper.BATCH_MARKER + json.dumps(fields, sort_keys=True, separators=(",", ":")), flush=True)
+
+
+def _run_batch_step(ctx: Ctx, step: Dict[str, Any]) -> Tuple[int, str]:
+    """Run one batch step through the *same* handler and validator a single call uses; never raises
+    (except ``KeyboardInterrupt``).  Returns ``(exit_code, failure_message)``."""
+    action = step.get("action")
+    if not isinstance(action, str) or action in lhelper.BATCH_FORBIDDEN_ACTIONS or action not in HANDLERS:
+        message = f"action {action!r} is not allowed inside run-batch"
+        ctx.error(message)
+        return EXIT_USAGE, message
+    try:
+        payload = validate_payload(action, step.get("payload") or {})
+    except PayloadError as exc:
+        message = f"invalid payload for {action}: {exc}"
+        log.error("rejected batch payload for %s: %s", action, exc)
+        ctx.error(message)
+        return EXIT_USAGE, message
+    ctx.begin_capture()
+    try:
+        code = HANDLERS[action](ctx, payload)
+    except KeyboardInterrupt:
+        ctx.end_capture()
+        raise
+    except Exception as exc:  # isolate: one crashing step must not take the others down
+        log.exception("unhandled error in batch step %s", action)
+        ctx.error(f"{action}: {exc}")
+        code = EXIT_ERROR
+    errors = ctx.end_capture()
+    if code == EXIT_OK:
+        return EXIT_OK, ""
+    return code, (errors[-1] if errors else f"exit code {code}")
+
+
+def act_run_batch(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """Run ``p["steps"]`` in order; a failed step is recorded and the batch carries on.  Exit 0 only
+    when every step succeeded, else 1."""
+    steps = p["steps"]
+    total = len(steps)
+    failed: List[str] = []
+    ctx.say(f"run-batch: {total} step(s)")
+    interrupted = False
+    for index, step in enumerate(steps, 1):
+        step_id = str(step.get("id") or step.get("action"))
+        action = str(step.get("action"))
+        if interrupted:
+            _batch_event(event="result", id=step_id, action=action, ok=False, code=EXIT_ERROR, seconds=0,
+                         message="not run: interrupted")
+            failed.append(step_id)
+            continue
+        _batch_event(event="start", id=step_id, action=action, index=index, total=total)
+        ctx.say(f"[batch {index}/{total}] {step_id}: {action}")
+        started = time.monotonic()
+        try:
+            code, message = _run_batch_step(ctx, step)
+        except KeyboardInterrupt:
+            interrupted = True
+            code, message = EXIT_ERROR, "interrupted"
+            ctx.error("interrupted")
+        ok = code == EXIT_OK
+        if not ok:
+            failed.append(step_id)
+        _batch_event(event="result", id=step_id, action=action, ok=ok, code=code, message=message,
+                     seconds=round(time.monotonic() - started, 2))
+        ctx.say(f"[batch {index}/{total}] {step_id}: " + ("done" if ok else f"FAILED ({message})"))
+    if failed:
+        ctx.error(f"run-batch finished with failed steps: {', '.join(failed)}")
+        return EXIT_ERROR
+    ctx.say("run-batch: all steps done")
+    return EXIT_OK
+
+
 HANDLERS = {
     "apply-mode": act_apply_mode,
     "install-browser": act_install_browser,
@@ -968,6 +1062,7 @@ HANDLERS = {
     "system-upgrade": act_system_upgrade,
     "cleanup-old-packages": act_cleanup_old_packages,
     "install-local-debs": act_install_local_debs,
+    "run-batch": act_run_batch,
 }
 assert set(HANDLERS) == set(ACTIONS), "helper actions out of sync with lindos.helper.ACTIONS"
 
@@ -986,11 +1081,17 @@ def _redact_for_log(action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # --- entry point --------------------------------------------------------------------------------
+#: a payload read from stdin may not exceed this (a run-batch of BATCH_MAX_STEPS steps fits easily).
+MAX_STDIN_BYTES = 1024 * 1024
+
+
 def _read_payload(text: Optional[str]) -> Any:
     if text is None or text == "":
         return {}
     if text == "-":
-        text = sys.stdin.read()
+        text = sys.stdin.read(MAX_STDIN_BYTES + 1)
+        if len(text) > MAX_STDIN_BYTES:
+            raise ValueError(f"payload on stdin is larger than {MAX_STDIN_BYTES} bytes")
     return json.loads(text)
 
 

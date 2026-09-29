@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lindos icon (c) Lindos Team, GPL-3.0-or-later. Original artwork: two circling arrows. Not derived from any Microsoft or Linux Mint artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3A3A3A"/><stop offset="1" stop-color="#202020"/></linearGradient>
+    <linearGradient id="ac" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#60CDFF"/><stop offset="1" stop-color="#0067C0"/></linearGradient>
+  </defs>
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="url(#bg)"/>
+  <path d="M34 24A10 10 0 0 1 19 32.66" fill="none" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
+  <polygon points="15.5,30.66 20.7,29.7 17.3,35.6" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M14 24A10 10 0 0 1 29 15.34" fill="none" stroke="url(#ac)" stroke-width="3.2" stroke-linecap="round"/>
+  <polygon points="32.46,17.34 27.3,18.28 30.7,12.4" fill="#60CDFF" stroke="#60CDFF" stroke-width="1" stroke-linejoin="round"/>
+</svg>

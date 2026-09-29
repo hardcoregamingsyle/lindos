@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "description": "Rules for /usr/libexec/lindos/rebrand-base.py: which parts of the base system are hidden or renamed on a Lindos system. Docs: docs/BUILDING.md (section on the sweep).",
+  "applications": {
+    "dirs": ["/usr/share/applications"],
+    "hide": ["mintwelcome.desktop", "mintinstall.desktop"],
+    "hide_if_exec_matches": ["linuxmint\\.com"],
+    "set": {
+      "mintupdate.desktop": {"Icon": "lindos-update"},
+      "mintdrivers.desktop": {"Icon": "lindos-drivers"}
+    },
+    "skip_prefixes": ["lindos-", "ubiquity"]
+  },
+  "autostart": {
+    "dirs": ["/etc/xdg/autostart"],
+    "hide": ["mintwelcome.desktop"],
+    "hide_if_exec_matches": ["mintwelcome", "linuxmint\\.com"],
+    "skip_prefixes": ["lindos-"]
+  },
+  "files": [
+    {"path": "/etc/lsb-release", "set": {"DISTRIB_DESCRIPTION": "{description}"}},
+    {"path": "/etc/linuxmint/info", "set": {"DESCRIPTION": "{description}", "GRUB_TITLE": "{title}"}},
+    {"path": "/etc/casper.conf", "set": {"FLAVOUR": "{name}", "USERNAME": "liveuser", "HOST": "lindos"}}
+  ],
+  "firefox": {
+    "dirs": ["/usr/lib/firefox", "/usr/lib/firefox-esr", "/etc/firefox"],
+    "homepage": "about:home"
+  }
+}

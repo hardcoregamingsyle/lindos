@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome Screen (off - Lindos Setup replaces it)
+Exec=true
+Hidden=true
+X-GNOME-Autostart-enabled=false

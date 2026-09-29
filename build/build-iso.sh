@@ -603,7 +603,15 @@ stage_inputs() {
         rsync -a --delete --exclude '.git' --exclude '/downloads' "${ASSETS_DIR}/" "${STAGE_HOST}/assets/"
     fi
     write_stage_config "${STAGE_HOST}/config.env"
-    log "staged: $(find "${STAGE_HOST}/debs" -name '*.deb' | wc -l) debs, $(find "${STAGE_HOST}/hooks" -name '[0-9][0-9]-*.sh' | wc -l) hooks, assets: $(du -sh "${STAGE_HOST}/assets" 2>/dev/null | cut -f1)"
+    # Installer branding inputs (slideshow, GTK skin) for build/chroot/78-installer-brand.sh.
+    if [ -d "${BUILD_DIR}/installer" ]; then
+        ensure_dir "${STAGE_HOST}/installer"
+        rsync -a --delete "${BUILD_DIR}/installer/" "${STAGE_HOST}/installer/"
+        find "${STAGE_HOST}/installer" -type f \( -name '*.html' -o -name '*.css' \) -exec sed -i 's/\r$//' {} +
+    else
+        warn "no build/installer directory: the installer keeps the base ISO's product artwork"
+    fi
+    log "staged: $(find "${STAGE_HOST}/debs" -name '*.deb' | wc -l) debs, $(find "${STAGE_HOST}/hooks" -name '[0-9][0-9]-*.sh' | wc -l) hooks, $(find "${STAGE_HOST}/installer" -type f 2>/dev/null | wc -l) installer files, assets: $(du -sh "${STAGE_HOST}/assets" 2>/dev/null | cut -f1)"
     timer_end "stage inputs"
 }
 

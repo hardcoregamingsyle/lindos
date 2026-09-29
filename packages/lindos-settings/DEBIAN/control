@@ -9,7 +9,7 @@ Recommends: pavucontrol, xfce4-power-manager, xfce4-notifyd, xfce4-session, mint
 Suggests: lindos-desktop, light-locker-settings, corectrl, openrgb, piper, goverlay, antimicrox, nvidia-settings, synaptic, gnome-disk-utility
 Homepage: https://lindos.dev
 Description: Lindos Settings - Windows-11-style settings centre
- A single settings window for Lindos (Linux Mint XFCE remaster) laid out like
+ A single settings window for Lindos laid out like
  Windows 11 Settings: Home, System, Personalization, Apps, Windows apps, Gaming,
  Hardware, Network, Accounts, Lindos Mode, Update & Recovery, About.
  .
@@ -19,7 +19,7 @@ Description: Lindos Settings - Windows-11-style settings centre
  (lindos-run, prefixes, recipes, doctor), gaming (Proton-GE, launchers,
  controllers, refresh rate, honest anti-cheat information) and hardware (CPU
  governor, GPU drivers, fans, power profile, RGB, TRIM).  The remaining pages
- delegate to the existing XFCE and Linux Mint tools to keep memory use low.
+ delegate to the existing XFCE and system tools to keep memory use low.
  .
  "lindos-settings --power-menu" shows the Win+X style power menu.
  The lindos-settings.desktop launcher is shipped by lindos-desktop.

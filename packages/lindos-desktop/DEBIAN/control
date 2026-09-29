@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
 Depends: xfce4-panel, xfce4-whiskermenu-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
-Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall
+Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall, policykit-1-gnome | mate-polkit | lxpolkit
 Suggests: lindos-settings, lindos-setup, fonts-jetbrains-mono, emote
 Homepage: https://lindos.dev
 Description: Lindos desktop look and feel (Windows-11-style XFCE)
@@ -20,7 +20,18 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  five Lindos Modes (Everyday, Gaming, Work, Creator, Lite), the
  File Explorer / Settings / Store / Terminal launcher shims, and the
  autostart entry that starts lindos-core's read-only update-notifier on
- login (lindos-update-notify.sh; SPEC-UPDATE.md §37).
+ login (lindos-update-notify.sh; SPEC-UPDATE.md §37) and one that starts a
+ graphical polkit authentication agent (polkit-agent-start.sh: whichever of
+ policykit-1-gnome, mate-polkit or lxpolkit is installed), so the
+ administrator-password prompt is a normal dialog instead of a text prompt.
+ .
+ It also keeps the base system's own branding from showing through: the
+ base's Welcome Screen and Software Manager menu entries (duplicates of
+ Lindos Setup and Lindos Store) are hidden, Update Manager and Driver
+ Manager get Lindos icons, and the display names in /etc/lsb-release,
+ /etc/linuxmint/info and the GRUB menu say Lindos - re-applied after every
+ apt run (rebrand-base.py, /etc/apt/apt.conf.d/99lindos-branding). Identity
+ fields the base's tools rely on (ID, DISTRIB_ID, codenames) are left alone.
  .
  The GTK/icon/cursor themes themselves (built from Fluent by
  build/fetch-assets.sh) and the Selawik/Inter fonts are installed by the

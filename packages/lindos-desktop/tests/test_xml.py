@@ -460,7 +460,7 @@ def test_pack_all_modes(tmp_path: Path) -> None:
 @pytest.mark.parametrize("name,exec_prefix,display_name", [
     ("lindos-files.desktop", "thunar", "File Explorer"),
     ("lindos-settings.desktop", "lindos-settings", "Settings"),
-    ("lindos-store.desktop", "mintinstall", "Store"),
+    ("lindos-store.desktop", "mintinstall", "Lindos Store"),
     ("lindos-terminal.desktop", "xfce4-terminal", "Terminal"),
 ])
 def test_desktop_shims(name: str, exec_prefix: str, display_name: str) -> None:
@@ -548,7 +548,7 @@ def test_scripts_shebangs_and_lf() -> None:
             assert "set -Eeuo pipefail" in text, s.name
         else:
             assert "set -e" in text, s.name
-    for py in ("panel-profile-pack.py", "plymouth-gen-assets.py"):
+    for py in ("panel-profile-pack.py", "plymouth-gen-assets.py", "rebrand-base.py"):
         raw = (LIBEXEC / py).read_bytes()
         assert raw.startswith(b"#!/usr/bin/env python3")
         assert b"\r\n" not in raw

@@ -14,7 +14,8 @@ case "${1:-}" in
                  /usr/libexec/lindos/build-panel-profiles.sh \
                  /usr/libexec/lindos/first-login-panel.sh \
                  /usr/libexec/lindos/panel-profile-pack.py \
-                 /usr/libexec/lindos/plymouth-gen-assets.py; do
+                 /usr/libexec/lindos/plymouth-gen-assets.py \
+                 /usr/libexec/lindos/rebrand-base.py; do
             if [ -f "$f" ] && [ ! -x "$f" ]; then
                 chmod 0755 "$f"
             fi
@@ -50,7 +51,10 @@ case "${1:-}" in
         fi
 
         # 5. branding: /etc/os-release fragment, /etc/issue, Plymouth default theme,
-        #    default-wallpaper alternative (all idempotent, all guarded)
+        #    default-wallpaper alternative and the Mint sweep (hides the Mint Welcome/Software
+        #    Manager duplicates, lsb-release/linuxmint-info display fields, Firefox start page);
+        #    all idempotent, all guarded.  /etc/apt/apt.conf.d/99lindos-branding runs the same
+        #    script (--files-only) after every later apt run.
         if [ -x /usr/libexec/lindos/apply-branding.sh ]; then
             /usr/libexec/lindos/apply-branding.sh --quiet || log "apply-branding.sh reported a problem (ignored)"
         fi

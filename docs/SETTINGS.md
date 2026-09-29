@@ -54,8 +54,11 @@ Terminal (`xfce4-terminal`) · Task Manager (`xfce4-taskmanager`). Escape or foc
 Everything that needs root goes through the polkit helper (`org.lindos.helper`,
 `auth_admin_keep`): install packages/launchers/drivers, set governor, fan profile, enable
 `fstrim.timer`, switch mode, refresh/apply Lindos package updates (`apt-get-update` /
-`system-upgrade`, SPEC-UPDATE §36.4). One password prompt covers a burst of actions. Reading
-(sensors, governor, drivers status, RAM, `lindos-update check`) never asks.
+`system-upgrade`, SPEC-UPDATE §36.4). Each helper call is its own `pkexec` and may ask for the
+password (polkit can remember a grant for a few minutes, but that is not relied on); anything that
+needs several privileged steps in a row sends them as one `run-batch` call, i.e. one prompt. The
+prompt is a normal dialog when a graphical polkit agent is running (lindos-desktop starts one).
+Reading (sensors, governor, drivers status, RAM, `lindos-update check`) never asks.
 
 ## Where the settings live
 

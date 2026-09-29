@@ -25,6 +25,7 @@ dos       DOSBox launcher and Wine WoW64-mode probe for 16-bit programs (§28.5)
 diskimage ISO/IMG read-only loop mount + autorun.inf (§28.6)
 binfmt    binfmt_misc status for ``./setup.exe`` in a terminal (§28.7)
 msix      MSIX/APPX/bundles/.appinstaller: classify, inspect, safe install (§28.4)
+handoff   installers that hand an MSIX package to Windows: Wine associations + leftover net (§28.4a)
 winget    winget index + manifests (``lindos-compat winget``, §28.10)
 cli_run   ``lindos-run`` main (dispatches every Windows file type to its handler)
 cli_compat ``lindos-compat`` main

@@ -1,20 +1,25 @@
 """Wizard pages for the Lindos OOBE (SPEC §6).
 
 Page ids, in order: ``welcome`` → ``mode`` → ``browser`` → ``personalize`` →
-``apps`` → ``privacy`` → ``summary`` → ``apply`` → ``done``.
+``apps`` → ``privacy`` → ``transfer`` → ``summary`` → ``apply`` → ``done``.
 
 Every page derives from :class:`Page`; :class:`PageContext` carries the shared
 state (selections, catalog, ...) and a reference to the window's navigation
 API (``ctx.window``: ``set_next_sensitive``, ``set_next_label``,
 ``set_back_visible``, ``go_next``, ``finish``, ``set_light``).
+
+Look (Windows 11 out-of-box style): each page is a centred column (about 760 px) with a big
+heading, one short subtitle and one focused question; ``hero`` pages (welcome, apply, done)
+centre everything and lead with a big image (logo, spinner, check mark).
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 import gi
 
@@ -22,13 +27,14 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 from . import core  # noqa: E402
-from .i18n import _  # noqa: E402
+from .i18n import N_, _  # noqa: E402
 from .plan import (  # noqa: E402
     Catalog, Plan, RunResult, Runner, Selections, Step, StepResult, build_plan, summarize,
 )
 from .widgets import (  # noqa: E402
-    AccentCss, Card, CardGroup, CheckRow, InfoBanner, Swatch, SwitchRow, WallpaperThumb,
-    add_class, hbox, icon_image, label, load_svg_thumbnail, scrolled, section_title, vbox,
+    AccentCss, Card, CardGroup, CheckRow, InfoBanner, LearnMore, Swatch, SwitchRow, WallpaperThumb,
+    add_class, column_width, hbox, icon_image, label, load_svg_thumbnail, screen_width, section_title,
+    set_a11y, taskbar_preview, theme_preview, vbox,
 )
 
 log = logging.getLogger("lindos-setup.pages")
@@ -50,6 +56,121 @@ BROWSER_BLURBS: Dict[str, str] = {
     "firefox": "Already installed on Lindos. Open source, works offline right now.",
 }
 LOW_RAM_MB = 4096
+
+# SPEC §0.1 honesty text, shown on the apps page (a short always-visible line plus a "Learn more"
+# disclosure) instead of on the welcome page.
+WINE_HONESTY = N_(
+    "Windows apps run through Wine and Proton — a translation layer with near-native speed, not a "
+    "copy of Windows. Most software and Steam games work; games with kernel anti-cheat such as "
+    "Valorant and Fortnite do not run on any Linux.")
+LEARN_MORE_TITLE = N_("Learn more about Windows apps")
+LEARN_MORE_LINES = (
+    N_("Double-click an .exe or .msi file and Lindos opens it with Wine or Proton. You can manage "
+       "installed Windows programs later in Lindos Settings › Windows apps."),
+    N_("Steam games depend on the developer enabling anti-cheat for Proton. Check protondb.com and "
+       "areweanticheatyet.com before you rely on a game."),
+    N_("Roblox runs through Sober, a community runtime for the Android client, because the Windows "
+       "client does not run on Linux. Minecraft Java runs natively."),
+    N_("Adobe: Creative Cloud 2019–2021 era Photoshop and Illustrator work through Wine recipes; "
+       "newer releases are unreliable."),
+)
+
+# "Just a moment…" rotating lines (Windows-style). Tick 0 is the greeting; afterwards the rest repeat.
+APPLY_LINES = (
+    N_("Hi"),
+    N_("We're getting things ready for you"),
+    N_("This might take a few minutes — please don't turn off your PC"),
+    N_("Downloads depend on your connection, so hang tight"),
+)
+APPLY_LINE_SECONDS = 6
+
+SHORTCUTS = (
+    ("Super", N_("Start menu")),
+    ("Super+I", N_("Settings")),
+    ("Super+E", N_("File Explorer")),
+    ("Super+X", N_("Power menu")),
+    ("Super+Shift+S", N_("Screenshot")),
+    ("Ctrl+Shift+Esc", N_("Task Manager")),
+)
+
+
+def apply_line(tick: int) -> str:
+    """The friendly line for rotation step ``tick`` (0 is the greeting, then the others cycle)."""
+    if tick <= 0:
+        return _(APPLY_LINES[0])
+    rest = APPLY_LINES[1:]
+    return _(rest[(tick - 1) % len(rest)])
+
+
+class BatchLine(NamedTuple):
+    index: int
+    total: int
+    step_id: str
+    state: str          # "start" | "done" | "failed"
+
+
+_BATCH_LINE = re.compile(r"^\[batch (\d+)/(\d+)\] (\S+): (.+)$")
+
+
+def parse_batch_line(msg: str) -> Optional[BatchLine]:
+    """Parse a helper progress line such as ``[batch 2/4] install-packages: done``."""
+    match = _BATCH_LINE.match((msg or "").strip())
+    if match is None:
+        return None
+    rest = match.group(4)
+    if rest == "done":
+        state = "done"
+    elif rest.startswith("FAILED"):
+        state = "failed"
+    else:
+        state = "start"
+    return BatchLine(int(match.group(1)), int(match.group(2)), match.group(3), state)
+
+
+class ApplyProgress:
+    """Monotonic progress estimate for the apply page.
+
+    The Runner reports one step at a time, but every privileged step is sent to the helper as ONE
+    batch that runs inside the first system step, so Runner progress alone would sit still for the
+    whole download.  Batch lines from the helper credit those steps as they finish.
+    """
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.done = 0
+        self.batch_base: Optional[int] = None
+        self.batch_done = 0
+        self.value = 0.0
+
+    def step_started(self, index: int, total: int) -> float:
+        self.total = total
+        self.done = max(self.done, index)
+        return self._update()
+
+    def step_done(self, done: int, total: int) -> float:
+        self.total = total
+        self.done = max(self.done, done)
+        return self._update()
+
+    def batch_line(self, state: str) -> float:
+        if self.batch_base is None:
+            self.batch_base = self.done
+        if state in ("done", "failed"):
+            self.batch_done += 1
+        return self._update()
+
+    def finish(self) -> float:
+        self.value = 1.0
+        return self.value
+
+    def _update(self) -> float:
+        total = max(self.total, 1)
+        estimate = self.done
+        if self.batch_base is not None:
+            estimate = max(estimate, self.batch_base + self.batch_done)
+        estimate = min(estimate, max(total - 1, self.done))   # never claim 100 % before the end
+        self.value = max(self.value, min(1.0, estimate / float(total)))
+        return self.value
 
 
 class PageContext:
@@ -140,6 +261,8 @@ class Page:
     next_label: str = "Next"
     back_visible: bool = True
     next_visible: bool = True
+    hero: bool = False           # centred layout with a big image on top (welcome, apply, done)
+    step_counted: bool = True    # counts in the slim "Step n of m" indicator
 
     def __init__(self) -> None:
         self.ctx: Optional[PageContext] = None
@@ -155,19 +278,36 @@ class Page:
         return self.root
 
     def _frame(self, content: Gtk.Widget) -> Gtk.Widget:
-        box = vbox(6)
-        add_class(box, "page", "page-" + self.id)
-        self.title_label = label(_(self.title), "oobe-title", wrap=True)
-        box.pack_start(self.title_label, False, False, 0)
-        self.subtitle_label = label(_(self.subtitle), "oobe-subtitle", wrap=True)
+        """Heading, subtitle and content in a centred column inside a vertical scroller."""
+        hero = self.hero
+        column = vbox(0)
+        column.set_size_request(column_width(screen_width()), -1)
+        column.set_halign(Gtk.Align.CENTER)
+        column.set_valign(Gtk.Align.CENTER if hero else Gtk.Align.START)
+        add_class(column, "page", "page-" + self.id)
+        if hero:
+            add_class(column, "page-hero")
+        image = self.hero_image(self.ctx) if self.ctx is not None else None
+        if image is not None:
+            image.set_halign(Gtk.Align.CENTER)
+            column.pack_start(image, False, False, 0)
+        align = 0.5 if hero else 0.0
+        justify = Gtk.Justification.CENTER if hero else Gtk.Justification.LEFT
+        self.title_label = label(_(self.title), "oobe-title", xalign=align, wrap=True, max_chars=48,
+                                 justify=justify)
+        column.pack_start(self.title_label, False, False, 0)
+        self.subtitle_label = label(_(self.subtitle), "oobe-subtitle", xalign=align, wrap=True, max_chars=80,
+                                    justify=justify)
         self.subtitle_label.set_no_show_all(not self.subtitle)
-        box.pack_start(self.subtitle_label, False, False, 0)
-        spacer = Gtk.Box()
-        spacer.set_size_request(-1, 10)
-        box.pack_start(spacer, False, False, 0)
-        content.set_vexpand(True)
-        box.pack_start(content, True, True, 0)
-        return box
+        column.pack_start(self.subtitle_label, False, False, 0)
+        content.set_vexpand(False)
+        column.pack_start(content, False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_shadow_type(Gtk.ShadowType.NONE)
+        add_class(scroller, "page-scroll")
+        scroller.add(column)
+        return scroller
 
     def set_titles(self, title: str, subtitle: str = "") -> None:
         if self.title_label is not None:
@@ -179,6 +319,10 @@ class Page:
     # -- to override ---------------------------------------------------------
     def build_content(self, ctx: PageContext) -> Gtk.Widget:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    def hero_image(self, ctx: PageContext) -> Optional[Gtk.Widget]:
+        """A big image shown above the heading (hero pages only)."""
+        return None
 
     def on_enter(self, ctx: PageContext) -> None:
         """Called every time the page becomes visible."""
@@ -199,52 +343,33 @@ class Page:
 # ---------------------------------------------------------------------------
 class WelcomePage(Page):
     id = "welcome"
-    title = "Welcome to Lindos"
-    subtitle = "Let's set up your PC in a few quick steps. Everything can be changed later in Lindos Settings."
-    next_label = "Get started"
+    title = N_("Let's get you set up")
+    subtitle = N_("This only takes a few minutes. You can change everything later in Lindos Settings.")
+    next_label = N_("Get started")
     back_visible = False
+    hero = True
+    step_counted = False
+
+    def hero_image(self, ctx: PageContext) -> Optional[Gtk.Widget]:
+        return self._logo()
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(18)
-        head = hbox(20)
-        logo = self._logo()
-        logo.set_valign(Gtk.Align.START)
-        head.pack_start(logo, False, False, 0)
-        intro = vbox(6)
-        intro.pack_start(label(_("Here is what we'll do:"), "body-strong"), False, False, 0)
-        steps = [
-            _("Pick a Mode — Everyday, Gaming, Work, Creator or Lite."),
-            _("Choose your web browser."),
-            _("Personalize the look: theme, accent colour, wallpaper, taskbar."),
-            _("Add apps such as Windows app support, Steam or Office."),
-            _("Review privacy settings (Lindos sends nothing anywhere)."),
-        ]
-        for s in steps:
-            intro.pack_start(label("•  " + s, "body", wrap=True), False, False, 0)
-        head.pack_start(intro, True, True, 0)
-        box.pack_start(head, False, False, 0)
-
+        box = vbox(10)
         pc_line = self._pc_line(ctx)
         if pc_line:
-            box.pack_start(InfoBanner(pc_line, "computer-symbolic"), False, False, 0)
-
-        honesty = InfoBanner(_(
-            "Lindos runs Windows programs through Wine and Proton — a translation layer with "
-            "near-native speed, not a copy of Windows. Most software and Steam games work; "
-            "games with kernel anti-cheat such as Valorant and Fortnite do not run on any Linux."),
-            "dialog-information-symbolic")
-        box.pack_end(honesty, False, False, 0)
+            box.pack_start(label(pc_line, "note", xalign=0.5, wrap=True, justify=Gtk.Justification.CENTER),
+                           False, False, 0)
         return box
 
     def _logo(self) -> Gtk.Widget:
         for cand in (os.path.join(os.environ.get("LINDOS_ROOT", "") or "/", "usr/share/pixmaps/lindos-logo.svg"),
                      "/usr/share/pixmaps/lindos-logo.svg"):
-            pix = load_svg_thumbnail(cand, 96, 96)
+            pix = load_svg_thumbnail(cand, 112, 112)
             if pix is not None:
                 img = Gtk.Image.new_from_pixbuf(pix)
                 add_class(img, "logo")
                 return img
-        img = icon_image("lindos-start", 96, fallback="preferences-desktop")
+        img = icon_image("lindos-start", 112, fallback="preferences-desktop")
         add_class(img, "logo")
         return img
 
@@ -265,8 +390,9 @@ class WelcomePage(Page):
 # ---------------------------------------------------------------------------
 class ModePage(Page):
     id = "mode"
-    title = "Choose your Mode"
-    subtitle = "A Mode tunes performance, the taskbar pins and suggested apps. Change it any time in Lindos Settings › Lindos Mode."
+    title = N_("How will you use this PC?")
+    subtitle = N_("Pick the closest fit. A Mode tunes performance, the taskbar pins and suggested apps — "
+                  "change it any time in Lindos Settings › Lindos Mode.")
 
     def __init__(self) -> None:
         super().__init__()
@@ -275,8 +401,7 @@ class ModePage(Page):
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
         box = vbox(14)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        row.set_homogeneous(True)
+        cards = vbox(10)
         low_ram = bool(ctx.ram_total_mb and ctx.ram_total_mb <= LOW_RAM_MB)
         for mid, mode in ctx.modes.items():
             icon = getattr(mode, "icon", "") or MODE_ICON_FALLBACK.get(mid, "preferences-desktop")
@@ -288,10 +413,10 @@ class ModePage(Page):
             card = Card(mid, getattr(mode, "name", mid.capitalize()),
                         getattr(mode, "description", "") or "",
                         icon_name=icon, hint=_(core.RAM_HINTS.get(mid, "")), badge=badge,
-                        icon_size=40, height=210)
+                        icon_size=48, horizontal=True)
             self.group.add(card)
-            row.pack_start(card, True, True, 0)
-        box.pack_start(row, False, False, 0)
+            cards.pack_start(card, False, False, 0)
+        box.pack_start(cards, False, False, 0)
         self.detail = label("", "note", wrap=True)
         box.pack_start(self.detail, False, False, 0)
         return box
@@ -333,10 +458,10 @@ class ModePage(Page):
 # ---------------------------------------------------------------------------
 class BrowserPage(Page):
     id = "browser"
-    title = "Choose a web browser"
-    subtitle = ("Firefox is on the Lindos disc. Microsoft Edge and Google Chrome are downloaded from "
-                "the vendors' official repositories during setup — their licences do not allow "
-                "shipping them on the ISO.")
+    title = N_("Choose your web browser")
+    subtitle = N_("Firefox is already on this PC. Microsoft Edge and Google Chrome are downloaded from the "
+                  "vendors' official repositories during setup — their licences do not allow shipping "
+                  "them on the ISO.")
 
     def __init__(self) -> None:
         super().__init__()
@@ -346,8 +471,8 @@ class BrowserPage(Page):
         self._checking = False
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(14)
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box = vbox(16)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         row.set_homogeneous(True)
         for bid, info in ctx.browsers.items():
             desc = _(BROWSER_BLURBS.get(bid, ""))
@@ -358,7 +483,7 @@ class BrowserPage(Page):
                 hint = _("Installed")
             card = Card(bid, str(info.get("name", bid)), desc,
                         icon_name=BROWSER_ICONS.get(bid, "web-browser"), hint=hint,
-                        icon_size=40, height=170)
+                        icon_size=48, height=200)
             self.group.add(card)
             row.pack_start(card, True, True, 0)
         box.pack_start(row, False, False, 0)
@@ -450,63 +575,52 @@ class BrowserPage(Page):
 # ---------------------------------------------------------------------------
 class PersonalizePage(Page):
     id = "personalize"
-    title = "Personalize your desktop"
-    subtitle = "Choices apply immediately so you can see them. Everything is in Lindos Settings › Personalization too."
+    title = N_("Make it yours")
+    subtitle = N_("Changes show up right away so you can see them. Everything is also in "
+                  "Lindos Settings › Personalization.")
 
     def __init__(self) -> None:
         super().__init__()
-        self.dark_row: Optional[SwitchRow] = None
+        self.theme_group = CardGroup(on_change=self._theme_changed)
         self.swatches = CardGroup(on_change=self._accent_changed)
         self.thumbs = CardGroup(on_change=self._wallpaper_changed)
+        self.align_group = CardGroup(on_change=self._align_changed)
         self.accent_label: Optional[Gtk.Label] = None
-        self.radio_center: Optional[Gtk.RadioButton] = None
-        self.radio_left: Optional[Gtk.RadioButton] = None
         self._syncing = False
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        cols = hbox(24)
+        box = vbox(12)
 
-        left = vbox(14)
-        # 826 px of card content: 372 (left) + 24 + 2 thumbnails x ~200 + spacing fits
-        left.set_size_request(372, -1)
-        self.dark_row = SwitchRow(_("Dark mode"),
-                                  _("Dark is the Lindos default. Light uses the Lindos-Light theme."),
-                                  active=ctx.selections.dark, on_toggle=self._dark_toggled,
-                                  on_label=_("Dark"), off_label=_("Light"))
-        left.pack_start(self.dark_row, False, False, 0)
+        box.pack_start(section_title(_("Theme")), False, False, 0)
+        themes = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        themes.set_homogeneous(True)
+        for key, title, desc in (
+                ("dark", _("Dark"), _("Easy on the eyes. This is the Lindos default.")),
+                ("light", _("Light"), _("Bright and clean, using the Lindos-Light theme."))):
+            card = Card(key, title, desc, preview=theme_preview(key), horizontal=True)
+            self.theme_group.add(card)
+            themes.pack_start(card, True, True, 0)
+        box.pack_start(themes, False, False, 0)
 
-        left.pack_start(section_title(_("Accent colour")), False, False, 0)
-        sw_row = hbox(8)
+        box.pack_start(section_title(_("Accent colour")), False, False, 0)
+        sw_row = hbox(12)
         for acc in ctx.accents:
-            sw = Swatch(acc["hex"].upper(), acc["hex"], acc["name"], size=30)
+            sw = Swatch(acc["hex"].upper(), acc["hex"], acc["name"], size=36)
             self.swatches.add(sw)
             sw_row.pack_start(sw, False, False, 0)
-        left.pack_start(sw_row, False, False, 0)
+        box.pack_start(sw_row, False, False, 0)
         self.accent_label = label("", "note")
-        left.pack_start(self.accent_label, False, False, 0)
+        box.pack_start(self.accent_label, False, False, 0)
 
-        left.pack_start(section_title(_("Taskbar alignment")), False, False, 0)
-        radios = hbox(18)
-        self.radio_center = Gtk.RadioButton.new_with_label(None, _("Center (Windows 11)"))
-        self.radio_left = Gtk.RadioButton.new_with_label_from_widget(self.radio_center, _("Left (classic)"))
-        add_class(self.radio_center, "radio-row")
-        add_class(self.radio_left, "radio-row")
-        self.radio_center.connect("toggled", self._align_toggled, "center")
-        self.radio_left.connect("toggled", self._align_toggled, "left")
-        radios.pack_start(self.radio_center, False, False, 0)
-        radios.pack_start(self.radio_left, False, False, 0)
-        left.pack_start(radios, False, False, 0)
-        cols.pack_start(left, False, False, 0)
-
-        right = vbox(8)
-        right.pack_start(section_title(_("Wallpaper")), False, False, 0)
+        box.pack_start(section_title(_("Wallpaper")), False, False, 0)
         flow = Gtk.FlowBox()
         flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow.set_max_children_per_line(2)
+        flow.set_max_children_per_line(3)
         flow.set_min_children_per_line(2)
-        flow.set_column_spacing(6)
-        flow.set_row_spacing(6)
+        flow.set_column_spacing(10)
+        flow.set_row_spacing(10)
         flow.set_homogeneous(True)
+        flow.set_halign(Gtk.Align.START)
         for path in ctx.wallpapers:
             thumb = WallpaperThumb(path, core.wallpaper_display_name(path))
             self.thumbs.add(thumb)
@@ -514,15 +628,24 @@ class PersonalizePage(Page):
         # keep the flowbox children from grabbing focus rings
         for child in flow.get_children():
             child.set_can_focus(False)
-        right.pack_start(scrolled(flow, height=300), True, True, 0)
-        cols.pack_start(right, True, True, 0)
-        return cols
+        box.pack_start(flow, False, False, 0)
+
+        box.pack_start(section_title(_("Taskbar")), False, False, 0)
+        bars = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        bars.set_homogeneous(True)
+        for key, title, desc in (
+                ("center", _("Center"), _("Icons in the middle, like Windows 11.")),
+                ("left", _("Left"), _("Icons on the left, the classic layout."))):
+            card = Card(key, title, desc, preview=taskbar_preview(key), horizontal=True)
+            self.align_group.add(card)
+            bars.pack_start(card, True, True, 0)
+        box.pack_start(bars, False, False, 0)
+        return box
 
     def on_enter(self, ctx: PageContext) -> None:
         self._syncing = True
         try:
-            if self.dark_row is not None:
-                self.dark_row.set_active(ctx.selections.dark)
+            self.theme_group.select("dark" if ctx.selections.dark else "light")
             self.swatches.select(ctx.selections.accent.upper())
             if self.accent_label is not None:
                 self.accent_label.set_text(ctx.accent_name(ctx.selections.accent))
@@ -531,23 +654,20 @@ class PersonalizePage(Page):
                 self.thumbs.select(ctx.selections.wallpaper)
             else:
                 self.thumbs.select(None)
-            if self.radio_center is not None and self.radio_left is not None:
-                if ctx.selections.taskbar_alignment == "left":
-                    self.radio_left.set_active(True)
-                else:
-                    self.radio_center.set_active(True)
+            self.align_group.select("left" if ctx.selections.taskbar_alignment == "left" else "center")
         finally:
             self._syncing = False
 
     # -- handlers -------------------------------------------------------------
-    def _dark_toggled(self, active: bool) -> None:
+    def _theme_changed(self, key: str) -> None:
         if self._syncing or self.ctx is None:
             return
         ctx = self.ctx
-        ctx.selections.set_theme("dark" if active else "light")
-        ctx.live.set_dark(active)
+        dark = key != "light"
+        ctx.selections.set_theme("dark" if dark else "light")
+        ctx.live.set_dark(dark)
         if ctx.window is not None:
-            ctx.window.set_light(not active)
+            ctx.window.set_light(not dark)
         # follow the aurora wallpaper variant if it exists in the thumbnails
         if ctx.selections.wallpaper in self.thumbs.cards:
             self.thumbs.select(ctx.selections.wallpaper)
@@ -570,12 +690,12 @@ class PersonalizePage(Page):
         if not self._syncing:
             self.ctx.live.set_wallpaper(key)
 
-    def _align_toggled(self, radio: Gtk.RadioButton, alignment: str) -> None:
-        if not radio.get_active() or self.ctx is None:
+    def _align_changed(self, key: str) -> None:
+        if self.ctx is None:
             return
-        self.ctx.selections.taskbar_alignment = alignment
+        self.ctx.selections.taskbar_alignment = key
         if not self._syncing:
-            self.ctx.live.set_taskbar_alignment(alignment)
+            self.ctx.live.set_taskbar_alignment(key)
 
 
 # ---------------------------------------------------------------------------
@@ -583,8 +703,9 @@ class PersonalizePage(Page):
 # ---------------------------------------------------------------------------
 class AppsPage(Page):
     id = "apps"
-    title = "Add apps"
-    subtitle = "Pick what to install now. Anything you skip can be added later from Lindos Settings › Apps."
+    title = N_("Get the apps you need")
+    subtitle = N_("Pick what to install now. Anything you skip can be added later from "
+                  "Lindos Settings › Apps.")
 
     def __init__(self) -> None:
         super().__init__()
@@ -594,29 +715,32 @@ class AppsPage(Page):
         self._syncing = False
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(10)
+        box = vbox(14)
         if len(ctx.catalog) == 0:
             box.pack_start(InfoBanner(_(
                 "No optional apps catalog was found (apps.json). Nothing extra will be installed; "
                 "use Lindos Settings › Apps later."), warn=True), False, False, 0)
-            return box
-        flow = Gtk.FlowBox()
-        flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        flow.set_min_children_per_line(2)
-        flow.set_max_children_per_line(2)
-        flow.set_column_spacing(16)
-        flow.set_row_spacing(4)
-        flow.set_homogeneous(True)
-        for entry in ctx.catalog:
-            row = CheckRow(entry.id, entry.name, entry.description)
-            row.connect("toggled", self._toggled, entry.id)
-            self.rows[entry.id] = row
-            flow.add(row)
-        for child in flow.get_children():
-            child.set_can_focus(False)
-        box.pack_start(scrolled(flow, height=330), True, True, 0)
-        self.banner = InfoBanner("", "network-wireless-symbolic")
-        box.pack_end(self.banner, False, False, 0)
+        else:
+            flow = Gtk.FlowBox()
+            flow.set_selection_mode(Gtk.SelectionMode.NONE)
+            flow.set_min_children_per_line(2)
+            flow.set_max_children_per_line(2)
+            flow.set_column_spacing(12)
+            flow.set_row_spacing(10)
+            flow.set_homogeneous(True)
+            for entry in ctx.catalog:
+                row = CheckRow(entry.id, entry.name, entry.description)
+                row.connect("toggled", self._toggled, entry.id)
+                self.rows[entry.id] = row
+                flow.add(row)
+            for child in flow.get_children():
+                child.set_can_focus(False)
+            box.pack_start(flow, False, False, 0)
+            self.banner = InfoBanner("", "network-wireless-symbolic")
+            box.pack_start(self.banner, False, False, 0)
+        # SPEC §0.1: the Wine / anti-cheat reality check stays on this page, plainly
+        box.pack_start(InfoBanner(_(WINE_HONESTY), "dialog-information-symbolic"), False, False, 0)
+        box.pack_start(LearnMore(_(LEARN_MORE_TITLE), [_(t) for t in LEARN_MORE_LINES]), False, False, 0)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
@@ -635,9 +759,8 @@ class AppsPage(Page):
             if ctx.online or not ctx.online_known:
                 self.banner.get_style_context().remove_class("warn")
                 self.banner.set_text(_(
-                    "Downloads run during the Apply step. Windows app support means Wine + Proton "
-                    "(a translation layer). Anti-cheat games such as Valorant or Fortnite do not "
-                    "run on any Linux — check protondb.com and areweanticheatyet.com."))
+                    "Downloads run during the Apply step and can take a few minutes, depending on "
+                    "your connection."))
             else:
                 self.banner.get_style_context().add_class("warn")
                 self.banner.set_text(_(
@@ -664,8 +787,9 @@ class AppsPage(Page):
 # ---------------------------------------------------------------------------
 class PrivacyPage(Page):
     id = "privacy"
-    title = "Privacy"
-    subtitle = "Lindos collects nothing. No telemetry, no ads, no account needed."
+    title = N_("Choose your privacy settings")
+    subtitle = N_("Lindos collects nothing. No telemetry, no ads, no account needed.")
+    next_label = N_("Accept")
 
     def __init__(self) -> None:
         super().__init__()
@@ -673,10 +797,10 @@ class PrivacyPage(Page):
         self.crash_row: Optional[SwitchRow] = None
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(14)
+        box = vbox(12)
         box.pack_start(InfoBanner(_(
             "Lindos never sends usage data anywhere and shows no advertising. Updates come from "
-            "the Linux Mint / Ubuntu repositories; Edge and Chrome (if chosen) come from Microsoft "
+            "the Ubuntu / system repositories; Edge and Chrome (if chosen) come from Microsoft "
             "and Google, whose own privacy policies apply inside those browsers."),
             "security-high-symbolic"), False, False, 0)
         self.location_row = SwitchRow(
@@ -715,10 +839,10 @@ class PrivacyPage(Page):
 # ---------------------------------------------------------------------------
 class TransferPage(Page):
     id = "transfer"
-    title = "Bring your stuff from Windows"
-    subtitle = ("Optional. Copy documents, browser bookmarks, wallpaper and more from a Windows "
-                "drive or a transfer folder made with the Windows kit. Nothing is copied now -- "
-                "the Transfer tool opens after setup finishes.")
+    title = N_("Bring your stuff from Windows")
+    subtitle = N_("Optional. Copy documents, browser bookmarks, wallpaper and more from a Windows "
+                  "drive or a transfer folder made with the Windows kit. Nothing is copied now — "
+                  "the Transfer tool opens after setup finishes.")
 
     SKIP_KEY = "skip"
 
@@ -733,12 +857,12 @@ class TransferPage(Page):
         self._loaded = False
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(10)
+        box = vbox(12)
         self.banner = InfoBanner(_("Looking for a Windows drive or a transfer folder…"),
                                  "drive-harddisk-symbolic")
         box.pack_start(self.banner, False, False, 0)
-        self.list_box = vbox(8)
-        box.pack_start(scrolled(self.list_box, height=300), True, True, 0)
+        self.list_box = vbox(10)
+        box.pack_start(self.list_box, False, False, 0)
         self.recheck = Gtk.Button(label=_("Check again"))
         add_class(self.recheck, "btn-link")
         self.recheck.set_halign(Gtk.Align.START)
@@ -775,9 +899,9 @@ class TransferPage(Page):
         self.group = CardGroup(on_change=self._changed)
         self._sources = {self.SKIP_KEY: {"type": "", "source": ""}}
         skip = Card(self.SKIP_KEY, _("Skip for now"),
-                   _("Bring your stuff later from Lindos Settings › Windows apps › "
-                     "Transfer from Windows…"),
-                   icon_name="edit-clear-all-symbolic", icon_size=32, height=88)
+                    _("Bring your stuff later from Lindos Settings › Windows apps › "
+                      "Transfer from Windows…"),
+                    icon_name="edit-clear-all-symbolic", icon_size=40, horizontal=True)
         self.group.add(skip)
         self.list_box.pack_start(skip, False, False, 0)
 
@@ -790,7 +914,7 @@ class TransferPage(Page):
             found = self._add_cards(data)
             if found:
                 self.banner.get_style_context().remove_class("warn")
-                self.banner.set_text(_("Choose what to bring in, or skip and do it later -- "
+                self.banner.set_text(_("Choose what to bring in, or skip and do it later — "
                                        "everything can be picked again in the Transfer tool."))
                 self.recheck.hide()
             else:
@@ -817,7 +941,7 @@ class TransferPage(Page):
                                     ("hibernated", part.get("hibernated"))) if ok]
             title = str(part.get("label") or device or _("Windows drive"))
             card = Card(key, title, str(part.get("note") or ""), icon_name="drive-harddisk",
-                       hint=", ".join(tags), icon_size=32, height=104)
+                        hint=", ".join(tags), icon_size=40, horizontal=True)
             if not part.get("mountpoint"):
                 card.set_disabled(True, _("Not opened yet -- open it once in File Explorer, "
                                           "then press Check again"))
@@ -832,7 +956,7 @@ class TransferPage(Page):
             key = "bundle:%s" % path
             title = _("Transfer folder from %s") % (bundle.get("computer") or "?")
             desc = _("User %s · made %s") % (bundle.get("user") or "?", bundle.get("created") or "?")
-            card = Card(key, title, desc, icon_name="folder-download", icon_size=32, height=104)
+            card = Card(key, title, desc, icon_name="folder-download", icon_size=40, horizontal=True)
             self.group.add(card)
             self.list_box.pack_start(card, False, False, 0)
             self._sources[key] = {"type": "bundle", "source": path}
@@ -873,9 +997,10 @@ class TransferPage(Page):
 # ---------------------------------------------------------------------------
 class SummaryPage(Page):
     id = "summary"
-    title = "Review your choices"
-    subtitle = "Go Back to change anything. Apply starts the setup — you may be asked for your password once."
-    next_label = "Apply"
+    title = N_("Ready to set up your PC?")
+    subtitle = N_("Take a last look. Go Back to change anything — Apply starts the setup, and you may "
+                  "be asked for your password once.")
+    next_label = N_("Apply")
 
     def __init__(self) -> None:
         super().__init__()
@@ -884,16 +1009,19 @@ class SummaryPage(Page):
         self.steps_label: Optional[Gtk.Label] = None
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(12)
+        box = vbox(14)
         self.grid = Gtk.Grid()
-        self.grid.set_column_spacing(24)
-        self.grid.set_row_spacing(8)
+        self.grid.set_column_spacing(28)
+        self.grid.set_row_spacing(10)
         add_class(self.grid, "summary-grid")
-        box.pack_start(self.grid, False, False, 0)
-        self.notes = vbox(6)
+        card = vbox(0)
+        add_class(card, "summary-card")
+        card.pack_start(self.grid, False, False, 0)
+        box.pack_start(card, False, False, 0)
+        self.notes = vbox(8)
         box.pack_start(self.notes, False, False, 0)
         self.steps_label = label("", "note", wrap=True)
-        box.pack_end(self.steps_label, False, False, 0)
+        box.pack_start(self.steps_label, False, False, 0)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
@@ -932,44 +1060,81 @@ class SummaryPage(Page):
 # ---------------------------------------------------------------------------
 class ApplyPage(Page):
     id = "apply"
-    title = "Setting up Lindos"
-    subtitle = "This can take a few minutes; downloads depend on your connection. Please keep the PC on."
+    title = N_("Just a moment…")
+    subtitle = APPLY_LINES[0]           # rotates through APPLY_LINES while the plan runs
     back_visible = False
+    hero = True
+    step_counted = False
 
     def __init__(self) -> None:
         super().__init__()
+        self.spinner: Optional[Gtk.Spinner] = None
         self.progress: Optional[Gtk.ProgressBar] = None
+        self.percent_label: Optional[Gtk.Label] = None
         self.step_label: Optional[Gtk.Label] = None
         self.textview: Optional[Gtk.TextView] = None
         self.buffer: Optional[Gtk.TextBuffer] = None
+        self.details_btn: Optional[Gtk.Button] = None
+        self.details: Optional[Gtk.Revealer] = None
         self.banner: Optional[InfoBanner] = None
+        self.progress_model = ApplyProgress()
         self._started = False
+        self._details_shown = False
+        self._tick = 0
+        self._timer_id = 0
         self._runner: Optional[Runner] = None
 
+    def hero_image(self, ctx: PageContext) -> Optional[Gtk.Widget]:
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(72, 72)
+        add_class(self.spinner, "apply-spinner")
+        set_a11y(self.spinner, _("Setting up your PC"))
+        return self.spinner
+
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(10)
-        self.step_label = label(_("Preparing…"), "body-strong")
+        box = vbox(12)
+        self.step_label = label(_("Preparing…"), "apply-step", xalign=0.5, wrap=True,
+                                justify=Gtk.Justification.CENTER)
         box.pack_start(self.step_label, False, False, 0)
         self.progress = Gtk.ProgressBar()
-        self.progress.set_show_text(True)
         self.progress.set_fraction(0.0)
-        self.progress.set_text("0 %")
-        add_class(self.progress, "oobe-progress")
+        self.progress.set_size_request(400, -1)
+        self.progress.set_halign(Gtk.Align.CENTER)
+        add_class(self.progress, "apply-bar")
         box.pack_start(self.progress, False, False, 0)
+        self.percent_label = label("0 %", "note", xalign=0.5)
+        box.pack_start(self.percent_label, False, False, 0)
+
+        # the log stays out of sight (it used to make this page look like a terminal)
+        self.details_btn = Gtk.Button(label=_("Show details"))
+        add_class(self.details_btn, "btn-link")
+        self.details_btn.set_halign(Gtk.Align.CENTER)
+        self.details_btn.connect("clicked", self._toggle_details)
+        box.pack_start(self.details_btn, False, False, 0)
         self.textview = Gtk.TextView()
         self.textview.set_editable(False)
         self.textview.set_cursor_visible(False)
         self.textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.textview.set_left_margin(8)
-        self.textview.set_right_margin(8)
-        self.textview.set_top_margin(6)
-        self.textview.set_bottom_margin(6)
+        self.textview.set_left_margin(10)
+        self.textview.set_right_margin(10)
+        self.textview.set_top_margin(8)
+        self.textview.set_bottom_margin(8)
         add_class(self.textview, "log-view")
         self.buffer = self.textview.get_buffer()
-        box.pack_start(scrolled(self.textview, height=280), True, True, 0)
+        self.details = Gtk.Revealer()
+        self.details.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_shadow_type(Gtk.ShadowType.NONE)
+        scroller.set_min_content_height(220)
+        scroller.add(self.textview)
+        self.details.add(scroller)
+        self.details.set_reveal_child(False)
+        box.pack_start(self.details, False, False, 0)
+
         self.banner = InfoBanner("", "emblem-ok-symbolic")
         self.banner.set_no_show_all(True)
-        box.pack_end(self.banner, False, False, 0)
+        box.pack_start(self.banner, False, False, 0)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
@@ -979,7 +1144,36 @@ class ApplyPage(Page):
         if self._started:
             return
         self._started = True
+        if self.spinner is not None:
+            self.spinner.start()
+        self._timer_id = GLib.timeout_add_seconds(APPLY_LINE_SECONDS, self._rotate)
         GLib.idle_add(self._start)
+
+    # -- friendly rotating lines / details -------------------------------------
+    def _rotate(self) -> bool:
+        """GLib timer: swap in the next friendly line; stops once the run has finished."""
+        if self.ctx is not None and self.ctx.applied:
+            self._timer_id = 0
+            return False
+        self._tick += 1
+        if self.subtitle_label is not None:
+            self.subtitle_label.set_text(apply_line(self._tick))
+        return True
+
+    def _stop_rotation(self) -> None:
+        if self._timer_id:
+            try:
+                GLib.source_remove(self._timer_id)
+            except Exception:  # noqa: BLE001 - the timer may already be gone
+                pass
+            self._timer_id = 0
+
+    def _toggle_details(self, _btn: Gtk.Button) -> None:
+        self._details_shown = not self._details_shown
+        if self.details is not None:
+            self.details.set_reveal_child(self._details_shown)
+        if self.details_btn is not None:
+            self.details_btn.set_label(_("Hide details") if self._details_shown else _("Show details"))
 
     # -- run ------------------------------------------------------------------
     def _start(self) -> bool:
@@ -1033,6 +1227,9 @@ class ApplyPage(Page):
             except (OSError, ValueError):
                 pass
         GLib.idle_add(self._append, msg)
+        line = parse_batch_line(msg)
+        if line is not None:
+            GLib.idle_add(self._on_batch_line, line)
 
     def _on_step_start(self, index: int, total: int, step: Step) -> None:
         GLib.idle_add(self._show_step, index, total, step.title)
@@ -1040,18 +1237,31 @@ class ApplyPage(Page):
     def _on_step_done(self, index: int, total: int, step: Step, res: StepResult) -> None:
         GLib.idle_add(self._show_progress, index + 1, total)
 
+    def _on_batch_line(self, line: BatchLine) -> bool:
+        """A privileged step started/finished inside the helper batch (UI thread)."""
+        if line.state == "start" and self.ctx is not None and self.ctx.plan is not None:
+            step = self.ctx.plan.get(line.step_id)
+            if step is not None and self.step_label is not None:
+                self.step_label.set_text(step.title)
+        self._set_fraction(self.progress_model.batch_line(line.state))
+        return False
+
     def _show_step(self, index: int, total: int, title: str) -> bool:
         if self.step_label is not None:
-            self.step_label.set_text(_("Step %d of %d — %s") % (index + 1, total, title))
-        self._show_progress(index, total)
+            self.step_label.set_text(title)
+        self._set_fraction(self.progress_model.step_started(index, total))
         return False
 
     def _show_progress(self, done: int, total: int) -> bool:
-        if self.progress is not None and total > 0:
-            frac = min(1.0, max(0.0, done / float(total)))
-            self.progress.set_fraction(frac)
-            self.progress.set_text("%d %%" % int(frac * 100))
+        self._set_fraction(self.progress_model.step_done(done, total))
         return False
+
+    def _set_fraction(self, frac: float) -> None:
+        frac = min(1.0, max(0.0, frac))
+        if self.progress is not None:
+            self.progress.set_fraction(frac)
+        if self.percent_label is not None:
+            self.percent_label.set_text("%d %%" % int(frac * 100))
 
     def _append(self, msg: str) -> bool:
         if self.buffer is None or self.textview is None:
@@ -1068,17 +1278,23 @@ class ApplyPage(Page):
         assert ctx is not None and self.banner is not None
         ctx.run_result = result
         ctx.applied = True
-        self._show_progress(1, 1)
+        self._stop_rotation()
+        if self.spinner is not None:
+            self.spinner.stop()
+            self.spinner.hide()
+        self._set_fraction(self.progress_model.finish())
+        problems = result.failed_ids + result.skipped_ids
         if self.step_label is not None:
             self.step_label.set_text(_("Finished — %s") % result.summary())
-        problems = result.failed_ids + result.skipped_ids
         if problems:
+            self.set_titles(_("Setup finished, with a few things left to do"), "")
             self.banner.get_style_context().add_class("warn")
             self.banner.set_text(_(
                 "Some steps were skipped or failed: %s. Your desktop is usable; finish the rest "
                 "later from Lindos Settings › Apps (lindos-settings apps). Log: %s")
                 % (", ".join(problems), core.log_file()))
         else:
+            self.set_titles(_("Everything is in place"), _("Select Next to finish."))
             self.banner.get_style_context().remove_class("warn")
             self.banner.set_text(_("All done. Press Next to finish."))
         self.banner.set_no_show_all(False)
@@ -1093,28 +1309,44 @@ class ApplyPage(Page):
 # ---------------------------------------------------------------------------
 class DonePage(Page):
     id = "done"
-    title = "Welcome to Lindos"
-    subtitle = "Your PC is ready."
-    next_label = "Finish"
+    title = N_("All set")
+    subtitle = N_("Welcome to Lindos — your PC is ready.")
+    next_label = N_("Start using Lindos")
     back_visible = False
+    hero = True
+    step_counted = False
 
     def __init__(self) -> None:
         super().__init__()
         self.recap: Optional[Gtk.Label] = None
         self.settings_btn: Optional[Gtk.Button] = None
 
+    def hero_image(self, ctx: PageContext) -> Optional[Gtk.Widget]:
+        badge = Gtk.Label(label="✓")
+        add_class(badge, "done-check")
+        badge.set_size_request(88, 88)
+        set_a11y(badge, _("Setup complete"))
+        return badge
+
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(16)
-        self.recap = label("", "body", wrap=True)
+        box = vbox(18)
+        self.recap = label("", "body", xalign=0.5, wrap=True, justify=Gtk.Justification.CENTER)
         box.pack_start(self.recap, False, False, 0)
-        tips = vbox(6)
-        tips.pack_start(label(_("A few Windows-style shortcuts:"), "body-strong"), False, False, 0)
-        for t in (
-            _("Super — Start menu      ·   Super+I — Settings      ·   Super+E — File Explorer"),
-            _("Super+X — power menu   ·   Super+Shift+S — screenshot   ·   Ctrl+Shift+Esc — Task Manager"),
-        ):
-            tips.pack_start(label(t, "body"), False, False, 0)
-        box.pack_start(tips, False, False, 0)
+
+        box.pack_start(section_title(_("A few Windows-style shortcuts")), False, False, 0)
+        grid = Gtk.Grid()
+        grid.set_column_spacing(12)
+        grid.set_row_spacing(10)
+        grid.set_halign(Gtk.Align.CENTER)
+        per_column = (len(SHORTCUTS) + 1) // 2
+        for i, (keys, meaning) in enumerate(SHORTCUTS):
+            col, row = divmod(i, per_column)
+            chip = label(keys, "kbd", xalign=0.5)
+            chip.set_halign(Gtk.Align.START)
+            grid.attach(chip, col * 2, row, 1, 1)
+            grid.attach(label(_(meaning), "body"), col * 2 + 1, row, 1, 1)
+        box.pack_start(grid, False, False, 0)
+
         box.pack_start(InfoBanner(_(
             "Double-click an .exe or .msi to run it through Wine/Proton. Games with anti-cheat "
             "that block Linux (Valorant, Fortnite, League of Legends) will not work — Roblox runs "
@@ -1122,9 +1354,9 @@ class DonePage(Page):
             "dialog-information-symbolic"), False, False, 0)
         self.settings_btn = Gtk.Button(label=_("Open Lindos Settings"))
         add_class(self.settings_btn, "btn-secondary")
-        self.settings_btn.set_halign(Gtk.Align.START)
+        self.settings_btn.set_halign(Gtk.Align.CENTER)
         self.settings_btn.connect("clicked", self._open_settings)
-        box.pack_end(self.settings_btn, False, False, 0)
+        box.pack_start(self.settings_btn, False, False, 0)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
@@ -1177,4 +1409,5 @@ def make_pages() -> List[Page]:
 
 __all__ = ["PAGE_ORDER", "PageContext", "Page", "make_pages", "WelcomePage", "ModePage",
            "BrowserPage", "PersonalizePage", "AppsPage", "PrivacyPage", "TransferPage",
-           "SummaryPage", "ApplyPage", "DonePage"]
+           "SummaryPage", "ApplyPage", "DonePage", "ApplyProgress", "BatchLine", "parse_batch_line",
+           "apply_line", "APPLY_LINES", "WINE_HONESTY", "LEARN_MORE_TITLE", "LEARN_MORE_LINES"]

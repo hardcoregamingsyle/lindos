@@ -314,7 +314,7 @@ BUILTIN_PAGES: dict[str, Any] = {
                 {
                     "id": "store",
                     "label": "Store",
-                    "description": "Browse and install applications (Software Manager)",
+                    "description": "Browse and install apps (system packages and Flatpak)",
                     "icon": ["system-software-install"],
                     "exec": ["mintinstall"],
                     "package": "mintinstall",
@@ -895,6 +895,26 @@ def mode_display_name(mode_id: Optional[str], modes: Optional[dict[str, Any]] = 
         if name:
             return str(name)
     return MODE_NAMES.get(mode_id, mode_id.replace("-", " ").title())
+
+
+#: Ubuntu codename -> release the About page shows (a base-system fact, not branding)
+UBUNTU_RELEASES = {"noble": "24.04 LTS", "jammy": "22.04 LTS", "focal": "20.04 LTS"}
+
+
+def base_description(osr: dict[str, str]) -> str:
+    """What the system is built on, for About's "Based on" row: ``Ubuntu 24.04 LTS (noble) · Linux Mint 22.2``.
+
+    Built from the identity fields Lindos keeps on purpose (ID, VERSION_ID, UBUNTU_CODENAME) — never from
+    PRETTY_NAME, which says Lindos on a Lindos system.  This row is provenance (like a licence notice),
+    not branding."""
+    parts: list[str] = []
+    ubuntu = str(osr.get("UBUNTU_CODENAME") or "").strip()
+    if ubuntu:
+        release = UBUNTU_RELEASES.get(ubuntu)
+        parts.append("Ubuntu " + (f"{release} ({ubuntu})" if release else ubuntu))
+    if str(osr.get("ID") or "") == "linuxmint" and osr.get("VERSION_ID"):
+        parts.append("Linux Mint " + str(osr["VERSION_ID"]))
+    return " · ".join(parts) or "Ubuntu / Debian packages"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2070,6 +2090,7 @@ __all__ = [
     "initials",
     "display_name",
     "mode_display_name",
+    "base_description",
     "DEFAULT_ACCENTS",
     "normalize_hex",
     "parse_accents",

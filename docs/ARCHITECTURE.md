@@ -34,8 +34,8 @@ lindos-transfer  Windows Easy Transfer-style migration (read-only) — lindos-tr
 | Package | Depends (essentials) | Ships (highlights) |
 |---|---|---|
 | **lindos-core** | `python3 (>= 3.10)`, `policykit-1 \| polkitd`, `pkexec`, `xdg-utils`, `ca-certificates`, `curl \| wget`, `gpg` (Recommends `xfconf flatpak procps systemd lindos-tune efibootmgr mokutil`) | `/usr/lib/python3/dist-packages/lindos/{paths,config,modes,browsers,hardware,helper,theme,compat,ram,dualboot}.py`; `/usr/libexec/lindos/lindos-helper`, `install-browser.sh`; `/usr/share/polkit-1/actions/org.lindos.helper.policy`; `/usr/share/lindos/modes/<id>/{mode.json,apply-user.sh}`; `/etc/lindos/system.json` (conffile); `/usr/bin/lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot` (SPEC-WINDOWS §30.3: one-shot restart into an existing Windows install via UEFI `BootNext` or GRUB `grub-reboot`) |
-| **lindos-desktop** | `xfce4-panel xfce4-whiskermenu-plugin xfwm4 xfconf xfce4-settings xfce4-notifyd picom xfce4-panel-profiles xfce4-clipman-plugin xfce4-screenshooter xfce4-taskmanager lightdm slick-greeter plymouth fontconfig lindos-core python3` (Recommends `xfce4-docklike-plugin` — not packaged for Ubuntu 24.04 noble as of this writing, only 25.10+/Debian trixie+; the panel leaves that slot empty without it, so it's not a hard Depends) | `/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/*.xml` (panel, xfwm4, xsettings, shortcuts, desktop, thunar, notifyd, power-manager, session, keyboards), `/etc/xdg/xfce4/panel/{whiskermenu-1,docklike-2}.rc`, `/etc/xdg/picom-lindos.conf`, `/etc/xdg/gtk-3.0/settings.ini`, `/etc/xdg/autostart/{lindos-setup,lindos-picom,lindos-mode-apply-user}.desktop`, `/etc/fonts/conf.d/60-lindos-ui.conf`, `/etc/lightdm/slick-greeter.conf` + `lightdm.conf.d/50-lindos.conf`, `/etc/lindos-release`, `/usr/bin/lindos-compositor`, `/usr/libexec/lindos/{apply-branding,build-panel-profiles,first-login-panel}.sh`, `panel-profile-pack.py`, `plymouth-gen-assets.py`, branded `.desktop` shims (`lindos-files`, `lindos-settings`, `lindos-store`, `lindos-terminal`), wallpapers, `lindos-logo.svg`, `lindos-start` / `lindos-settings` icons, `/usr/share/lindos/gtk-3.0/lindos.css`, `/usr/share/lindos/os-release.d/lindos.conf`, per-mode `/usr/share/lindos/modes/<id>/panel/`, plymouth theme `lindos`, xfce4-notifyd theme `Lindos` |
-| **lindos-setup** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xdg-utils` | `/usr/bin/lindos-setup` → `/usr/lib/lindos-setup/main.py`, `lindos_setup/{plan,core,pages,app,widgets,i18n}.py`, `ui/oobe.css`, `/usr/share/lindos/setup/{apps.json,accents.json}`, menu entry `lindos-setup.desktop` (`--reconfigure`) |
+| **lindos-desktop** | `xfce4-panel xfce4-whiskermenu-plugin xfwm4 xfconf xfce4-settings xfce4-notifyd picom xfce4-panel-profiles xfce4-clipman-plugin xfce4-screenshooter xfce4-taskmanager lightdm slick-greeter plymouth fontconfig lindos-core python3` (Recommends `xfce4-docklike-plugin` — not packaged for Ubuntu 24.04 noble as of this writing, only 25.10+/Debian trixie+; the panel leaves that slot empty without it, so it's not a hard Depends — and `policykit-1-gnome | mate-polkit | lxpolkit`, a graphical polkit agent for the password dialog) | `/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/*.xml` (panel, xfwm4, xsettings, shortcuts, desktop, thunar, notifyd, power-manager, session, keyboards), `/etc/xdg/xfce4/panel/{whiskermenu-1,docklike-2}.rc`, `/etc/xdg/picom-lindos.conf`, `/etc/xdg/gtk-3.0/settings.ini`, `/etc/xdg/autostart/{lindos-setup,lindos-picom,lindos-mode-apply-user,lindos-polkit-agent}.desktop`, `/etc/fonts/conf.d/60-lindos-ui.conf`, `/etc/lightdm/slick-greeter.conf` + `lightdm.conf.d/50-lindos.conf`, `/etc/lindos-release`, `/usr/bin/lindos-compositor`, `/usr/libexec/lindos/{apply-branding,build-panel-profiles,first-login-panel,polkit-agent-start}.sh`, `panel-profile-pack.py`, `plymouth-gen-assets.py`, branded `.desktop` shims (`lindos-files`, `lindos-settings`, `lindos-store`, `lindos-terminal`), wallpapers, `lindos-logo.svg`, `lindos-start` / `lindos-settings` icons, `/usr/share/lindos/gtk-3.0/lindos.css`, `/usr/share/lindos/os-release.d/lindos.conf`, per-mode `/usr/share/lindos/modes/<id>/panel/`, plymouth theme `lindos`, xfce4-notifyd theme `Lindos` |
+| **lindos-setup** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xdg-utils` | `/usr/bin/lindos-setup` → `/usr/lib/lindos-setup/main.py`, `lindos_setup/{plan,core,inhibit,pages,app,widgets,i18n}.py`, `ui/oobe.css`, `/usr/share/lindos/setup/{apps.json,accents.json}`, menu entry `lindos-setup.desktop` (`--reconfigure`) |
 | **lindos-settings** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xfce4-settings xfconf xdg-utils` | `/usr/bin/lindos-settings` → `/usr/lib/lindos-settings/main.py`, `lindos_settings/{model,backend,widgets,sidebar,app,power_menu}.py` + `pages/*.py`, `ui/settings.css`, `/usr/share/lindos/settings/pages.json`, `lindos-power-menu.desktop` (NoDisplay) |
 | **lindos-compat** | `python3 (>= 3.10) lindos-core cabextract winbind xdg-utils desktop-file-utils shared-mime-info` (Recommends `winehq-staging \| wine-staging \| wine`, `winetricks`, `umu-launcher`, `icoutils`, `zenity`, `gamemode`, `mangohud`, Vulkan libs, `fonts-liberation`, `libnotify-bin`, `dosbox-x`, `python3-yaml`, `python3-hivex`, `udisks2`; Suggests `powershell`) | `/usr/bin/lindos-run`, `/usr/bin/lindos-compat`, `/usr/lib/lindos-compat/lindos_compat/*.py` (incl. SPEC-WINDOWS §28 `formats.py`/`dos.py`/`diskimage.py`/`binfmt.py`/`msix.py`/`winget.py`/`wingetyaml.py`), `/usr/libexec/lindos/{install-compat.sh,lindos-binfmt}`, `/usr/lib/binfmt.d/lindos-pe.conf`, `/usr/share/lindos/recipes/*.json` (15), `lindos-run.desktop`, `lindos-open-image.desktop`, `lindos-exe.svg`, `mimeapps-lindos.list`, `thunar-uca-lindos.xml`, `mime/packages/lindos-windows.xml` |
 | **lindos-gaming** | `lindos-core gamemode mangohud steam-devices python3 curl \| wget flatpak udev procps` (Recommends launchers, `antimicrox goverlay piper corectrl openrgb`, Vulkan, `ubuntu-drivers-common`, …) | `/usr/bin/lindos-proton lindos-drivers lindos-game lindos-mangohud` (`lindos-game` also has `route`/`play`/`shortcut`/`cloud install`, SPEC-WINDOWS §30.2), `/usr/libexec/lindos/{install-gaming,gamemode-start,gamemode-end,install-xpadneo,install-xone}.sh`, `/etc/gamemode.ini`, `/etc/xdg/MangoHud/MangoHud.conf`, `/etc/udev/rules.d/60-lindos-controllers.rules`, `/etc/sysctl.d/80-lindos-gaming.conf`, `lindos-roblox.desktop`, `lindos-roblox-studio.desktop`, `lindos-minecraft.desktop`, `/usr/share/lindos/compat-matrix.json` (incl. `cloud_providers`/per-title `routes`), `/usr/share/lindos/gaming/launchers.json` |
@@ -86,8 +86,16 @@ action `write-system-config`).
 Nothing in the desktop session runs as root directly. `lindos.helper.run_privileged(action,
 payload, log=None) -> HelperResult(ok, out, err, code)` calls
 `pkexec /usr/libexec/lindos/lindos-helper <action> '<json>'` (polkit action `org.lindos.helper`,
-`auth_admin_keep` — one password prompt covers a burst of calls), falls back to `sudo -n`, and
-runs directly when already root. The helper validates every payload against a whitelist
+`auth_admin_keep`), falls back to `sudo -n`, and runs directly when already root. Every call is a
+new `pkexec` and may ask for the password; `auth_admin_keep` lets polkit remember a grant for a few
+minutes but nothing relies on that (it never covered a long install, and without a graphical
+polkit agent in the session pkexec degrades to a text prompt). A flow with several privileged
+steps therefore sends them all in **one** call: `run_privileged_batch(steps, log, on_step,
+timeout)` → helper action `run-batch` = one `pkexec` = one password prompt (the first-boot setup
+does exactly this for all its system steps). lindos-desktop autostarts a graphical polkit agent
+(`/usr/libexec/lindos/polkit-agent-start.sh` → `policykit-1-gnome`, `mate-polkit` or `lxpolkit`,
+whichever is installed) so that prompt is a proper dialog; no polkit rule ever skips the password.
+The helper validates every payload against a whitelist
 (`lindos.helper.validate_payload`) and never uses `shell=True`. Exit codes: 0 ok · 1 error /
 not root · 2 usage or invalid payload; `run_privileged` adds 127 helper missing, 126
 authentication failed, 124 timeout. `LINDOS_HELPER_DRYRUN=1` prints what would run without root.
@@ -110,6 +118,7 @@ authentication failed, 124 timeout. `LINDOS_HELPER_DRYRUN=1` prints what would r
 | `set-sched` | `{profile}` ⊂ `scx_lavd scx_bpfland scx_flash scx_rustland none` | loads/stops the scx sched_ext scheduler via `scx_loader`/systemd (or the documented fallback) |
 | `write-system-config` | `{mode?, browser?, oem?}` | atomic write of `/etc/lindos/system.json` |
 | `enable-earlyoom` | `{enable}` | `systemctl enable/disable --now earlyoom` |
+| `run-batch` | `{steps: [{id?, action, payload?}, …]}` (≤ 32 steps, ≤ 256 KiB; ids unique; `run-batch` itself, `reboot-to-windows`, `firmware-setup` and `import-wifi` are refused) | runs the listed actions in order in this one root process, each through its own validator and handler; a failed step is recorded and the rest still run (exit 1 if any failed); prints a flushed `@@lindos-batch {json}` line when each step starts and finishes, which `run_privileged_batch` turns into per-step `BatchStepResult`s / `on_step` callbacks |
 
 ## 5. Modes (`lindos.modes`)
 
@@ -142,12 +151,19 @@ missing component are recorded as *skipped*. Details: [MODES.md](MODES.md).
   `status` exits 0 running / 3 stopped. GameMode's start/end scripts call `stop`/`start`.
 * Autostart: `lindos-setup.desktop` (`lindos-setup --first-run`, gate on `~/.config/lindos/
   setup-done`), `lindos-picom.desktop`, `lindos-mode-apply-user.desktop`
-  (`/usr/libexec/lindos/first-login-panel.sh`, seeds the per-mode panel files once).
+  (`/usr/libexec/lindos/first-login-panel.sh`, seeds the per-mode panel files once),
+  `lindos-polkit-agent.desktop` (`/usr/libexec/lindos/polkit-agent-start.sh`: starts an installed
+  graphical polkit agent unless one already runs; adds no permissions).
 * Branding: `apply-branding.sh` seds `NAME`, `PRETTY_NAME`, `HOME_URL`, `LOGO`, `LINDOS_VERSION`,
   `LINDOS_CODENAME` into `/etc/os-release` and keeps `ID=linuxmint`, `ID_LIKE`,
   `VERSION_CODENAME`, `UBUNTU_CODENAME` so apt sources and Mint tooling keep working;
   `/etc/lindos-release` = `Lindos 1.0.0 (Aurora)`; `/etc/issue`; plymouth `lindos`; default
-  wallpaper alternative → `aurora-dark.svg`.
+  wallpaper alternative → `aurora-dark.svg`. The **Mint sweep** (`rebrand-base.py` +
+  `branding/base-sweep.json`, called by `apply-branding.sh`, re-run after every apt run by
+  `/etc/apt/apt.conf.d/99lindos-branding`) hides the base's Welcome Screen / Software Manager duplicates,
+  gives Update/Driver Manager Lindos icons, rewrites "Linux Mint" display text and the display fields of
+  `/etc/lsb-release`, `/etc/linuxmint/info`, `/etc/casper.conf`, and points Firefox's Linux Mint start page
+  away — identity fields (`ID`, `DISTRIB_ID`, codenames) stay; see `docs/BUILDING.md` ("Mint sweep").
 
 ## 7. Cross-component call map (SPEC §13)
 

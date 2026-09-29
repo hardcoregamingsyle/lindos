@@ -1,0 +1,250 @@
+/*
+ * Lindos installer slideshow (build/installer/slideshow, installed to
+ * /usr/share/ubiquity-slideshow/slides/ by build/chroot/78-installer-brand.sh).
+ *
+ * Static, offline, script-free: the six slides cycle with CSS animation only.
+ * Palette follows the first-boot Setup (SPEC section 2): dark #202020, card
+ * #2B2B2B, accent #60CDFF.  The area is 752x442 by default but the layout
+ * follows the window size.
+ */
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: #202020;
+    color: #FFFFFF;
+    overflow: hidden;
+    font-family: "Selawik", "Segoe UI", "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.stage {
+    position: relative;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+/* ---------- brand row ---------------------------------------------------- */
+.brand {
+    position: absolute;
+    left: 32px;
+    top: 20px;
+    display: flex;
+    align-items: center;
+}
+
+.mark {
+    width: 32px;
+    height: 32px;
+    margin-right: 10px;
+}
+
+.brand-name {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+}
+
+/* ---------- slides ------------------------------------------------------- */
+.slide {
+    position: absolute;
+    left: 32px;
+    right: 32px;
+    top: 68px;
+    bottom: 58px;
+    box-sizing: border-box;
+    padding: 20px 28px;
+    overflow: hidden;
+    background: #2B2B2B;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    opacity: 0;
+    animation-name: lindos-cycle;
+    animation-duration: 72s;
+    animation-iteration-count: infinite;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
+}
+
+.s1 { animation-delay: 0s; }
+.s2 { animation-delay: 12s; }
+.s3 { animation-delay: 24s; }
+.s4 { animation-delay: 36s; }
+.s5 { animation-delay: 48s; }
+.s6 { animation-delay: 60s; }
+
+@keyframes lindos-cycle {
+    0%      { opacity: 0; }
+    1.5%    { opacity: 1; }
+    15.2%   { opacity: 1; }
+    16.67%  { opacity: 0; }
+    100%    { opacity: 0; }
+}
+
+h1 {
+    margin: 0 0 10px 0;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+    color: #FFFFFF;
+}
+
+.lead {
+    margin: 0 0 12px 0;
+    font-size: 16px;
+    color: #E6E6E6;
+}
+
+ul, ol {
+    margin: 0;
+    padding: 0 0 0 20px;
+    color: #C8C8C8;
+}
+
+li {
+    margin: 0 0 8px 0;
+    font-size: 14.5px;
+}
+
+li::marker {
+    color: #60CDFF;
+}
+
+b {
+    color: #FFFFFF;
+    font-weight: 600;
+}
+
+.note {
+    margin: 14px 0 0 0;
+    font-size: 13px;
+    color: #9A9A9A;
+}
+
+.caveat {
+    margin: 6px 0 0 0;
+    padding: 12px 16px;
+    font-size: 15px;
+    color: #E6E6E6;
+    background: #323232;
+    border-left: 3px solid #60CDFF;
+    border-radius: 4px;
+}
+
+/* ---------- the five Modes ------------------------------------------------ */
+.modes {
+    list-style: none;
+    padding: 0;
+}
+
+.modes li {
+    margin: 0 0 5px 0;
+    padding: 5px 14px;
+    background: #323232;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+}
+
+.modes b {
+    display: inline-block;
+    min-width: 84px;
+    color: #60CDFF;
+}
+
+.modes span {
+    color: #C8C8C8;
+}
+
+/* ---------- Setup steps --------------------------------------------------- */
+.steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+}
+
+.steps li {
+    margin: 0 8px 8px 0;
+    padding: 8px 18px;
+    font-size: 15px;
+    color: #000000;
+    background: #60CDFF;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+/* ---------- status bar + progress dots ------------------------------------ */
+.status {
+    position: absolute;
+    left: 32px;
+    right: 32px;
+    bottom: 12px;
+    height: 36px;
+}
+
+.status p {
+    margin: 0;
+    font-size: 12px;
+    color: #9A9A9A;
+}
+
+.dots {
+    position: absolute;
+    right: 0;
+    top: 4px;
+}
+
+.dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    background: #5A5A5A;
+    border-radius: 3px;
+    animation-name: lindos-dot;
+    animation-duration: 72s;
+    animation-iteration-count: infinite;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
+}
+
+.d1 { animation-delay: 0s; }
+.d2 { animation-delay: 12s; }
+.d3 { animation-delay: 24s; }
+.d4 { animation-delay: 36s; }
+.d5 { animation-delay: 48s; }
+.d6 { animation-delay: 60s; }
+
+@keyframes lindos-dot {
+    0%      { background: #5A5A5A; }
+    1.5%    { background: #60CDFF; }
+    15.2%   { background: #60CDFF; }
+    16.67%  { background: #5A5A5A; }
+    100%    { background: #5A5A5A; }
+}
+
+/* ---------- reduced motion: show everything, stacked, scrollable ---------- */
+@media (prefers-reduced-motion: reduce) {
+    html, body {
+        overflow: auto;
+    }
+    .stage {
+        height: auto;
+        padding: 20px 32px 56px 32px;
+    }
+    .brand, .status {
+        position: static;
+        margin-bottom: 12px;
+    }
+    .slide {
+        position: static;
+        margin-bottom: 12px;
+        opacity: 1;
+        animation: none;
+    }
+    .dots {
+        display: none;
+    }
+}

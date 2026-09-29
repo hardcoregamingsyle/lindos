@@ -147,6 +147,17 @@ theme in Settings → Personalization → Fonts (XFCE Appearance) / Window Manag
 different panel layout with `xfce4-panel-profiles`, or reset shortcuts in Keyboard settings.
 The RAM tune is reversible piece by piece — see [RAM-BUDGET.md](RAM-BUDGET.md) §7.
 
+### Where does Linux Mint still show up?
+Lindos is built on Linux Mint 22.x and Ubuntu 24.04, and does not hide that. What you may still see:
+*Settings → About → Based on*; the **Software Sources** tool and `apt` output (`packages.linuxmint.com` is the
+repository the base system updates from); the **Update Manager** and **Driver Manager** windows (Lindos has no
+replacement for them; only their menu icons are Lindos's); the window title "Software Manager" inside
+**Lindos Store**; the boot entry your firmware lists after an install (`linuxmint`, named after the
+distribution ID Mint's tools rely on); and the Mint wallpapers if they could not be removed safely. Everything
+else (the Welcome Screen, the boot menu, `lsb_release`, the login screen, menu text) is changed to say Lindos;
+something else that still says Mint is a bug worth reporting. The full list and the reasons are in
+[BUILDING.md](BUILDING.md) ("Mint sweep").
+
 ### How is the ISO built?
 `make iso` (Ubuntu/Debian host with root) or `make iso-docker`: Mint 22.2 XFCE ISO → chroot
 hooks → repacked hybrid BIOS+UEFI ISO. [BUILDING.md](BUILDING.md).

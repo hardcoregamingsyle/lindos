@@ -12,8 +12,10 @@
 #      deliberately NOT disabled here — it is cheap when idle and laptops need
 #      it (Bluetooth headphones/mice); only Lite mode's own tune.d/lite.conf
 #      turns it off (lindos-tune apply --mode lite), see docs/RAM-BUDGET.md.
-#    * mintwelcome is KEPT (its autostart is hidden by lindos-tune's base
-#      tune / lindos-desktop, so it can still be opened from the menu).
+#    * mintwelcome is KEPT as a package (Mint's metapackages depend on it) but
+#      never shown: its autostart is hidden here, by lindos-tune's base tune and
+#      by lindos-desktop, and its menu entry by lindos-desktop's Mint sweep
+#      (build/chroot/77-mint-sweep.sh) — Lindos Setup is the welcome experience.
 #    * never touches network/printing basics.
 #  The list and the estimated savings live in docs/RAM-BUDGET.md.
 # ============================================================================
@@ -110,9 +112,11 @@ hide_autostart() {
         log "hidden autostart: ${name}"
     fi
 }
-# mintwelcome is handled by lindos-tune / lindos-desktop (first-run gate is
-# lindos-setup).  Accessibility (orca) and input-method (im-launch) autostarts
-# are deliberately left alone.
+# Mint Welcome is replaced by lindos-setup (the first-run gate); lindos-tune and
+# lindos-desktop's Mint sweep hide it as well, so a missing file here is fine.
+# Accessibility (orca) and input-method (im-launch) autostarts are deliberately
+# left alone.
+hide_autostart "mintwelcome"
 hide_autostart "mintreport"
 hide_autostart "update-notifier"
 

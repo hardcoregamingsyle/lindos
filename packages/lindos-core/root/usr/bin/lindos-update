@@ -273,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description="Check for and apply updates to Lindos's own lindos-* packages — never "
-                    "the base system, which Mint's own Update Manager already handles.")
+                    "the base system, which the system Update Manager already handles.")
     parser.add_argument("--version", action="version", version=f"{PROG} {LINDOS_VERSION}")
     sub = parser.add_subparsers(dest="command", metavar="command")
 

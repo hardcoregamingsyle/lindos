@@ -39,8 +39,8 @@ vs. discrete GPU — the driver alone moves the figure by 30–80 MB).
 
 * **Purged** (`DEBLOAT_PURGE`, tiny on purpose; absent packages are skipped):
   `hexchat rhythmbox hypnotix onboard gnome-calendar`. Thunderbird, Warpinator, simple-scan,
-  Celluloid, Drawing are **kept**; mintwelcome is kept as a package (only its autostart is
-  hidden — the OOBE replaces it); network and printing basics are never purged (a safety net in
+  Celluloid, Drawing are **kept**; mintwelcome is kept as a package (its autostart and menu entry
+  are hidden — the OOBE replaces it); network and printing basics are never purged (a safety net in
   the hook refuses).
 * **Disabled, never purged** (`DEBLOAT_DISABLE_SERVICES`): `ModemManager.service
   apport.service whoopsie.service kerneloops.service brltty.service

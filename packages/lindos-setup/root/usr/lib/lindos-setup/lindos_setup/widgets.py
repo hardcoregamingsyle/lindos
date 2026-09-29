@@ -1,18 +1,20 @@
-"""GTK 3 widgets for the Lindos OOBE (cards, swatches, thumbnails, dots ...).
+"""GTK 3 widgets for the Lindos OOBE (cards, swatches, thumbnails, step indicator ...).
 
 Styling lives in ``ui/oobe.css``; widgets only add CSS classes:
 
 * ``.card`` / ``.card.selected``  -- selectable option card (:class:`Card`)
 * ``.swatch`` / ``.swatch.selected`` -- accent colour circle (:class:`Swatch`)
 * ``.thumb`` / ``.thumb.selected`` -- wallpaper thumbnail (:class:`WallpaperThumb`)
-* ``.dot`` / ``.dot.active``        -- step indicator (:class:`StepDots`)
+* ``.step-indicator`` / ``.step-bar`` / ``.step-text`` -- slim progress line (:class:`StepIndicator`)
 * ``.check-row``, ``.switch-row``  -- list rows
+* ``.learn-more``                  -- collapsed "Learn more" expander (:class:`LearnMore`)
+* ``.theme-preview`` / ``.taskbar-preview`` -- tiny CSS-drawn previews used on option cards
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import gi
 
@@ -21,9 +23,14 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, GObject, Gtk, Pango  # noqa: E402
 
+from .i18n import _  # noqa: E402
+
 log = logging.getLogger("lindos-setup.widgets")
 
 THUMB_W, THUMB_H = 192, 108
+COLUMN_MAX_W = 760       # the centred content column of every page (Windows-OOBE-style whitespace)
+COLUMN_MIN_W = 480
+COLUMN_MARGIN = 48       # keep at least this much air on each side on small screens
 _STYLE_PRIORITY_APPLICATION = 600      # GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
 
 
@@ -35,6 +42,57 @@ def style_priority(offset: int = 0) -> int:
     except (TypeError, ValueError):
         base = _STYLE_PRIORITY_APPLICATION
     return base + offset
+
+
+# ---------------------------------------------------------------------------
+# layout arithmetic (pure)
+# ---------------------------------------------------------------------------
+def column_width(screen_w: Optional[int] = None) -> int:
+    """Width of the centred content column: 760 px, narrower only on very small screens."""
+    try:
+        screen = int(screen_w) if screen_w else 0
+    except (TypeError, ValueError):
+        screen = 0
+    if screen <= 0:
+        return COLUMN_MAX_W
+    return max(COLUMN_MIN_W, min(COLUMN_MAX_W, screen - 2 * COLUMN_MARGIN))
+
+
+def screen_width() -> Optional[int]:
+    """Width of the default screen in pixels, or None when there is no display to ask."""
+    try:
+        screen = Gdk.Screen.get_default()
+        if screen is None:
+            return None
+        width = int(screen.get_width())
+    except Exception as exc:  # noqa: BLE001 - layout must never break start-up
+        log.debug("screen width unavailable: %s", exc)
+        return None
+    return width if width > 0 else None
+
+
+def step_position(counted: Sequence[bool], index: int) -> Optional[Tuple[int, int]]:
+    """``(n, total)`` -- the 1-based position of page ``index`` among the pages that count as a
+    step -- or None when that page is not one of them (welcome, apply and done are not)."""
+    if index < 0 or index >= len(counted) or not counted[index]:
+        return None
+    total = sum(1 for c in counted if c)
+    return sum(1 for c in counted[:index + 1] if c), total
+
+
+def step_fraction(position: Optional[Tuple[int, int]]) -> float:
+    if position is None:
+        return 0.0
+    n, total = position
+    if total <= 0:
+        return 0.0
+    return min(1.0, max(0.0, n / float(total)))
+
+
+def step_text(position: Optional[Tuple[int, int]]) -> str:
+    if position is None:
+        return ""
+    return _("Step %d of %d") % position
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +113,19 @@ def set_selected_class(widget: Gtk.Widget, selected: bool) -> None:
         ctx.remove_class("selected")
 
 
+def set_a11y(widget: Gtk.Widget, name: str, description: str = "") -> Gtk.Widget:
+    """Give a widget an accessible name/description (screen readers); never raises."""
+    try:
+        acc = widget.get_accessible()
+        if acc is not None:
+            if name:
+                acc.set_name(name)
+            acc.set_description(description or "")
+    except Exception as exc:  # noqa: BLE001 - a11y is best effort
+        log.debug("cannot set accessible name %r: %s", name, exc)
+    return widget
+
+
 def label(text: str, *classes: str, xalign: float = 0.0, wrap: bool = False,
           max_chars: int = 0, justify: Optional[Gtk.Justification] = None,
           selectable: bool = False) -> Gtk.Label:
@@ -63,8 +134,8 @@ def label(text: str, *classes: str, xalign: float = 0.0, wrap: bool = False,
     lbl.set_line_wrap(wrap)
     if wrap:
         lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        # bound the natural width so the 900 px card never grows past its size
-        lbl.set_max_width_chars(max_chars or 60)
+        # bound the natural width so a long paragraph never stretches the content column
+        lbl.set_max_width_chars(max_chars or 70)
     elif max_chars:
         lbl.set_max_width_chars(max_chars)
     if justify is not None:
@@ -164,14 +235,16 @@ _ACCENT_TEMPLATE = """
 .oobe .btn-next:active {{ background-color: shade({hex}, 0.92); }}
 .oobe .btn-next:disabled {{ background-color: #4A4A4A; color: #8A8A8A; }}
 .oobe.light .btn-next:disabled {{ background-color: #D6D6D6; color: #8A8A8A; }}
-.oobe .card.selected {{ border-color: {hex}; background-color: alpha({hex}, 0.10); }}
+.oobe .card.selected {{ border-color: {hex}; background-color: alpha({hex}, 0.14); }}
 .oobe .card-check, .oobe .card-badge {{ background-color: {hex}; }}
 .oobe .thumb.selected {{ border-color: {hex}; }}
-.oobe .dot.active {{ background-color: {hex}; }}
-.oobe .accent-text, .oobe .card-hint, .oobe .btn-link {{ color: {hex}; }}
+.oobe .accent-text, .oobe .card-hint, .oobe .btn-link, .oobe .learn-more title label {{ color: {hex}; }}
 .oobe progressbar progress {{ background-color: {hex}; }}
+.oobe spinner {{ color: {hex}; }}
+.oobe .theme-preview-accent {{ background-color: {hex}; }}
+.oobe .done-check {{ color: {hex}; background-color: alpha({hex}, 0.16); }}
 .oobe switch:checked {{ background-color: {hex}; border-color: {hex}; }}
-.oobe checkbutton check:checked, .oobe radiobutton radio:checked {{ background-color: {hex}; border-color: {hex}; }}
+.oobe checkbutton check:checked {{ background-color: {hex}; border-color: {hex}; }}
 """
 
 
@@ -207,62 +280,77 @@ class Card(Gtk.Button):
     """A Windows-11-style selectable option card.
 
     Emits ``chosen`` (key) when clicked; selection visuals via ``.selected``.
+    ``preview`` replaces the icon with any widget (see :func:`theme_preview`).
+    ``horizontal=True`` lays the card out as a wide list row (icon left, check right).
     """
 
     __gsignals__ = {"chosen": (GObject.SignalFlags.RUN_FIRST, None, (str,))}
 
     def __init__(self, key: str, title: str, description: str = "", *,
                  icon_name: Optional[str] = None, pixbuf: Optional[GdkPixbuf.Pixbuf] = None,
+                 preview: Optional[Gtk.Widget] = None,
                  hint: str = "", badge: str = "", icon_size: int = 40,
                  horizontal: bool = False, width: int = -1, height: int = -1) -> None:
         super().__init__()
         self.key = key
+        self.title = title
         self.selected = False
         self.set_relief(Gtk.ReliefStyle.NONE)
         self.set_can_focus(True)
         self.set_focus_on_click(True)
         add_class(self, "card")
+        if horizontal:
+            add_class(self, "card-row")
         if width > 0 or height > 0:
             self.set_size_request(width, height)
 
-        outer = hbox(12) if horizontal else vbox(6)
-        outer.set_border_width(2)
+        outer = hbox(16) if horizontal else vbox(10)
+        outer.set_border_width(4)
 
-        if pixbuf is not None:
-            img: Gtk.Widget = Gtk.Image.new_from_pixbuf(pixbuf)
+        if preview is not None:
+            img: Gtk.Widget = preview
+        elif pixbuf is not None:
+            img = Gtk.Image.new_from_pixbuf(pixbuf)
         else:
             img = icon_image(icon_name, icon_size)
         img.set_halign(Gtk.Align.START)
-        img.set_valign(Gtk.Align.START)
+        img.set_valign(Gtk.Align.CENTER if horizontal else Gtk.Align.START)
         add_class(img, "card-icon")
         outer.pack_start(img, False, False, 0)
 
-        text = vbox(2)
-        head = hbox(6)
-        chars = 40 if horizontal else 18
+        text = vbox(3)
+        text.set_valign(Gtk.Align.CENTER)
+        head = hbox(8)
+        chars = 64 if horizontal else 24
         self.title_label = label(title, "card-title", wrap=True, max_chars=chars)
         head.pack_start(self.title_label, True, True, 0)
-        # a small check mark (top-right) that shows in the selected state
+        # a round check mark that shows in the selected state (far right on list rows)
         self.check = Gtk.Label(label="✓")
         add_class(self.check, "card-check")
-        self.check.set_valign(Gtk.Align.START)
-        self.check.set_halign(Gtk.Align.END)
         self.check.set_no_show_all(True)
-        head.pack_end(self.check, False, False, 0)
+        if horizontal:
+            self.check.set_valign(Gtk.Align.CENTER)
+        else:
+            self.check.set_valign(Gtk.Align.START)
+            self.check.set_halign(Gtk.Align.END)
+            head.pack_end(self.check, False, False, 0)
         if badge:
             self.badge_label = label(badge, "card-badge")
-            self.badge_label.set_valign(Gtk.Align.START)
+            self.badge_label.set_valign(Gtk.Align.CENTER)
             head.pack_end(self.badge_label, False, False, 0)
         text.pack_start(head, False, False, 0)
         if description:
             self.desc_label = label(description, "card-desc", wrap=True, max_chars=chars + 6)
-            text.pack_start(self.desc_label, True, True, 0)
+            text.pack_start(self.desc_label, False, False, 0)
         if hint:
             self.hint_label = label(hint, "card-hint", wrap=True, max_chars=chars + 4)
-            text.pack_end(self.hint_label, False, False, 0)
+            text.pack_start(self.hint_label, False, False, 0)
         outer.pack_start(text, True, True, 0)
+        if horizontal:
+            outer.pack_end(self.check, False, False, 0)
 
         self.add(outer)
+        set_a11y(self, title, description)
         self.connect("clicked", self._on_clicked)
 
     def _on_clicked(self, _btn: Gtk.Button) -> None:
@@ -319,6 +407,63 @@ class CardGroup:
 
 
 # ---------------------------------------------------------------------------
+# CSS-drawn previews for option cards
+# ---------------------------------------------------------------------------
+PREVIEW_W, PREVIEW_H = 148, 84
+
+
+def theme_preview(kind: str) -> Gtk.Widget:
+    """A tiny desktop -- wallpaper, one window with an accent bar, a taskbar strip.
+
+    ``kind`` is ``"dark"`` or ``"light"``; everything is drawn by CSS classes so it follows
+    the live accent colour.
+    """
+    frame = vbox(0)
+    add_class(frame, "theme-preview", "theme-preview-" + ("light" if kind == "light" else "dark"))
+    frame.set_size_request(PREVIEW_W, PREVIEW_H)
+    win = vbox(0)
+    add_class(win, "theme-preview-window")
+    win.set_size_request(76, 34)
+    win.set_halign(Gtk.Align.START)
+    win.set_margin_start(16)
+    win.set_margin_top(14)
+    bar = Gtk.Box()
+    add_class(bar, "theme-preview-accent")
+    bar.set_size_request(30, 6)
+    bar.set_halign(Gtk.Align.START)
+    bar.set_margin_start(8)
+    bar.set_margin_top(8)
+    win.pack_start(bar, False, False, 0)
+    frame.pack_start(win, False, False, 0)
+    strip = Gtk.Box()
+    add_class(strip, "theme-preview-taskbar")
+    strip.set_size_request(-1, 12)
+    frame.pack_end(strip, False, False, 0)
+    return frame
+
+
+def taskbar_preview(alignment: str) -> Gtk.Widget:
+    """A tiny taskbar with four app icons, centred (Windows 11) or left-aligned (classic)."""
+    frame = hbox(0)
+    add_class(frame, "taskbar-preview")
+    frame.set_size_request(PREVIEW_W, 34)
+    icons = hbox(6)
+    icons.set_valign(Gtk.Align.CENTER)
+    for _i in range(4):
+        dot = Gtk.Box()
+        add_class(dot, "taskbar-preview-icon")
+        dot.set_size_request(14, 14)
+        icons.pack_start(dot, False, False, 0)
+    if alignment == "left":
+        icons.set_halign(Gtk.Align.START)
+        icons.set_margin_start(10)
+    else:
+        icons.set_halign(Gtk.Align.CENTER)
+    frame.pack_start(icons, True, True, 0)
+    return frame
+
+
+# ---------------------------------------------------------------------------
 # accent swatch
 # ---------------------------------------------------------------------------
 class Swatch(Gtk.Button):
@@ -326,7 +471,7 @@ class Swatch(Gtk.Button):
 
     __gsignals__ = {"chosen": (GObject.SignalFlags.RUN_FIRST, None, (str,))}
 
-    def __init__(self, key: str, hex_colour: str, name: str = "", size: int = 30) -> None:
+    def __init__(self, key: str, hex_colour: str, name: str = "", size: int = 36) -> None:
         super().__init__()
         self.key = key
         self.hex = hex_colour
@@ -334,6 +479,7 @@ class Swatch(Gtk.Button):
         self.set_relief(Gtk.ReliefStyle.NONE)
         self.set_size_request(size, size)
         self.set_tooltip_text("%s %s" % (name, hex_colour) if name else hex_colour)
+        set_a11y(self, name or hex_colour, hex_colour)
         add_class(self, "swatch")
         self._provider = Gtk.CssProvider()
         css = ".swatch.swatch-%s { background-color: %s; }" % (key.replace("#", ""), hex_colour)
@@ -366,6 +512,7 @@ class WallpaperThumb(Gtk.Button):
         self.set_relief(Gtk.ReliefStyle.NONE)
         add_class(self, "thumb")
         self.set_tooltip_text(display_name)
+        set_a11y(self, display_name)
         box = vbox(4)
         pixbuf = load_svg_thumbnail(path, width, height)
         if pixbuf is not None:
@@ -390,34 +537,38 @@ class WallpaperThumb(Gtk.Button):
 
 
 # ---------------------------------------------------------------------------
-# step dots
+# slim step indicator
 # ---------------------------------------------------------------------------
-class StepDots(Gtk.Box):
-    """Row of small dots, one per wizard page; the active one is wider/accent."""
+class StepIndicator(Gtk.Box):
+    """A thin progress line with a small "Step 3 of 7" caption.
 
-    def __init__(self, count: int) -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.set_halign(Gtk.Align.CENTER)
-        self.set_valign(Gtk.Align.CENTER)
-        self.dots: List[Gtk.Widget] = []
-        for _ in range(count):
-            d = Gtk.Box()
-            add_class(d, "dot")
-            d.set_size_request(6, 6)
-            self.pack_start(d, False, False, 0)
-            self.dots.append(d)
-        self.active = -1
+    Invisible (but still taking its space, so nothing jumps) on pages that are not a
+    numbered step -- see :func:`step_position`.
+    """
 
-    def set_active(self, index: int) -> None:
-        self.active = index
-        for i, d in enumerate(self.dots):
-            ctx = d.get_style_context()
-            if i == index:
-                ctx.add_class("active")
-                d.set_size_request(16, 6)
-            else:
-                ctx.remove_class("active")
-                d.set_size_request(6, 6)
+    def __init__(self) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        add_class(self, "step-indicator")
+        self.bar = Gtk.ProgressBar()
+        add_class(self.bar, "step-bar")
+        self.bar.set_valign(Gtk.Align.CENTER)
+        self.bar.set_fraction(0.0)
+        self.pack_start(self.bar, True, True, 0)
+        self.text = label("", "step-text", xalign=1.0)
+        self.text.set_valign(Gtk.Align.CENTER)
+        self.pack_end(self.text, False, False, 0)
+        self.position: Optional[Tuple[int, int]] = None
+        self.fraction = 0.0
+        self.set_opacity(0.0)
+        set_a11y(self, _("Setup progress"))
+
+    def set_step(self, position: Optional[Tuple[int, int]]) -> None:
+        self.position = position
+        self.fraction = step_fraction(position)
+        self.bar.set_fraction(self.fraction)
+        self.text.set_text(step_text(position))
+        self.set_opacity(0.0 if position is None else 1.0)
+        set_a11y(self, _("Setup progress"), step_text(position))
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +587,7 @@ class CheckRow(Gtk.CheckButton):
             box.pack_start(label(description, "row-desc", wrap=True), False, False, 0)
         self.add(box)
         self.set_active(active)
+        set_a11y(self, title, description)
 
 
 class SwitchRow(Gtk.Box):
@@ -444,9 +596,10 @@ class SwitchRow(Gtk.Box):
     def __init__(self, title: str, description: str = "", active: bool = False,
                  on_toggle: Optional[Callable[[bool], None]] = None,
                  on_label: str = "", off_label: str = "") -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
         add_class(self, "switch-row")
-        text = vbox(2)
+        text = vbox(3)
+        text.set_valign(Gtk.Align.CENTER)
         text.pack_start(label(title, "row-title", wrap=True), False, False, 0)
         if description:
             text.pack_start(label(description, "row-desc", wrap=True), False, False, 0)
@@ -459,6 +612,7 @@ class SwitchRow(Gtk.Box):
         self.switch = Gtk.Switch()
         self.switch.set_valign(Gtk.Align.CENTER)
         self.switch.set_active(active)
+        set_a11y(self.switch, title, description)
         self.pack_end(self.switch, False, False, 0)
         self._on_toggle = on_toggle
         self.switch.connect("notify::active", self._changed)
@@ -480,7 +634,7 @@ class InfoBanner(Gtk.Box):
     """Rounded note box with an icon (``.banner``, ``.banner.warn``)."""
 
     def __init__(self, text: str, icon_name: str = "dialog-information-symbolic", warn: bool = False) -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         add_class(self, "banner")
         if warn:
             add_class(self, "warn")
@@ -494,6 +648,25 @@ class InfoBanner(Gtk.Box):
         self.text_label.set_text(text)
 
 
+class LearnMore(Gtk.Expander):
+    """A collapsed "Learn more" disclosure holding a few wrapped paragraphs.
+
+    Used to keep the long honesty text (Wine is not Windows, anti-cheat) one click away
+    instead of a wall of text on the page.
+    """
+
+    def __init__(self, summary: str, paragraphs: Sequence[str]) -> None:
+        super().__init__(label=summary)
+        add_class(self, "learn-more")
+        self.paragraphs = list(paragraphs)
+        body = vbox(8)
+        add_class(body, "learn-more-body")
+        for para in self.paragraphs:
+            body.pack_start(label(para, "learn-more-text", wrap=True), False, False, 0)
+        self.add(body)
+        set_a11y(self, summary)
+
+
 def scrolled(child: Gtk.Widget, height: int = -1, hpolicy: Gtk.PolicyType = Gtk.PolicyType.NEVER) -> Gtk.ScrolledWindow:
     sw = Gtk.ScrolledWindow()
     sw.set_policy(hpolicy, Gtk.PolicyType.AUTOMATIC)
@@ -505,7 +678,9 @@ def scrolled(child: Gtk.Widget, height: int = -1, hpolicy: Gtk.PolicyType = Gtk.
 
 
 __all__ = [
-    "THUMB_W", "THUMB_H", "style_priority", "add_class", "label", "hbox", "vbox", "section_title", "load_css_file",
-    "load_svg_thumbnail", "icon_image", "AccentCss", "Card", "CardGroup", "Swatch",
-    "WallpaperThumb", "StepDots", "CheckRow", "SwitchRow", "InfoBanner", "scrolled",
+    "THUMB_W", "THUMB_H", "COLUMN_MAX_W", "COLUMN_MIN_W", "style_priority", "column_width", "screen_width",
+    "step_position", "step_fraction", "step_text", "add_class", "set_a11y", "label", "hbox", "vbox",
+    "section_title", "load_css_file", "load_svg_thumbnail", "icon_image", "AccentCss", "Card", "CardGroup",
+    "theme_preview", "taskbar_preview", "Swatch", "WallpaperThumb", "StepIndicator", "CheckRow",
+    "SwitchRow", "InfoBanner", "LearnMore", "scrolled",
 ]

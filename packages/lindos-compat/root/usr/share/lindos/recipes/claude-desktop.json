@@ -1,0 +1,23 @@
+{
+  "id": "claude-desktop",
+  "name": "Claude (desktop app for Windows)",
+  "vendor": "Anthropic",
+  "category": "utility",
+  "status": "partial",
+  "summary": "The Windows setup program downloads an app package (MSIX) instead of installing itself; Lindos catches that hand-off and unpacks the desktop app. Not yet confirmed on real hardware.",
+  "notes": "The Windows installer for the Claude desktop app, as seen when it was first run on Lindos, is a small bootstrapper: it downloads a large .msix package into the Windows temp folder and asks Windows to install it. Wine has no Windows app-deployment service, so on its own that ends in a message like 'There is no Windows program configured to open this type of file' and a folder listing the package and a log file. Lindos handles the hand-off for you: it registers a recorder for .msix/.appx files inside the program's C:\\ drive, and when the setup program exits it offers to unpack the desktop program from the downloaded package (the same safe flow as opening the .msix yourself: lindos-run Claude.msix). If the package turns out to be a Store-only (UWP) app, Lindos says so in one message instead of trying.\nWhat is NOT confirmed (no real-Wine run has been recorded for this recipe): whether the unpacked app starts and stays usable under Wine (as far as we know it is an Electron program, and those often need GPU-acceleration or window tweaks under Wine), whether signing in through the browser returns to the app (Lindos does not register a package's own URL protocol handlers, so the claude:// link may go nowhere), and how it updates itself (if it downloads a newer package, open that .msix the same way). Because of these open points the status is 'partial', not 'works'.\nYou probably do not need it: Claude works in any Linux browser at claude.ai, and Anthropic's terminal coding agent (Claude Code) installs natively on Linux.\nwinget: this repository does not record the exact winget package id, so none is listed here - find it with 'lindos-compat winget search claude' and check 'lindos-compat winget show <Id>' before relying on it.",
+  "installer_hint": "lindos-run ~/Downloads/Claude*.exe   (or, if the setup program left a package behind: lindos-run Claude.msix)",
+  "winget_id": "",
+  "homepage": "https://claude.ai/download",
+  "runner": "wine",
+  "arch": "win64",
+  "winetricks": [],
+  "dll_overrides": {},
+  "env": {},
+  "post_cmds": [],
+  "registry": [],
+  "alternatives": [
+    {"name": "Claude on the web", "how": "open claude.ai in your browser (works in any Linux browser; most browsers can pin it as a web app)"},
+    {"name": "Claude Code (terminal)", "how": "Anthropic's command-line coding agent installs natively on Linux - no Wine needed"}
+  ]
+}

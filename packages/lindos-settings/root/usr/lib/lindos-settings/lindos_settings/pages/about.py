@@ -1,5 +1,5 @@
 """About page: Win11-style 'Device specifications' and 'Lindos specifications' cards
-(Lindos version, Mint base, kernel, XFCE, CPU, GPU, RAM, disk, mode, browser) + Copy button."""
+(Lindos version, what it is based on, kernel, XFCE, CPU, GPU, RAM, disk, mode, browser) + Copy button."""
 
 from __future__ import annotations
 
@@ -47,13 +47,7 @@ def collect_specs(backend: Any, modes: Optional[dict[str, Any]] = None) -> tuple
         ("Uptime", model.format_uptime(b.uptime_seconds())),
     ]
 
-    mint = osr.get("PRETTY_NAME") or osr.get("NAME") or "Linux Mint"
-    base_bits = []
-    if osr.get("VERSION_CODENAME"):
-        base_bits.append(osr["VERSION_CODENAME"])
-    if osr.get("UBUNTU_CODENAME"):
-        base_bits.append("Ubuntu " + osr["UBUNTU_CODENAME"])
-    base = mint + (f" ({', '.join(base_bits)})" if base_bits else "")
+    base = model.base_description(osr)
     mode_id = b.effective_mode()
     lindos_rows = [
         ("Edition", b.lindos_release()),
@@ -84,7 +78,7 @@ class AboutPage(PageBase):
         hb = box("v", 4)
         hb.set_valign(Gtk.Align.CENTER)
         self.hero_title = label("Lindos", ("about-title",))
-        self.hero_sub = label("Windows-11-style Linux Mint XFCE remaster · idle target 350–500 MB RAM", ("dim-label",), wrap=True)
+        self.hero_sub = label("A Windows-11-style desktop for Linux · idle target 350–500 MB RAM", ("dim-label",), wrap=True)
         hb.pack_start(self.hero_title, False, False, 0)
         hb.pack_start(self.hero_sub, False, False, 0)
         hero.pack_start(hb, True, True, 0)

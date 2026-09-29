@@ -71,6 +71,7 @@ case "${1:-}" in
                 done
             fi
             rm -f /etc/lindos-release
+            rm -rf /var/lib/lindos/rebrand
         fi
         ;;
     upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)

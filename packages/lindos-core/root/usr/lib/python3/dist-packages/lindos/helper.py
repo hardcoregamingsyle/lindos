@@ -49,6 +49,12 @@ Payload shapes (all JSON objects)::
                         re-verifies the real embedded ``Package`` field via ``dpkg-deb --field``
                         before running ``dpkg -i``, since a filename proves nothing by itself)
 
+    run-batch           {"steps": [{"id": "apply-mode", "action": "apply-mode", "payload": {...}}, ...]}
+                        runs several of the actions above, in order, in ONE root process - i.e. one
+                        pkexec, one password prompt (see :func:`run_privileged_batch`).  Every step's
+                        payload goes through that action's own validator; ``run-batch`` itself, the
+                        reboot actions and ``import-wifi`` (secrets) are refused inside a batch.
+
 ``install-flatpaks`` additionally accepts an optional ``"remote": {"name", "url"}`` (an
 https:// Flatpak repo other than Flathub, e.g. NVIDIA's own GeForce NOW remote).
 
@@ -67,8 +73,8 @@ import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import paths
 
@@ -88,7 +94,21 @@ ACTIONS: List[str] = [
     "install-drivers", "set-fan-profile", "set-sched", "write-system-config", "enable-earlyoom",
     "reboot-to-windows", "firmware-setup", "import-wifi", "set-binfmt",
     "apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs",
+    "run-batch",
 ]
+
+# --- run-batch (one pkexec = one password prompt for a whole list of actions) -----------------
+#: at most this many steps / this many bytes of serialised steps in one batch.
+BATCH_MAX_STEPS = 32
+BATCH_MAX_BYTES = 256 * 1024
+BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+#: never runnable inside a batch: nesting, the two actions that reboot the machine (they need
+#: their own explicit confirmation and must be the *last* thing that happens), and the one that
+#: carries secrets (a Wi-Fi psk must not ride along in a generic, logged, multi-step payload).
+BATCH_FORBIDDEN_ACTIONS = frozenset({"run-batch", "reboot-to-windows", "firmware-setup", "import-wifi"})
+#: prefix of the machine-readable progress lines the helper prints (column 0, flushed, one JSON
+#: object per line); every other helper output line is indented or is a plain message.
+BATCH_MARKER = "@@lindos-batch "
 
 # --- validation vocabulary ---------------------------------------------------------------
 #: a leading '-'/'--' is rejected (must start with an alnum) so a "package"/"flatpak id" can
@@ -411,6 +431,43 @@ def _local_deb_files(payload: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _batch_step(item: Any, index: int, seen: set) -> Dict[str, Any]:
+    """Validate one ``run-batch`` step ``{"id"?, "action", "payload"?}`` and return it normalised.
+    The payload goes through :func:`validate_payload` for the step's *own* action - the exact
+    validator a single call gets, no shortcut.  *seen* collects the ids used so far."""
+    _expect(isinstance(item, dict), f"steps[{index}] must be an object")
+    sub_action = item.get("action")
+    _expect(isinstance(sub_action, str) and sub_action in ACTIONS,
+            f"steps[{index}]: unknown action {sub_action!r}")
+    _expect(sub_action not in BATCH_FORBIDDEN_ACTIONS,
+            f"steps[{index}]: action '{sub_action}' is not allowed inside run-batch")
+    step_id = item.get("id", sub_action)
+    _expect(isinstance(step_id, str) and bool(BATCH_ID_RE.match(step_id)),
+            f"steps[{index}]: 'id' must be a short identifier (letters, digits, . _ -)")
+    _expect(step_id not in seen, f"steps[{index}]: duplicate step id {step_id!r}")
+    sub_payload = item.get("payload")
+    try:
+        normalised = validate_payload(sub_action, {} if sub_payload is None else sub_payload)
+    except PayloadError as exc:
+        raise PayloadError(f"steps[{index}] ({step_id}): {exc}") from None
+    seen.add(step_id)
+    return {"id": step_id, "action": sub_action, "payload": normalised}
+
+
+def _batch_steps(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Validate ``run-batch``'s ``"steps"``: a bounded, ordered list of steps (see :func:`_batch_step`)."""
+    value = payload.get("steps")
+    _expect(isinstance(value, list) and bool(value), "'steps' must be a non-empty list")
+    _expect(len(value) <= BATCH_MAX_STEPS, f"'steps' must have at most {BATCH_MAX_STEPS} entries")
+    try:
+        size = len(json.dumps(value, separators=(",", ":")))
+    except (TypeError, ValueError):
+        raise PayloadError("'steps' must be plain JSON data") from None
+    _expect(size <= BATCH_MAX_BYTES, f"'steps' is too large ({size} bytes; at most {BATCH_MAX_BYTES})")
+    seen: set = set()
+    return [_batch_step(item, index, seen) for index, item in enumerate(value, 1)]
+
+
 def validate_payload(action: str, payload: Any) -> Dict[str, Any]:
     """Validate and normalise *payload* for *action*.
 
@@ -526,6 +583,8 @@ def validate_payload(action: str, payload: Any) -> Dict[str, Any]:
         pass  # no fields — a plain 'apt-get autoremove --purge'
     elif action == "install-local-debs":
         out["files"] = _local_deb_files(p)
+    elif action == "run-batch":
+        out["steps"] = _batch_steps(p)
     return out
 
 
@@ -656,6 +715,285 @@ def run_privileged(action: str, payload: Optional[Dict[str, Any]] = None,
     return HelperResult(code == 0, out, err, code)
 
 
+# --- run-batch client: many actions, one pkexec, one password prompt ----------------------------
+@dataclass
+class BatchStepResult:
+    """Outcome of one step of a :func:`run_privileged_batch` call."""
+
+    id: str
+    action: str
+    ok: bool
+    code: int = 0
+    message: str = ""
+    seconds: float = 0.0
+    out: str = ""
+
+    def __bool__(self) -> bool:  # pragma: no cover - trivial
+        return self.ok
+
+    def to_helper_result(self) -> HelperResult:
+        """The same outcome as a single-call :class:`HelperResult` (``err`` = the failure message)."""
+        return HelperResult(self.ok, self.out, "" if self.ok else self.message, self.code)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"id": self.id, "action": self.action, "ok": self.ok, "code": self.code,
+                "message": self.message, "seconds": self.seconds}
+
+
+@dataclass
+class BatchResult:
+    """Outcome of :func:`run_privileged_batch`: one :class:`BatchStepResult` per submitted step (in
+    submission order, whether or not the helper got to run it) plus the helper process's own
+    output and exit code (``code`` 127 = helper/pkexec not available, 126 = authentication
+    cancelled/failed, 124 = timeout)."""
+
+    ok: bool
+    results: List[BatchStepResult] = field(default_factory=list)
+    out: str = ""
+    err: str = ""
+    code: int = 0
+
+    def __bool__(self) -> bool:  # pragma: no cover - trivial
+        return self.ok
+
+    def get(self, step_id: str) -> Optional[BatchStepResult]:
+        for res in self.results:
+            if res.id == step_id:
+                return res
+        return None
+
+    @property
+    def failed(self) -> List[BatchStepResult]:
+        return [r for r in self.results if not r.ok]
+
+    @property
+    def message(self) -> str:
+        bad = self.failed
+        if bad:
+            return f"{bad[0].id}: {bad[0].message}" if bad[0].message else f"{bad[0].id} failed"
+        return "ok"
+
+
+def _batch_item(index: int, item: Any) -> Tuple[str, Any, Any]:
+    """``(id, action, payload)`` from ``{"id"?, "action", "payload"?}`` or an ``(id, action, payload)``
+    tuple; anything else yields ``(f"step-{index}", None, None)`` (rejected later, per step)."""
+    if isinstance(item, dict):
+        action, payload = item.get("action"), item.get("payload")
+        step_id = item.get("id", action)
+    elif isinstance(item, (tuple, list)) and len(item) == 3:
+        step_id, action, payload = item
+    else:
+        return f"step-{index}", None, None
+    return (step_id if isinstance(step_id, str) and step_id else f"step-{index}"), action, payload
+
+
+def parse_batch_line(line: str) -> Optional[Dict[str, Any]]:
+    """The event dict of a helper ``@@lindos-batch {...}`` progress line, else ``None``."""
+    if not line.startswith(BATCH_MARKER):
+        return None
+    try:
+        event = json.loads(line[len(BATCH_MARKER):])
+    except ValueError:
+        return None
+    if isinstance(event, dict) and event.get("event") in ("start", "result") and isinstance(event.get("id"), str):
+        return event
+    return None
+
+
+class _BatchStream:
+    """Consumes the helper's stdout: turns marker lines into per-step results (as they arrive) and
+    attributes every other line to the step that is currently running."""
+
+    def __init__(self, actions: Dict[str, str], notify: Callable[[BatchStepResult], None]) -> None:
+        self.actions = actions
+        self.notify = notify
+        self.results: Dict[str, BatchStepResult] = {}
+        self.current: Optional[str] = None
+        self.lines: Dict[str, List[str]] = {}
+        self._lock = threading.Lock()
+
+    def feed(self, line: str) -> bool:
+        """Handle one stdout line; True when it was a progress marker (do not show it to the user)."""
+        event = parse_batch_line(line)
+        if event is None:
+            with self._lock:
+                if self.current is not None:
+                    self.lines.setdefault(self.current, []).append(line)
+            return False
+        step_id = event["id"]
+        if step_id not in self.actions:
+            return True
+        if event["event"] == "start":
+            with self._lock:
+                self.current = step_id
+            return True
+        code = event.get("code")
+        try:
+            seconds = float(event.get("seconds") or 0.0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        with self._lock:
+            res = BatchStepResult(
+                id=step_id, action=self.actions[step_id], ok=bool(event.get("ok")),
+                code=code if isinstance(code, int) and not isinstance(code, bool) else EXIT_ERROR,
+                message=str(event.get("message") or ""), seconds=seconds,
+                out="\n".join(self.lines.get(step_id, [])))
+            self.results[step_id] = res
+            if self.current == step_id:
+                self.current = None
+        self.notify(res)
+        return True
+
+
+def _pump_batch(stream, sink: List[str], log_cb: Optional[Callable[[str], None]], state: _BatchStream) -> None:
+    try:
+        for line in iter(stream.readline, ""):
+            sink.append(line)
+            text = line.rstrip("\n")
+            try:
+                is_marker = state.feed(text)
+            except Exception:  # a broken on_step callback must never kill the reader
+                is_marker = True
+            if log_cb is not None and not is_marker:
+                try:
+                    log_cb(text)
+                except Exception:
+                    pass
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def run_privileged_batch(steps: Iterable[Any], log: Optional[Callable[[str], None]] = None,
+                         on_step: Optional[Callable[[BatchStepResult], None]] = None,
+                         timeout: Optional[float] = None) -> BatchResult:
+    """Run several helper actions through **one** ``pkexec`` — one password prompt for all of them.
+
+    *steps* is an ordered iterable of ``{"id"?, "action", "payload"?}`` dicts or
+    ``(id, action, payload)`` tuples; ids must be unique (default: the action name).  Each payload
+    is validated here **and again by the root helper** with the same per-action validator a single
+    call uses; a step that is invalid (or not allowed in a batch: ``run-batch`` itself, the reboot
+    actions, ``import-wifi``) fails on its own and does not stop the others.  The helper runs the
+    valid steps sequentially, keeps going after a failed step, and prints one flushed
+    ``@@lindos-batch {...}`` line when each step starts and finishes.
+
+    *log* receives every ordinary output line as it is produced; *on_step* is called exactly once
+    per submitted step with its :class:`BatchStepResult` — as soon as the helper reports it, or at
+    the end for steps the helper never got to (authentication cancelled, helper missing, timeout,
+    crash).  Both callbacks run on a reader thread.  Never raises.
+    """
+    items = list(steps or [])
+    slots: List[Optional[BatchStepResult]] = [None] * len(items)
+    valid: List[Tuple[int, Dict[str, Any]]] = []
+    seen: set = set()
+
+    def notify(res: BatchStepResult) -> None:
+        if on_step is not None:
+            try:
+                on_step(res)
+            except Exception:  # never let a UI callback break the batch
+                pass
+
+    for index, raw in enumerate(items):
+        step_id, action, payload = _batch_item(index + 1, raw)
+        try:
+            entry = _batch_step({"id": step_id, "action": action, "payload": payload}, index + 1, seen)
+        except PayloadError as exc:
+            res = BatchStepResult(step_id, str(action), False, EXIT_USAGE, f"invalid payload for {action}: {exc}")
+            slots[index] = res
+            notify(res)
+            continue
+        valid.append((index, entry))
+
+    def finish(out: str = "", err: str = "", code: int = EXIT_OK) -> BatchResult:
+        results = [r for r in slots if r is not None]
+        return BatchResult(all(r.ok for r in results), results, out, err, code)
+
+    def fail_rest(reported: Dict[str, BatchStepResult], message: str, code: int) -> None:
+        for index, entry in valid:
+            if entry["id"] in reported:
+                slots[index] = reported[entry["id"]]
+                continue
+            res = BatchStepResult(entry["id"], entry["action"], False, code or EXIT_ERROR, message)
+            slots[index] = res
+            notify(res)
+
+    if not valid:
+        return finish(code=EXIT_USAGE if items else EXIT_OK)
+
+    entries = [entry for _index, entry in valid]
+    actions = {entry["id"]: entry["action"] for entry in entries}
+
+    helper = helper_path()
+    if not os.path.isfile(helper):
+        message = f"helper not found: {helper}"
+        fail_rest({}, message, 127)
+        return finish("", message, 127)
+    body = {"steps": entries}
+    cmd = build_command("run-batch", body, stdin_payload=True)
+    if not cmd:
+        message = "no privilege escalation tool (pkexec/sudo) available"
+        fail_rest({}, message, 127)
+        return finish("", message, 127)
+
+    env = dict(os.environ)
+    env.setdefault("LC_ALL", "C.UTF-8")
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8", errors="replace", env=env)
+    except (OSError, ValueError) as exc:
+        message = f"cannot start helper: {exc}"
+        fail_rest({}, message, 127)
+        return finish("", message, 127)
+
+    def _kill() -> None:
+        try:
+            proc.kill()
+        except OSError:  # pkexec is setuid-root: an unprivileged caller may not be allowed to signal it
+            pass
+
+    stdin_error = ""
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(body, separators=(",", ":"), sort_keys=True))
+        proc.stdin.close()
+    except (OSError, ValueError) as exc:
+        # e.g. pkexec already exited (authentication cancelled) before reading a large payload: keep
+        # going so its real exit code (126) is what gets reported
+        stdin_error = f"cannot write payload to the helper's stdin: {exc}"
+
+    state = _BatchStream(actions, notify)
+    out_lines: List[str] = []
+    err_lines: List[str] = []
+    t_out = threading.Thread(target=_pump_batch, args=(proc.stdout, out_lines, log, state), daemon=True)
+    t_err = threading.Thread(target=_pump, args=(proc.stderr, err_lines, log), daemon=True)
+    t_out.start()
+    t_err.start()
+    try:
+        code = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill()
+        proc.wait()
+        code = 124
+        err_lines.append(f"helper timed out after {timeout}s\n")
+    t_out.join()
+    t_err.join()
+    out = "".join(out_lines)
+    err = "".join(err_lines)
+    if code == 126 and not err.strip():
+        err = "authentication cancelled or not authorised"
+    if stdin_error and code == 0:
+        code, err = 127, stdin_error
+    if code == 0:
+        why = "the helper finished without reporting this step"
+    else:
+        why = (err.strip().splitlines() or [""])[-1] or f"helper exited with code {code}"
+    fail_rest(dict(state.results), why, code)
+    return finish(out, err, code)
+
+
 # --- convenience wrappers (one per action) ------------------------------------------------
 def apply_mode(plan: Dict[str, Any], log: Optional[Callable[[str], None]] = None) -> HelperResult:
     return run_privileged("apply-mode", plan, log)
@@ -767,4 +1105,6 @@ __all__ = [
     "set_services", "apply_sysctl", "apply_tune", "set_zram", "install_compat", "install_gaming",
     "install_drivers", "set_fan_profile", "set_sched", "write_system_config", "enable_earlyoom",
     "reboot_to_windows", "firmware_setup", "import_wifi", "set_binfmt",
+    "BATCH_MAX_STEPS", "BATCH_MAX_BYTES", "BATCH_ID_RE", "BATCH_FORBIDDEN_ACTIONS", "BATCH_MARKER",
+    "BatchStepResult", "BatchResult", "parse_batch_line", "run_privileged_batch",
 ]

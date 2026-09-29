@@ -1,11 +1,15 @@
+/etc/apt/apt.conf.d/99lindos-branding
+/etc/default/grub.d/49-lindos-distributor.cfg
 /etc/fonts/conf.d/60-lindos-ui.conf
 /etc/lightdm/lightdm.conf.d/50-lindos.conf
 /etc/lightdm/slick-greeter.conf
 /etc/lindos-release
+/etc/skel/.config/autostart/mintwelcome.desktop
 /etc/skel/.config/lindos/README
 /etc/systemd/system/lightdm.service.d/lindos-timeout.conf
 /etc/xdg/autostart/lindos-mode-apply-user.desktop
 /etc/xdg/autostart/lindos-picom.desktop
+/etc/xdg/autostart/lindos-polkit-agent.desktop
 /etc/xdg/autostart/lindos-setup.desktop
 /etc/xdg/autostart/lindos-update-notify.desktop
 /etc/xdg/gtk-3.0/settings.ini

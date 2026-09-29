@@ -27,6 +27,7 @@ from . import helper as lhelper
 from . import paths
 
 log = logging.getLogger("lindos.modes")
+_LOG = log  # apply_mode()'s "log" parameter shadows the module logger
 
 MODE_IDS: List[str] = ["everyday", "gaming", "work", "creator", "lite"]
 GOVERNORS = ("schedutil", "performance", "powersave")
@@ -477,15 +478,25 @@ def _step_system(mode: Mode, result: ApplyResult, dry_run: bool, system: bool, l
 
 
 # --- public entry point ------------------------------------------------------------------
+def system_plan(mode_id: str, *, system: bool = False, offline: bool = False) -> Dict[str, Any]:
+    """The helper ``apply-mode`` payload for *mode_id* (:func:`build_system_plan`); ``KeyError`` for an
+    unknown mode.  Lets a caller that batches several privileged steps into one helper run
+    (``lindos.helper.run_privileged_batch`` - the first-boot wizard) do the privileged half
+    itself and call :func:`apply_mode` with ``defer_system=True`` for the user half."""
+    return build_system_plan(get_mode(mode_id), set_system_default=system, offline=offline)
+
+
 def apply_mode(mode_id: str, *, system: bool = False, dry_run: bool = False,
-               log: LogFn = print) -> ApplyResult:
+               log: LogFn = print, defer_system: bool = False) -> ApplyResult:
     """Switch to *mode_id*.
 
     User side (always): write ``~/.config/lindos/config.json``, load the panel profile
     (``xfce4-panel-profiles load`` or the xml fallback), pin launchers, start/stop the
     compositor, run ``apply-user.sh``.  Privileged side: helper ``apply-mode`` with
     :func:`build_system_plan` (skipped when ``dry_run``).  ``system=True`` additionally makes
-    the helper write ``/etc/lindos/system.json``.
+    the helper write ``/etc/lindos/system.json``.  ``defer_system=True`` leaves the privileged
+    side entirely to the caller (which sends :func:`system_plan` to the helper itself, e.g. inside
+    a ``run-batch``) so this call never asks for a password.
 
     Never raises for missing tools; see :class:`ApplyResult`.
     """
@@ -503,18 +514,21 @@ def apply_mode(mode_id: str, *, system: bool = False, dry_run: bool = False,
         try:
             step(mode, result, dry_run, log_fn)
         except Exception as exc:  # defensive: a step must never abort the switch
-            log.exception("step %s crashed", getattr(step, "__name__", step))
+            _LOG.exception("step %s crashed", getattr(step, "__name__", step))
             result.add(getattr(step, "__name__", "step").replace("_step_", ""), False, f"error: {exc}")
-    try:
-        _step_system(mode, result, dry_run, system, log_fn)
-    except Exception as exc:
-        log.exception("system step crashed")
-        result.add("system", False, f"error: {exc}")
+    if defer_system:
+        result.add("system", True, "deferred: the privileged part is run by the caller (one password prompt)")
+    else:
+        try:
+            _step_system(mode, result, dry_run, system, log_fn)
+        except Exception as exc:
+            _LOG.exception("system step crashed")
+            result.add("system", False, f"error: {exc}")
     log_fn("done: " + ("ok" if result.ok else "finished with errors"))
     return result
 
 
 __all__ = [
     "MODE_IDS", "GOVERNORS", "COMPOSITORS", "PLAN_SCHEMA", "Mode", "ApplyResult",
-    "load_modes", "get_mode", "current_mode", "build_system_plan", "apply_mode",
+    "load_modes", "get_mode", "current_mode", "build_system_plan", "system_plan", "apply_mode",
 ]

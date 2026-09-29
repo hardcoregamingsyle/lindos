@@ -3,10 +3,13 @@
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!--
-  Lindos privileged helper (SPEC §4.6).  One action id, auth_admin_keep: the user is asked
-  for the administrator password once and the grant is kept for a few minutes so that a mode
-  switch or the OOBE apply page needs a single prompt.  Every helper action name and payload is
-  validated inside /usr/libexec/lindos/lindos-helper against a whitelist.
+  Lindos privileged helper (SPEC §4.6).  One action id, auth_admin_keep: polkit may keep the grant
+  for a few minutes, but nothing relies on that (it does not survive a long install, and every
+  pkexec is a new process).  A flow with several privileged steps, such as the OOBE apply page, runs
+  them all through the helper's "run-batch" action: one pkexec, one password prompt.  The prompt is
+  shown by a graphical polkit agent, which lindos-desktop autostarts.  No rule here or elsewhere
+  skips the password.  Every helper action name and payload is validated inside
+  /usr/libexec/lindos/lindos-helper against a whitelist.
 -->
 <policyconfig>
   <vendor>Lindos</vendor>

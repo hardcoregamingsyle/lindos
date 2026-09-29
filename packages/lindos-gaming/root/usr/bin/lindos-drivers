@@ -873,7 +873,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     if not args.dry_run and not is_root():
         return escalate(helper_flags(args), as_json=bool(args.json))
     if not args.dry_run and not online():
-        msg = "offline: driver installation needs the Ubuntu/Mint apt repositories (and NVIDIA's 'restricted' component)"
+        msg = "offline: driver installation needs the system's apt repositories (and NVIDIA's 'restricted' component)"
         if args.json:
             print(json.dumps({"status": "offline", "error": msg}))
         else:

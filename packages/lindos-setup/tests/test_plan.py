@@ -611,7 +611,8 @@ def test_ui_modules_import_with_gi_stub():
     assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
                                 "transfer", "summary", "apply", "done"]
     assert [p.id for p in pages.make_pages()] == pages.PAGE_ORDER
-    assert (app.CARD_W, app.CARD_H) == (900, 620)
+    assert widgets.COLUMN_MAX_W == 760            # centred content column, not a fixed 900x620 card
+    assert not hasattr(app, "CARD_W")
     assert (widgets.THUMB_W, widgets.THUMB_H) == (192, 108)
     assert os.path.isfile(app.CSS_PATH)
     assert isinstance(widgets.style_priority(1), int)

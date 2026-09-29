@@ -238,7 +238,7 @@
         {
           "id": "store",
           "label": "Store",
-          "description": "Browse and install applications (Software Manager)",
+          "description": "Browse and install apps (system packages and Flatpak)",
           "icon": [
             "system-software-install"
           ],

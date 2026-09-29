@@ -16,7 +16,7 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
 | Area | What Lindos ships |
 |---|---|
 | Desktop | XFCE 4.18 with a bottom 48 px translucent taskbar (`xfce4-panel` + Whisker menu + `xfce4-docklike-plugin`), `Lindos-Dark` / `Lindos-Light` GTK + xfwm4 themes (built from Fluent), `Lindos` icon theme, Fluent cursors, Selawik UI font, picom compositor with 8 px rounded corners, Windows-style keyboard shortcuts (`Super`, `Super+E`, `Super+I`, `Super+X`, `Super+L`, …). See [docs/KEYBOARD-SHORTCUTS.md](docs/KEYBOARD-SHORTCUTS.md). |
-| First boot | `lindos-setup`, a Windows-style OOBE: Mode → browser → personalisation → apps → privacy → summary → apply. Works offline (Firefox fallback, installs deferred). |
+| First boot | `lindos-setup`, a full-screen Windows 11-style out-of-box experience: mode → browser → personalise → apps → privacy → bring your stuff from Windows → summary → "Just a moment…" apply (log behind a details toggle) → all set. Works offline (Firefox fallback, installs deferred). |
 | Modes | **Everyday**, **Gaming**, **Work**, **Creator**, **Lite** — switchable any time with `lindos-mode set <id>` or in Lindos Settings. Each mode = taskbar pins, packages, services, sysctl, CPU governor, zram size, compositor. See [docs/MODES.md](docs/MODES.md). |
 | Settings | `lindos-settings`, a Windows-11-style settings centre (12 pages, Win+X power menu). Native pages for Home, Personalization, Windows apps, Gaming, Hardware, Mode and About; the rest delegate to the existing Mint/XFCE tools to keep RAM low. See [docs/SETTINGS.md](docs/SETTINGS.md). |
 | Windows programs | Double-click any `.exe`/`.msi`/`.bat`/`.lnk` → `lindos-run` picks Wine or Proton-GE (umu-launcher), creates a per-program `C:\` drive, installs, scans for new programs and puts them in the Start menu. Recipes for well-known programs (`lindos-compat recipes`), `lindos-compat doctor`. See [docs/WINDOWS-APPS.md](docs/WINDOWS-APPS.md). |
@@ -89,7 +89,7 @@ make Wine, Proton, Steam, Roblox (Sober), Minecraft and drivers work out of the 
 ### Use it
 
 1. Build or download `lindos-1.0.0-xfce-64bit.iso`, write it to a USB stick (Rufus / Etcher /
-   `dd`), boot, install with the Mint installer as usual.
+   `dd`), boot, install with the Lindos installer as usual.
 2. On first login the **Lindos Setup** wizard appears. Pick a Mode and a browser, tick the apps
    you want (Windows app support is on by default), finish.
 3. Everything the wizard did can be changed later in **Lindos Settings** (`Super+I`) or from

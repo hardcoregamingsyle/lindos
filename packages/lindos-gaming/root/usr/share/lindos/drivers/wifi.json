@@ -4,7 +4,7 @@
     "Broadcom PCI vendor id is 14e4; only the wireless network-controller class (0280) is matched",
     "here (14e4 also ships wired NICs via the in-kernel tg3 driver, which need no extra package).",
     "Each chip lists `recommended` packages in preference order; the installer picks the first one",
-    "that apt actually offers on this system. `bcmwl-kernel-source` is the Ubuntu/Mint name for the",
+    "that apt actually offers on this system. `bcmwl-kernel-source` is the Ubuntu name for the",
     "Broadcom STA (wl) DKMS driver; `broadcom-sta-dkms` is the Debian name for the same driver;",
     "`firmware-b43-installer` drives the open b43 kernel driver and downloads Broadcom's firmware;",
     "`firmware-b43legacy-installer` covers the oldest BCM4306/4301-class parts. These are proprietary",

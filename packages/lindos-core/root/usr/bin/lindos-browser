@@ -5,7 +5,7 @@
   lindos-browser get  [--json]              effective browser (config) + xdg default
   lindos-browser install <edge|chrome|firefox> [--set-default] [--json]
         Edge/Chrome are downloaded from Microsoft's / Google's official apt repositories
-        (needs internet + admin password via polkit); Firefox is Mint's .deb on the ISO.
+        (needs internet + admin password via polkit); Firefox ships on the ISO.
   lindos-browser set-default <edge|chrome|firefox>
   lindos-browser status [--json]            online? installed set? default?
 

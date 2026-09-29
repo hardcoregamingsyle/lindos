@@ -78,6 +78,7 @@ class Recipe:
     summary: str = ""
     homepage: str = ""
     installer_hint: str = ""
+    winget_id: str = ""  # exact winget PackageIdentifier; "" = not confirmed yet (never guess one)
     path: str = ""
 
     @classmethod
@@ -179,6 +180,8 @@ def validate_recipe(data: object, *, filename: Optional[str] = None) -> List[str
         alts = data.get("alternatives")
         if not isinstance(alts, list) or not alts:
             errors.append("broken recipes must list 'alternatives'")
+    if not isinstance(data.get("winget_id", ""), str):
+        errors.append("'winget_id' must be a string (\"\" while it is not confirmed)")
     alts = data.get("alternatives", [])
     if alts is not None and not isinstance(alts, list):
         errors.append("'alternatives' must be a list")
@@ -255,6 +258,8 @@ def format_recipe(r: Recipe, *, verbose: bool = True) -> str:
             lines.append("  Registry: " + "; ".join(f"{e.get('key')}\\{e.get('name')}={e.get('value')}" for e in r.registry))
         if r.installer_hint:
             lines.append(f"  Installer: {r.installer_hint}")
+        if r.winget_id:
+            lines.append(f"  winget:    {r.winget_id}  (lindos-compat winget show {r.winget_id})")
         lines.append("  Notes:")
         for para in r.notes.split("\n"):
             lines.append("    " + para)

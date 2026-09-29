@@ -1,0 +1,4 @@
+// Lindos: after every package operation put the Lindos branding back over anything the Linux
+// Mint base packages just rewrote (os-release, lsb-release, the Mint tools' menu entries, ...).
+// Idempotent, offline and never fails the apt run.  Docs: docs/BUILDING.md ("Mint sweep").
+DPkg::Post-Invoke { "if [ -x /usr/libexec/lindos/apply-branding.sh ]; then /usr/libexec/lindos/apply-branding.sh --quiet --files-only >/dev/null 2>&1 || true; fi"; };

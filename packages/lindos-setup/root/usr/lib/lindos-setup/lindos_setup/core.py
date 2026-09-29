@@ -540,8 +540,152 @@ def _exec_helper(step: Step, logf: LogFn) -> Any:
     return ok, "" if ok else "helper %s exited with %s" % (step.action, code)
 
 
-def make_real_executors() -> Dict[str, Executor]:
-    """Executors that call the real lindos-core APIs (SPEC §13 call map)."""
+def _browser_later_hint(bid: str, why: str = "") -> str:
+    return ("%s could not be installed now%s. Install it later with "
+            "'lindos-browser install %s --set-default' or from the Web browsers "
+            "cards in Lindos Settings > Apps (lindos-settings apps)."
+            % (bid, (" (%s)" % why) if why else "", bid))
+
+
+class SystemBatch:
+    """Every ``kind=system`` step of a plan, run through ONE ``lindos-helper`` process.
+
+    The first system step that the :class:`~lindos_setup.plan.Runner` reaches triggers
+    :meth:`run`, which sends all of the plan's privileged work to
+    ``lindos.helper.run_privileged_batch`` -- a single ``pkexec``, i.e. a single password prompt
+    (a fresh pkexec per step meant one prompt per step, and again whenever polkit's temporary
+    grant expired during a long download).  Later system steps only read the cached per-step
+    outcomes, so ``Runner`` / ``Plan`` / ``Step`` semantics, per-step UI callbacks and failure
+    isolation are unchanged.  Work that needs no root stays in the executors and runs as the user
+    after the batch: the rest of ``apply-mode`` (config, panel, compositor, ``apply-user.sh``) and
+    the browser "already installed / offline" pre-check and later verification.
+
+    ``run_batch`` is injectable for tests; the default is ``lindos.helper.run_privileged_batch``.
+    """
+
+    def __init__(self, plan: _plan.Plan, run_batch: Optional[Callable[..., Any]] = None) -> None:
+        self.plan = plan
+        self._run_batch = run_batch
+        self._lock = threading.Lock()
+        self._started = False
+        self.entries: List[Dict[str, Any]] = []
+        self.outcomes: Dict[str, Tuple[bool, str]] = {}
+        self.result: Any = None
+
+    # -- building / running the batch ------------------------------------------
+    def steps(self) -> List[Step]:
+        return [s for s in self.plan.system_steps() if s.action in _plan.SYSTEM_ACTION_ORDER]
+
+    def _prepare(self, step: Step, logf: LogFn) -> Optional[Dict[str, Any]]:
+        """The batch entry for *step*, or None when it needs no helper (outcome recorded here)."""
+        payload = dict(step.payload)
+        if step.action == ACT_APPLY_MODE:
+            modes = _need("modes")
+            payload = modes.system_plan(str(step.payload["mode"]),
+                                        offline=not bool(step.payload.get("online", True)))
+        elif step.action == ACT_INSTALL_BROWSER:
+            browsers = _need("browsers")
+            bid = str(step.payload["browser"])
+            ready = browsers.install_preflight(bid, logf)
+            if ready is True:
+                self.outcomes[step.id] = (True, "already installed")
+                return None
+            if ready is False:
+                self.outcomes[step.id] = (False, "offline")
+                return None
+            payload = {"browser": bid}
+        return {"id": step.id, "action": step.action, "payload": payload}
+
+    def run(self, logf: LogFn) -> None:
+        """Send the whole plan's privileged work to the helper once (idempotent)."""
+        with self._lock:
+            if self._started:
+                return
+            self._started = True
+            for step in self.steps():
+                try:
+                    entry = self._prepare(step, logf)
+                except Exception as exc:  # one broken step must not sink the others
+                    log.warning("cannot prepare %s: %s", step.id, exc)
+                    self.outcomes[step.id] = (False, "%s: %s" % (type(exc).__name__, exc))
+                    continue
+                if entry is not None:
+                    self.entries.append(entry)
+            if not self.entries:
+                return
+            try:
+                run_batch = self._run_batch or _need("helper").run_privileged_batch
+                logf("Applying %d system change(s) with a single administrator prompt..." % len(self.entries))
+                self.result = run_batch(list(self.entries), log=logf, on_step=self._on_step)
+            except Exception as exc:
+                log.error("privileged batch failed: %s", exc)
+                for entry in self.entries:
+                    self.outcomes.setdefault(entry["id"], (False, "%s: %s" % (type(exc).__name__, exc)))
+                return
+            for res in getattr(self.result, "results", None) or []:
+                self.outcomes[res.id] = (bool(res.ok), str(res.message or ""))
+            for entry in self.entries:
+                self.outcomes.setdefault(entry["id"], (False, "the helper did not report this step"))
+
+    def _on_step(self, res: Any) -> None:
+        self.outcomes[res.id] = (bool(res.ok), str(res.message or ""))
+
+    def outcome(self, step: Step) -> Tuple[bool, str]:
+        return self.outcomes.get(step.id, (False, "no result was recorded for this step"))
+
+    # -- executors (one per system action) --------------------------------------
+    def exec_helper(self, step: Step, logf: LogFn) -> Any:
+        self.run(logf)
+        ok, msg = self.outcome(step)
+        if ok:
+            return True
+        return False, ("helper %s failed: %s" % (step.action, msg)) if msg else "helper %s failed" % step.action
+
+    def exec_apply_mode(self, step: Step, logf: LogFn) -> Any:
+        self.run(logf)
+        modes = _need("modes")
+        mode_id = str(step.payload["mode"])
+        result = modes.apply_mode(mode_id, log=logf, defer_system=True)   # the user half, as the user
+        for entry in getattr(result, "steps", None) or []:
+            try:
+                name, ok, msg = entry
+            except (TypeError, ValueError):
+                continue
+            logf("  %s %s%s" % ("+" if ok else "!", name, (" - " + str(msg)) if msg else ""))
+        problems: List[str] = []
+        if not _ok(result):
+            problems.append("mode apply reported problems (see log)")
+        sys_ok, sys_msg = self.outcome(step)
+        if not sys_ok:
+            problems.append("system part failed: %s" % (sys_msg or "no details"))
+        return (not problems), "; ".join(problems)
+
+    def exec_install_browser(self, step: Step, logf: LogFn) -> Any:
+        self.run(logf)
+        ok, msg = self.outcome(step)
+        if ok:
+            return True
+        return False, _browser_later_hint(str(step.payload["browser"]), msg)
+
+
+def make_real_executors(plan: Optional[_plan.Plan] = None) -> Dict[str, Executor]:
+    """Executors that call the real lindos-core APIs (SPEC §13 call map).
+
+    With *plan*, every privileged step shares one :class:`SystemBatch` (one helper run, one
+    password prompt); without it each privileged step makes its own helper call (the original
+    per-step behaviour, kept for callers that run a single step).
+    """
+    execs = _make_step_executors()
+    if plan is not None and plan.system_steps():
+        batch = SystemBatch(plan)
+        for action in _plan.SYSTEM_ACTION_ORDER:
+            execs[action] = batch.exec_helper
+        execs[ACT_APPLY_MODE] = batch.exec_apply_mode
+        execs[ACT_INSTALL_BROWSER] = batch.exec_install_browser
+    return execs
+
+
+def _make_step_executors() -> Dict[str, Executor]:
     return {
         ACT_WRITE_CONFIG: _exec_write_config,
         ACT_SET_THEME: _exec_set_theme,
@@ -657,6 +801,6 @@ __all__ = [
     "core_module", "core_available", "home_dir", "user_path", "setup_done_path", "log_dir",
     "log_file", "setup_done_exists", "in_xfce", "mark_setup_done", "load_modes", "RAM_HINTS",
     "browsers_table", "browser_installed", "is_online", "ram_total_mb", "list_wallpapers",
-    "wallpaper_display_name", "LiveApplier", "make_real_executors", "launch_settings", "which",
+    "wallpaper_display_name", "LiveApplier", "SystemBatch", "make_real_executors", "launch_settings", "which",
     "headless_dry_run", "transfer_sources", "launch_transfer_gui",
 ]

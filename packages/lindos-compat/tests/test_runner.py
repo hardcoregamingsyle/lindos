@@ -351,7 +351,12 @@ def test_cli_installer_flow_creates_start_menu_entry(fake_core, home: Path, tmp_
     installer.write_bytes(make_pe())
     pfx = home / ".local/share/lindos/prefixes/foo"
 
+    registrations = []
+
     def fake_run_plan(plan, **kw):
+        if plan.argv[1] == "regedit":  # the app-package hand-off associations (imported once per C:\ drive)
+            registrations.append(plan)
+            return 0
         # pretend the installer put files on the C:\ drive
         assert plan.env["WINEPREFIX"] == str(pfx)
         assert plan.argv[0] == "/usr/bin/wine" and plan.argv[1] == str(installer)
@@ -376,6 +381,9 @@ def test_cli_installer_flow_creates_start_menu_entry(fake_core, home: Path, tmp_
     assert "Installed: Foo Editor" in out
     # prefix was initialised with wineboot and remembered
     assert (pfx / "system.reg").exists() and prefix.read_marker(pfx)["runner"] == "wine"
+    # the MSIX hand-off associations went into that C:\ drive exactly once, before the installer ran
+    assert len(registrations) == 1 and registrations[0].argv[2] == "/S"
+    assert prefix.read_marker(pfx)["handoff"] == 1
     # Start Menu entry
     desktop = home / ".local/share/applications/lindos-foo-editor.desktop"
     assert desktop.exists()

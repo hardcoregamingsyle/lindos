@@ -52,6 +52,7 @@ Lindos/
 │   ├── mkdeb.sh                ← builds packages/<name> into out/debs/<name>_<ver>_all.deb
 │   ├── chroot/NN-*.sh          ← ordered hooks executed INSIDE the chroot (see §8)
 │   ├── overlay/                ← files copied verbatim onto ISO root (grub.cfg, isolinux, …)
+│   ├── installer/              ← slideshow + GTK skin staged for chroot/78-installer-brand.sh
 │   ├── Dockerfile              ← ubuntu:24.04 + xorriso squashfs-tools … ; `make docker-iso`
 │   ├── test-qemu.sh            ← boot out/lindos-*.iso in QEMU (OVMF UEFI + legacy)
 │   └── fetch-assets.sh         ← pinned git checkouts of Fluent theme/icons/cursors + fonts
@@ -98,6 +99,7 @@ under `bin/`, `libexec/`, `sbin/`, `*.sh`, `DEBIAN/post*|pre*` → 755), then
 | Version / codename | `1.0.0` / **Aurora** |
 | Base | Linux Mint 22.x XFCE (default `22.2` "Zara", Ubuntu 24.04 `noble`) — set in `build/config.env` |
 | `/etc/os-release` | keep `ID=linuxmint`, `ID_LIKE="ubuntu debian"`, `VERSION_CODENAME`/`UBUNTU_CODENAME` unchanged; set `NAME="Lindos"`, `PRETTY_NAME="Lindos 1.0 (Aurora)"`, `HOME_URL="https://lindos.dev"`, add `LINDOS_VERSION=1.0.0`, `LINDOS_CODENAME=Aurora`. Rationale: apt sources & Mint tooling keep working. |
+| Other release files | `/etc/lsb-release` `DISTRIB_DESCRIPTION`, `/etc/linuxmint/info` `DESCRIPTION` + `GRUB_TITLE` and `/etc/casper.conf` `FLAVOUR` are display fields and say Lindos; `DISTRIB_ID=LinuxMint`, the release number/codename, `EDITION`, apt sources and package names stay (the installer's replace/reuse detection and Mint's tools read them). `/etc/os-release` also gets `SUPPORT_URL`/`BUG_REPORT_URL`/`PRIVACY_POLICY_URL` of the project. GRUB: `/etc/default/grub.d/49-lindos-distributor.cfg` sets `GRUB_DISTRIBUTOR="Lindos"`. Live session user/host: `liveuser`/`lindos`. Mechanism and rationale: `docs/BUILDING.md` ("Mint sweep"). |
 | `/etc/lindos-release` | `Lindos 1.0.0 (Aurora)` |
 | Logo | `/usr/share/pixmaps/lindos-logo.svg`; start-button icon name `lindos-start` (hicolor svg) |
 | Accent colours | Dark accent `#60CDFF`, Light accent `#0067C0`, dark bg `#202020`, card `#2B2B2B`, light bg `#F3F3F3` |
@@ -247,11 +249,24 @@ automatically; every exit path is 0 (never blocks or fails the boot). Enabled by
   `pkexec /usr/libexec/lindos/lindos-helper <action> <json>` (falls back to `sudo -n` if no
   pkexec; if already root, direct).
 - Polkit policy id `org.lindos.helper` in `/usr/share/polkit-1/actions/org.lindos.helper.policy`
-  with `auth_admin_keep`.
+  with `auth_admin_keep`. Every `run_privileged` call is its own `pkexec` and may ask for the
+  password; a grant kept by polkit is a convenience, never something a flow relies on. A flow with
+  several privileged steps (the first-boot setup) uses `run_privileged_batch` instead: one
+  `pkexec`, one prompt. The prompt needs a graphical polkit agent in the session; lindos-desktop
+  autostarts one (`/usr/libexec/lindos/polkit-agent-start.sh`) and no rule ever skips the password.
 - Actions (helper validates every payload; never `shell=True`; whitelists only):
   `apply-mode`, `install-browser`, `install-packages`, `install-flatpaks`, `set-governor`,
   `set-services`, `apply-sysctl`, `apply-tune`, `set-zram`, `install-compat`, `install-gaming`,
-  `install-drivers`, `set-fan-profile`, `write-system-config`, `enable-earlyoom`.
+  `install-drivers`, `set-fan-profile`, `write-system-config`, `enable-earlyoom`, `run-batch`.
+- `run_privileged_batch(steps, log=None, on_step=None, timeout=None) -> BatchResult` sends
+  `run-batch` `{"steps": [{"id"?, "action", "payload"?}, …]}` (≤ 32 steps, ≤ 256 KiB, unique ids)
+  over stdin. The helper runs the steps in order in that one root process, each through the same
+  validator and handler as a single call (no nesting; `reboot-to-windows`, `firmware-setup` and
+  `import-wifi` are refused inside a batch), carries on after a failed step, prints a flushed
+  `@@lindos-batch {json}` line when each step starts/finishes, and exits 0 only if every step
+  succeeded (1 otherwise, 2 for an invalid payload). `BatchResult.results` has one
+  `BatchStepResult(id, action, ok, code, message, seconds, out)` per submitted step and `on_step`
+  fires once per step as it finishes.
 - Logs to `/var/log/lindos/helper.log`.
 
 ### 4.7 Theme (`lindos/theme.py`)
@@ -323,7 +338,12 @@ Ships:
   entries: `lindos-setup.desktop` (first-run gate), `lindos-picom.desktop`, `lindos-mode-apply-user`.
 - Branded `.desktop` shims in `/usr/share/applications/`: `lindos-files.desktop` (Name=File
   Explorer, Exec=thunar), `lindos-settings.desktop` (Name=Settings), `lindos-store.desktop`
-  (Name=Store, Exec=mintinstall), `lindos-terminal.desktop` (Name=Terminal, Exec=xfce4-terminal).
+  (Name=Lindos Store, Icon=lindos-store, Exec=mintinstall — the base's Software Manager, described as
+  apps/packages/Flatpak, never as the Microsoft Store), `lindos-terminal.desktop` (Name=Terminal,
+  Exec=xfce4-terminal). The base's own Software Manager and Welcome Screen menu entries are hidden
+  (they duplicate the Store shim and Lindos Setup); Update Manager and Driver Manager stay, with
+  Lindos icons — `/usr/libexec/lindos/rebrand-base.py` + `/usr/share/lindos/branding/base-sweep.json`,
+  re-applied after every apt run by `/etc/apt/apt.conf.d/99lindos-branding` (`docs/BUILDING.md`, "Mint sweep").
 - Fonts installed to `/usr/share/fonts/truetype/{selawik,inter}` by `build/fetch-assets.sh`
   (pinned URLs + SHA256) — the package ships `fonts.conf` snippet
   `/etc/fonts/conf.d/60-lindos-ui.conf` aliasing `Segoe UI` → Selawik.
@@ -337,10 +357,19 @@ Ships:
 - Binary `/usr/bin/lindos-setup` → `python3 /usr/lib/lindos-setup/main.py "$@"`.
 - Flags: `--first-run` (exit 0 silently if `SETUP_DONE` exists or not in XFCE), `--reconfigure`,
   `--dry-run` (no helper calls, print plan), `--page <id>`.
-- GTK 3, one `Gtk.Window` fullscreen, undecorated, dark `#202020`, centred card 900×620,
-  Windows-11-OOBE styling via `Gtk.CssProvider` (`ui/oobe.css`). Fonts follow xsettings.
-- Pages (ids): `welcome` → `mode` → `browser` → `personalize` → `apps` → `privacy` → `summary`
-  → `apply` → `done`.
+- GTK 3, one `Gtk.Window` fullscreen (maximised if the WM refuses), undecorated, dark `#202020`
+  fluent backdrop, Windows-11-OOBE styling via `Gtk.CssProvider` (`ui/oobe.css`, GTK 3 CSS
+  subset only). Fonts follow xsettings. Layout: a slim step indicator on top ("Step n of 7"; not
+  shown on `welcome`/`apply`/`done`), each page a centred column of at most 760 px (large
+  semibold heading, one short subtitle, one focused question; `welcome`/`apply`/`done` are
+  centred "hero" pages), and a bottom bar with a quiet **Back**, a rounded accent **Next**
+  (or Accept / Apply / Start using Lindos) and — in `--reconfigure` only — **Cancel**. Escape
+  behaves as before (quits only in `--reconfigure`).
+- Pages (ids): `welcome` → `mode` → `browser` → `personalize` → `apps` → `privacy` → `transfer`
+  → `summary` → `apply` → `done`. Wording follows the Windows OOBE: "Let's get you set up",
+  "How will you use this PC?", "Choose your web browser", "Make it yours", "Get the apps you
+  need", "Choose your privacy settings" (button: Accept), "Bring your stuff from Windows",
+  "Ready to set up your PC?", "Just a moment…", "All set" (button: Start using Lindos).
   - `mode`: 5 cards (icon, name, one-line description, RAM hint), default Everyday.
   - `browser`: 3 cards (Edge, Chrome, Firefox) with note "Edge/Chrome download from vendor";
     **Chrome pre-selected by default** when online (`Selections.browser` default, `lindos_setup/
@@ -348,19 +377,23 @@ Ships:
     when offline, and the selection automatically falls back to Firefox (pre-selected) in that
     case — the same fallback applies if Chrome was never installed by the first-boot service
     (offline at every boot so far): Settings → Apps → Web browsers installs it later.
-  - `personalize`: Dark/Light toggle (default Dark), accent swatches (8), wallpaper thumbnails,
-    taskbar alignment Center/Left.
+  - `personalize`: Dark/Light cards (default Dark), accent swatches (8), wallpaper thumbnails,
+    taskbar alignment Center/Left cards.
   - `apps`: checkboxes — "Windows app support (Wine + Proton)" (on), "Steam" (on in gaming),
     "Roblox (Sober)", "Minecraft (Prism Launcher)", "Heroic (Epic/GOG)", "Lutris", "Bottles",
     "Office (LibreOffice already installed) — add OnlyOffice", "Creative (GIMP, Krita, Kdenlive)".
-    Pre-checked set depends on chosen mode.
+    Pre-checked set depends on chosen mode. This page also carries the §0.1 reality check (Wine
+    and Proton are a translation layer, not Windows; Valorant/Fortnite do not run on any Linux)
+    as an always-visible note plus a "Learn more about Windows apps" disclosure.
   - `privacy`: informational (no telemetry, no ads), toggles: location services off, crash
     reports off (both default off; nothing to send).
   - `summary`: review + Back.
-  - `apply`: progress bar + log; builds `Plan` (JSON) → user-side steps directly + ONE helper call
-    per privileged group; robust to offline (mark skipped, tell user how to finish later:
-    `lindos-settings apps`).
-  - `done`: "Welcome to Lindos" + Finish (writes `SETUP_DONE`, config `setup_done=true`).
+  - `apply`: large spinner + slim progress bar, friendly rotating lines ("Hi", "We're getting
+    things ready for you", "This might take a few minutes — please don't turn off your PC"); the
+    log is hidden behind a "Show details" toggle; builds `Plan` (JSON) → user-side steps directly +
+    ONE helper call per privileged group; robust to offline (mark skipped, tell user how to
+    finish later: `lindos-settings apps`).
+  - `done`: "All set" + "Start using Lindos" (writes `SETUP_DONE`, config `setup_done=true`).
 - Pure logic in `lindos_setup/plan.py` (`Plan`, `build_plan(selections) -> Plan`, `Plan.to_json()`,
   `Plan.user_steps()`, `Plan.system_payloads()`), unit-tested without GTK.
 - Autostart: `/etc/xdg/autostart/lindos-setup.desktop` (`Exec=lindos-setup --first-run`,
@@ -477,6 +510,14 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
   (dkms optional), `mesa-vulkan-drivers:i386`, `libgl1-mesa-dri:i386`, `nvidia` NOT preinstalled
   (mintdrivers/`lindos-drivers` at first boot; ISO ships `nvidia-driver-5xx` in pool? → no,
   keep ISO small; document), OpenRGB (repo/deb), `antimicrox`, `goverlay`, `piper`, `corectrl`.
+- `77-mint-sweep.sh` — last pass over what still says "Linux Mint": re-runs lindos-desktop's
+  `apply-branding.sh --files-only` (menu/autostart entries, lsb-release/linuxmint-info display fields,
+  Firefox start page), verifies Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when
+  `apt-get -s purge` shows nothing else would go, and logs an audit of everything left. Guarded and
+  idempotent; runs before `78-installer-brand.sh`.
+- `78-installer-brand.sh` — rebrands the Ubiquity live installer (debconf templates, live-desktop
+  launcher, welcome artwork, slideshow, `Lindos-Setup` GTK skin); reads `build/installer/`; every step
+  guarded and idempotent (`docs/BUILDING.md`, "Installer branding").
 - `80-cleanup.sh` — `apt-get autoremove --purge`, `apt-get clean`, rm `/tmp/lindos`, machine-id
   reset, `/var/lib/dbus/machine-id`, resolv.conf restore, logs truncated, `/root/.bash_history`.
 

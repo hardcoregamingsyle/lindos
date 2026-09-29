@@ -52,6 +52,11 @@ Shared code lives in **lindos-core** (`lindos.compat`: `analyze_exe`, `ExeInfo`,
    `lindos-exe`, `Categories=Wine;X-Lindos;`, `StartupWMClass=<exe name>`) + record in
    `APPS_DB` `{slug:{name,exe,prefix,runner,installed_at,kind,...}}` via
    `lindos.compat.apps_db_save`, then `notify-send`.
+   MSIX hand-off (`lindos_compat.handoff`, SPEC-WINDOWS §28.4a): before an installer runs, a Wine
+   C:\ drive gets (once, marker `handoff`: 1) file associations for `.msix/.appx/...` and
+   `ms-appinstaller:` that only record the path (or, for a link, just that one arrived) in `drive_c/ProgramData/Lindos/handoff.log`; when the
+   installer exits, the queue and the new packages in Temp/Downloads go through the MSIX handler
+   (the usual question) or ONE explanation. It never opens a file manager.
 7. GUI feedback: when stdout is not a TTY and `DISPLAY` is set → `zenity --progress` /
    `--error` (or `yad`). Exit codes 0 / 1 / 2. `--info` prints the `ExeInfo` as JSON, `--dry-run`
    prints the launch plan.
@@ -61,7 +66,7 @@ Shared code lives in **lindos-core** (`lindos.compat`: `analyze_exe`, `ExeInfo`,
 ## Recipes
 
 `{id,name,vendor,category,status,notes,runner,arch,winetricks,dll_overrides,env,post_cmds,
-registry,alternatives,summary,homepage,installer_hint}` — `id` == file name; `status ∈
+registry,alternatives,summary,homepage,installer_hint,winget_id?}` — `id` == file name; `status ∈
 works|partial|broken`; broken recipes **must** carry `alternatives` and `apply` refuses them.
 `apply` = create prefix → `winetricks -q <verbs>` (with `WINEPREFIX`) → `wine reg add` for
 `dll_overrides` (HKCU\Software\Wine\DllOverrides) and `registry` → `post_cmds` → env/overrides

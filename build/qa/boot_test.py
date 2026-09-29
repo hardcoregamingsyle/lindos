@@ -170,7 +170,7 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
         # rest of the run. `plymouth.enable=0` skips starting plymouth at all, so systemd's normal
         # verbose status keeps flowing to ttyS0 for the whole boot regardless of what the display
         # is doing, whether or not lightdm/Xorg ever actually finish.
-        "boot=casper username=mint hostname=mint plymouth.enable=0 "
+        "boot=casper username=liveuser hostname=lindos plymouth.enable=0 "
         f"console=ttyS0,115200n8 {CI_BOOT_TEST_FLAG} --"
         # ^ Deliberately NOT `systemd.run={SMOKE_SCRIPT_PATH} ...`: with plymouth.enable=0 in
         # place (above), run 36370906849 proved that theory wrong for the *real* remaining

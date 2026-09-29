@@ -107,13 +107,11 @@ def online(timeout: float = 3.0) -> bool:
     return False
 
 
-def install(bid: str, log: LogFn = print) -> bool:
-    """Install *bid* through the helper action ``install-browser``.
-
-    Returns True when the browser ends up installed.  Offline → logs a clear notice and
-    returns False (Firefox on the ISO is the fallback; the setup wizard tells the user how to
-    finish later: ``lindos-browser install <id>``).
-    """
+def install_preflight(bid: str, log: LogFn = print) -> Optional[bool]:
+    """The unprivileged half of :func:`install`: ``True`` = already installed (nothing to do),
+    ``False`` = cannot be installed now (offline; the reason is logged), ``None`` = the privileged
+    ``install-browser`` helper action has to run.  Lets a caller that batches several privileged
+    steps into one helper run (``lindos.helper.run_privileged_batch``) decide whether to include it."""
     info = _check(bid)
     if is_installed(bid):
         log(f"{info['name']} is already installed")
@@ -122,6 +120,20 @@ def install(bid: str, log: LogFn = print) -> bool:
         log(f"offline: {info['name']} is downloaded from the vendor's apt repository — connect to the "
             f"internet and run 'lindos-browser install {bid}' later. Firefox is available meanwhile.")
         return False
+    return None
+
+
+def install(bid: str, log: LogFn = print) -> bool:
+    """Install *bid* through the helper action ``install-browser``.
+
+    Returns True when the browser ends up installed.  Offline → logs a clear notice and
+    returns False (Firefox on the ISO is the fallback; the setup wizard tells the user how to
+    finish later: ``lindos-browser install <id>``).
+    """
+    info = _check(bid)
+    ready = install_preflight(bid, log)
+    if ready is not None:
+        return ready
     log(f"installing {info['name']} (this needs administrator rights)…")
     res = lhelper.run_privileged("install-browser", {"browser": bid}, log=log)
     if not res.ok:
@@ -250,5 +262,5 @@ def list_browsers() -> List[Dict[str, Any]]:
     return out
 
 
-__all__ = ["BROWSERS", "is_installed", "install", "set_default", "online", "dpkg_installed",
+__all__ = ["BROWSERS", "is_installed", "install", "install_preflight", "set_default", "online", "dpkg_installed",
            "default_browser", "list_browsers"]

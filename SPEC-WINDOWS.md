@@ -81,6 +81,7 @@ Windows' kernel-level anti-cheat."* The first two exist (§3–§11). This adden
 | `diskimage.py` | W-A | ISO/IMG loop-mount via udisksctl + `autorun.inf` |
 | `binfmt.py` | W-A | binfmt_misc status / conflict scan (terminal `./setup.exe`) |
 | `msix.py` | W-B | MSIX/APPX/bundles/uploads/`.appinstaller`: classify, inspect, safe install |
+| `handoff.py` | W-B | installers that hand an MSIX package to Windows: Wine file associations + leftover-package net (§28.4a) |
 | `winget.py`, `wingetyaml.py` | W-C | winget index + manifests: search/show/install with hash chain |
 | `cli_run.py`, `runner.py`, `prefix.py`, `doctor.py`, `recipes` data | W-A | integration (existing) |
 | `cli_compat.py` | W-C | subcommands `formats`, `binfmt`, `winget` (existing file) |
@@ -152,7 +153,7 @@ root. Suffix is the fallback, never the first signal for executables.
 
 | id | suffixes | handler | status | behaviour |
 |---|---|---|---|---|
-| `exe` | .exe | run | works | existing flow (§9) |
+| `exe` | .exe | run | works | existing flow (§9); a bootstrapper that hands an MSIX package to Windows is caught (§28.4a) |
 | `dotnet-exe` | .exe (CLR/apphost) | run | partial | Wine/umu + ".NET: wine-mono covers many; some need Microsoft .NET (licence tied to Windows)" |
 | `win16-exe` | .exe (NE 2/4) | win16 | partial | Wine, mode-aware (§28.5) |
 | `dos-exe` | .exe (MZ/LE/LX/NE-other) | dos | works | DOSBox (§28.5) |
@@ -284,8 +285,81 @@ Rules (all binding):
   `AppxMetadata/CodeIntegrity.cat`, Store signer OID) → honest message; "Try anyway" only for
   non-encrypted `win32` packages.
 - **`.appinstaller`:** parse `MainPackage`/`MainBundle` (namespaces `appx/appinstaller/2017`,
-  `/2017/2`, `/2018`, `/2021`); never auto-download; never register `ms-appinstaller:`; ignore
-  UpdateSettings.
+  `/2017/2`, `/2018`, `/2021`); never auto-download; never register `ms-appinstaller:` with the host desktop (§28.4a records it inside a
+  C:\ drive only); ignore UpdateSettings.
+
+### 28.4a Installers that hand an app package to Windows (`handoff.py`, `cli_run.py`)
+
+**The failure this fixes.** A bootstrapper `.exe` (e.g. the Claude desktop app's setup program, as first
+seen on Lindos) downloads a large `.msix` into `%TEMP%` and `ShellExecute`s it (or `Add-AppxPackage`s it,
+or opens an `ms-appinstaller:` link). Inside a Wine C:\ drive nothing was associated with those types, so
+Wine's shell answered `SE_ERR_NOASSOC` — the dialog "There is no Windows program configured to open this
+type of file" — and the bootstrapper's own fallback showed the temp folder. `lindos-run` never looked at the
+leftover package: its post-run scan only diffs `.lnk/.exe/.desktop` files, and `_open_folder` is only ever
+called for `.cab` extraction and disc mounts, so the file manager was almost certainly opened by Wine's own
+shell (explorer/winebrowser) on the bootstrapper's behalf, not by Lindos. (Derived from the code and the
+user's report; the exact Wine-side sequence is only confirmable in a real run.)
+
+```python
+# handoff.py (stdlib only, hermetic; every path stays inside the C:\ drive or the user's home)
+HANDOFF_VERSION = 1; MARKER_KEY = "handoff"; PROG_ID = "Lindos.AppPackage"
+PACKAGE_SUFFIXES = (".msix", ".appx", ".msixbundle", ".appxbundle", ".msixupload", ".appxupload",
+                    ".emsix", ".eappx", ".emsixbundle", ".eappxbundle", ".appinstaller")
+URI_SCHEMES = ("ms-appinstaller",)
+def handler_command() -> str        # C:\windows\system32\cmd.exe /d /c echo "%1">>"C:\ProgramData\Lindos\handoff.log"
+def uri_handler_command() -> str    # ...cmd.exe /d /c echo ms-appinstaller:>>"...handoff.log"  (NO %1: a link can hold " or &)
+def registration_reg() -> str       # HKEY_CLASSES_ROOT: each suffix -> Lindos.AppPackage (shell\open + shell\runas
+                                    # -> handler_command); ms-appinstaller URL protocol -> uri_handler_command
+def prepare_registration(prefix: Path) -> Path   # <prefix>/.lindos-handoff/handoff.reg (UTF-16LE, BOM, CRLF) + queue folder
+def is_registered(marker) -> bool; def mark_registered(prefix) -> bool
+def snapshot_packages(prefix) -> Dict[str, Tuple[float, int]]
+def find_packages(prefix, before, *, started=None, consume=True) -> List[Candidate]
+def assess(candidate, msix) -> Verdict           # role: app | appinstaller | component | unsupported | encrypted | damaged | uri
+def explain_text(installer: str, verdicts) -> str
+def sniff_bootstrapper(path) -> List[str]        # hints only (--info, a log line); never a verdict
+```
+
+Rules (binding):
+- **Association, not installation.** The handler only appends the (quoted) path or link to the queue file
+  and returns; it never runs a Lindos or host program, so it works under every runner and inside a
+  container. It is imported with `wine regedit /S` (through `build_plan`/`run_plan`, logged in
+  `run-<slug>.log`) once per C:\ drive, recorded as `"handoff": 1` in `.lindos.json`; a failed import is a
+  warning, never fatal, and is retried on the next run. Only for `handler == "run"`, runner `wine`, kind
+  other than `game` (never Proton/`umu` game drives or Bottles). Written to `HKEY_CLASSES_ROOT`
+  (= `HKLM\Software\Classes`, where `wine.inf` puts its own classes) and to both verbs `open`/`runas`.
+- **Net after exit** (`handler == "run"`, runner ≠ bottles, kind ≠ game): `snapshot_packages` before the run;
+  afterwards `find_packages` = the queue (each line mapped with `lnk.windows_to_unix`, kept only when it is
+  a package-suffixed regular file inside the drive or the user's home; the queue is consumed and a symlinked
+  queue is never followed) ∪ package-suffixed files that are new or changed in `windows/temp`, `Temp`,
+  every `users/*/{Temp,AppData/Local/Temp,Local Settings/Temp}` (depth ≤ 4) and `users/*/{Downloads,
+  Desktop}` (depth 1). Anything already there before the run is never offered again. Classification is by
+  **content** (`msix.classify`/`inspect`), never the suffix.
+- **Outcome.** ≥ 1 installable (`app`, or an `.appinstaller` that then asks/validates as in §28.4) → each goes
+  through `_handle_msix` with a one-sentence context line ("`<installer>` downloaded this app and asked
+  Windows to install it…"), i.e. the usual question (or `--yes`), into its package-family C:\ drive, with
+  `new_prefix` forced off (`--new-prefix` must never move aside the drive that still holds the package). No
+  installable but ≥ 1 of `unsupported | encrypted | damaged | uri` → **ONE** message (`explain_text`: what
+  was handed over, why it cannot run, and the ways forward — a Linux/web version, `lindos-compat winget
+  search "<name>"`, `lindos-vm`/`lindos-winapps` — plus where the file still is) and exit code 3. Only
+  frameworks/resource packages → silence. When the net handled something, the generic "ended with exit code
+  N" dialog is not shown on top (an installer-created Start-Menu entry still wins as before).
+- **`ms-appinstaller:` links** are registered *inside the C:\ drive only* to record THAT one was handed over (never its
+  text: a link can hold quotes or ampersands that must not reach cmd.exe, see uri_handler_command); the
+  explanation therefore names no host, and the link is never fetched. The host desktop never gets an `x-scheme-handler/ms-appinstaller`.
+- **Never** open a file manager (or anything else) on the installer's temp folder.
+- **Big packages** (hundreds of MB): extraction streams 1 MiB chunks (unchanged); `MsixInfo.unpacked_bytes`
+  (additive, from the extraction plan) feeds `msix.check_space(info, prefix)`, which `lindos-run` calls
+  **before** asking — "Not enough free disk space: the app needs about X but only Y is free on that drive…"
+  — the question shows "Disk space: about X once unpacked", the progress dialog updates once per percent,
+  and `install()` deletes `.lindos-msix-*` staging folders older than a day (a killed install's leftovers).
+- **Honest limits.** Not verifiable without a real Wine run: that the `HKCR` association intercepts the
+  bootstrapper's `ShellExecute`; that Wine's `cmd.exe` writes the queue line as expected (and does not flash
+  a console window); what a bootstrapper does after a "successful" hand-off. A bootstrapper that waits for
+  Windows to report the app as installed still times out (Wine cannot answer) — the net then offers the
+  package afterwards; one that deletes its download before exiting leaves nothing to offer. A package's own
+  protocol/file-type registrations are not applied (browser sign-in may not return to the app).
+- **Recipes** gain the optional `winget_id` field (exact package id, `""` until confirmed — never guessed);
+  `claude-desktop.json` (`partial`) documents this flow.
 
 ### 28.5 DOS & Win16 (`dos.py`)
 

@@ -65,7 +65,13 @@ What happens:
    `icoutils` is present, else the generic `lindos-exe` icon) and a record in
    `~/.local/share/lindos/apps.json` (`{slug: {name, exe, prefix, runner, installed_at, kind,
    …}}`). Lindos Settings → Windows apps lists exactly that database.
-5. **Feedback** — when started from the file manager (no terminal) `zenity`/`yad` show
+5. **App packages handed to Windows** — some installers only download an `.msix` and ask Windows
+   to install it, which Wine cannot do. In a Wine C:\ drive Lindos registers (once) a recorder for
+   package files, and when the installer exits it offers to unpack the desktop app from the
+   package, or explains in one message why it cannot run here — never a raw Windows error and
+   never a file manager opened on the temp folder. Details: [WINDOWS-FORMATS.md](WINDOWS-FORMATS.md)
+   §3.1; example: the `claude-desktop` recipe below.
+6. **Feedback** — when started from the file manager (no terminal) `zenity`/`yad` show
    "Preparing Windows compatibility…" and errors with the copyable log path
    `~/.local/state/lindos/run-<slug>.log`. `LINDOS_NO_GUI=1` disables the dialogs.
 
@@ -139,6 +145,7 @@ homepage.
 |---|---|---|---|---|---|---|
 | `7zip` | 7-Zip | utility | **works** | wine / win64 | The 7-Zip File Manager runs through Wine; Lindos already extracts 7z/zip/rar natively. | Archive Manager, 7-Zip for Linux (7zz), PeaZip |
 | `autocad` | Autodesk AutoCAD (2016–2025) | engineering | **broken** | wine / win64 | Does NOT work: installer, licensing/sign-in service and the DirectX 11 canvas all fail. | AutoCAD Web, FreeCAD, LibreCAD / QCAD, BricsCAD (Linux build) |
+| `claude-desktop` | Claude (desktop app for Windows) | utility | **partial** | wine / win64 | The Windows setup program downloads an app package (MSIX) instead of installing itself; Lindos catches that hand-off and unpacks the desktop app. Not yet confirmed on real hardware (sign-in through the browser may not return to the app). | Claude on the web (claude.ai), Claude Code (native terminal agent) |
 | `epic-games-launcher` | Epic Games Launcher (Windows client) | gaming | **broken** | umu / win64 | The Windows Epic launcher is not supported; your Epic games work through Heroic (native launcher + Proton). Fortnite stays impossible (EAC-Linux disabled by Epic). | Heroic Games Launcher, Legendary (CLI), Lutris |
 | `foobar2000` | foobar2000 | media | **works** | wine / win64 | Playback, library, tagging, converter and most components work through Wine. | DeaDBeeF, Strawberry, Quod Libet |
 | `illustrator-cc-2021` | Adobe Illustrator CC 2021 (v25) | creator | **partial** | wine / win64 | Vector editing works with GPU preview off; sign-in, cloud documents and some panels do not; 2022+ fail. | Inkscape, Krita, Figma / Photopea (web) |
@@ -163,7 +170,7 @@ alternatives (restarting into Windows, or a native/cloud route when one really e
 
 Recipe JSON schema: `{id, name, vendor, category, status, notes, runner (wine|umu|bottles),
 arch (win32|win64), winetricks[], dll_overrides{}, env{}, post_cmds[], registry[{key,name,type,
-value}], alternatives[{name,how}], summary, homepage, installer_hint}`; `id` must equal the file
+value}], alternatives[{name,how}], summary, homepage, installer_hint, winget_id (optional: the exact winget package id, "" until confirmed)}`; `id` must equal the file
 name; `broken` recipes must carry `alternatives`. `LINDOS_RECIPES_DIR` overrides the directory.
 
 Adobe, in one paragraph (SPEC §0.1): CS6 works; the 2019–2021 Photoshop / Illustrator releases
@@ -197,6 +204,7 @@ Root only (`pkexec`), exit 0 ok / 1 an item failed / 2 usage or not root / 3 off
 |---|---|
 | `~/.local/share/lindos/prefixes/<slug>/` | one C:\ drive per program (`drive_c/`, `.lindos.json` marker with slug/runner/arch/created_at) |
 | `~/.local/share/lindos/prefixes/default/` | the shared drive (`--shared`) |
+| `<prefix>/.lindos-handoff/handoff.reg`, `<prefix>/drive_c/ProgramData/Lindos/handoff.log` | the app-package hand-off (WINDOWS-FORMATS §3.1): the association that gets imported once, and the list of packages an installer asked Windows to open |
 | `~/.local/share/lindos/apps.json` | the Windows-apps database (Start-menu entries + Settings list) |
 | `~/.local/share/applications/lindos-<slug>.desktop` | generated Start-menu entries (`Categories=Wine;X-Lindos;`) |
 | `~/.local/share/icons/hicolor/<size>x<size>/apps/lindos-<slug>.png` | extracted icons |

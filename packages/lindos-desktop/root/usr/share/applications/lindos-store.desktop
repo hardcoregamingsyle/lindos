@@ -1,15 +1,15 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Store
-GenericName=Software Manager
-Comment=Install and remove apps (Software Manager)
+Name=Lindos Store
+GenericName=Apps
+Comment=Find, install and remove apps (system packages and Flatpak)
 Exec=mintinstall
 TryExec=mintinstall
-Icon=mintinstall
+Icon=lindos-store
 Terminal=false
 StartupNotify=true
 StartupWMClass=mintinstall
 Categories=System;PackageManager;GTK;
-Keywords=store;software;apps;install;flatpak;package;
+Keywords=store;apps;software;install;uninstall;flatpak;package;
 X-Lindos-Component=desktop

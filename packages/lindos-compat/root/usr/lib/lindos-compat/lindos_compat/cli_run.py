@@ -28,6 +28,12 @@ Flow:
      package identity must match;
    * ``explain`` -- nothing is run; the reason is shown (exit code 3).
 
+Installers that hand a Windows app package (MSIX/APPX) to Windows -- a bootstrapper that downloads a
+``.msix`` and calls ``ShellExecute`` on it -- end up in the same safe flow: the C:\\ drive gets an
+association that only records the hand-off (``handoff.py``), and when the installer exits the package
+is offered to the MSIX handler, or ONE plain explanation is shown, instead of a dead end (SPEC-WINDOWS
+§28.4a).  Lindos never opens the installer's temp folder in a file manager.
+
 Everything destructive or outward-facing asks first: a dialog when started from the file
 manager, a y/N prompt in a terminal, ``--yes`` for scripts -- otherwise Lindos refuses.
 
@@ -1229,6 +1235,11 @@ def _cmd_info(ctx: _Ctx) -> int:
     if profile is not None and not profile.possible:
         data["route_hint"] = f"lindos-game route {profile.id}"
     handler = ctx.handler
+    if handler == "run" and path.suffix.lower() == ".exe":
+        hand = _mod("handoff")
+        if hand is not None:
+            data["msix_handoff"] = {"hints": hand.sniff_bootstrapper(path),
+                                    "prefix_registered": hand.is_registered(marker)}
     if handler == "msix":
         msix = _mod("msix")
         try:
@@ -1623,6 +1634,20 @@ def _handle_wine(ctx: _Ctx) -> int:  # noqa: C901 - the launch flow is linear
     deep = kind in ("installer", "msi", "unknown") or handler != "run"
     before = snapshot(scan_prefix, deep=deep) if scanning else {}
 
+    # installers may hand a Windows app package (MSIX) to Windows: catch it (SPEC-WINDOWS §28.4a)
+    netting = handler == "run" and runner != "bottles" and kind != "game"
+    pkg_before: Optional[Dict[str, Any]] = None
+    if netting:
+        _prepare_handoff(ctx, slug=slug, pfx_path=pfx_path, runner=runner, state=state, config=config,
+                         extra_env=extra_env, overrides=overrides, headless=headless, log_path=plan.log_path,
+                         registered=bool(registered))
+        hand = _mod("handoff")
+        if hand is not None:
+            try:
+                pkg_before = hand.snapshot_packages(scan_prefix)
+            except OSError as exc:
+                log.debug("could not list the app packages in %s: %s", scan_prefix, exc)
+
     # -- 5. run -----------------------------------------------------------------------
     fb.close_progress()
     log.info("Starting %s (%s) - log: %s", path.name, handler if handler != "run" else kind, plan.log_path)
@@ -1649,16 +1674,100 @@ def _handle_wine(ctx: _Ctx) -> int:  # noqa: C901 - the launch flow is linear
             _refresh_desktop_database()
         link_windows_apps(slug, created[0] if len(created) == 1 else display_name)
 
+    # -- 6b. did the installer hand a Windows app package (MSIX) to Windows? ----------
+    handed: Optional[int] = None
+    if netting:
+        handed = _handoff_net(ctx, pfx_path=scan_prefix, before=pkg_before, started=started)
+
     # -- 7. feedback ------------------------------------------------------------------
-    return _wine_feedback(ctx, rc=rc, slug=slug, created=created, log_path=plan.log_path)
+    return _wine_feedback(ctx, rc=rc, slug=slug, created=created, log_path=plan.log_path, handoff=handed)
 
 
-def _wine_feedback(ctx: _Ctx, *, rc: int, slug: str, created: List[str], log_path: Path) -> int:
+def _prepare_handoff(ctx: _Ctx, *, slug: str, pfx_path: Path, runner: str, state: PrefixState, config: object,
+                     extra_env: Dict[str, str], overrides: Dict[str, str], headless: bool, log_path: Path,
+                     registered: bool) -> None:
+    """Before an installer runs: import the app-package associations once per C:\\ drive.
+
+    A bootstrapper that calls ``ShellExecute`` on a downloaded ``.msix`` then reaches a handler that only
+    records it (``handoff.py``) instead of Wine's "no program configured for this file type" dialog.  Also
+    logs when the installer looks like such a bootstrapper.  Never fatal: the after-run net works without it.
+    """
+    hand = _mod("handoff")
+    if hand is None:
+        return
+    if not registered:
+        hints = hand.sniff_bootstrapper(ctx.path)
+        if hints:
+            log.info("'%s' may download a Windows app package (MSIX) and ask Windows to install it (%s); Lindos "
+                     "will offer to unpack it when the installer finishes.", ctx.path.name, ", ".join(hints[:3]))
+    if runner != "wine" or not (pfx_path / "system.reg").exists() or hand.is_registered(read_marker(pfx_path)):
+        return
+    ctx.fb.progress("Preparing Windows compatibility (app packages)\u2026")
+    try:
+        reg = hand.prepare_registration(pfx_path)
+        reg_plan = build_plan(runner="wine", slug=slug, exe=reg, kind="app", config=config, headless=headless,
+                              extra_env=extra_env, dll_overrides=overrides, arch=state.arch,
+                              tail=["regedit", "/S", wine_path(reg, pfx_path)])
+    except (OSError, FileNotFoundError) as exc:
+        log.debug("app-package hand-off not registered (%s); the after-run check still works", exc)
+        return
+    rc = run_plan(reg_plan)
+    if rc != 0:
+        log.warning("Registering the app-package hand-off failed (exit code %s); see %s. Installers that hand a "
+                    "package to Windows are still caught when they exit.", rc, log_path)
+        return
+    hand.mark_registered(pfx_path)
+
+
+def _handoff_net(ctx: _Ctx, *, pfx_path: Path, before: Optional[Dict[str, Any]], started: float) -> Optional[int]:
+    """After an installer exits: was an app package (MSIX/APPX) handed to Windows?
+
+    Returns None when nothing was, else the exit code of what happened -- installed (through the normal
+    MSIX question), cancelled, or explained once.  Never opens a file manager (the installer's temp
+    folder is none of the user's business) and never installs without the usual question.
+    """
+    hand, msix = _mod("handoff"), _mod("msix")
+    if hand is None or msix is None:
+        return None
+    try:
+        candidates = hand.find_packages(pfx_path, before, started=started)
+    except Exception as exc:  # noqa: BLE001 - the net must never break a finished install
+        log.debug("could not look for a handed-off package: %s", exc)
+        return None
+    if not candidates:
+        return None
+    verdicts = [hand.assess(c, msix) for c in candidates]
+    for v in verdicts:
+        log.info("'%s' handed off %s: %s", ctx.path.name, v.file_name or v.title, v.role)
+    installable = [v for v in verdicts if v.installable][:3]
+    if installable:
+        outcome: Optional[int] = None
+        for v in installable:
+            sub_ns = copy.copy(ctx.ns)
+            sub_ns.new_prefix = False  # never move the drive aside that still holds the package
+            sub = _Ctx(ns=sub_ns, fb=ctx.fb, path=Path(str(v.path)), args=[], depth=ctx.depth + 1)
+            intro = (f"'{ctx.path.name}' downloaded this app and asked Windows to install it. Windows' own app "
+                     "installer is not part of Wine, so Lindos can unpack the program from the package for you "
+                     "instead.")
+            code = _handle_msix(sub, context=intro)
+            if outcome is None or code == EXIT_OK:
+                outcome = code
+        return outcome
+    reportable = [v for v in verdicts if v.role in ("unsupported", "encrypted", "damaged", "uri")]
+    if not reportable:
+        return None  # only frameworks / resource packages: nothing the user needs to hear about
+    return _explain(ctx, hand.explain_text(ctx.path.name, reportable))
+
+
+def _wine_feedback(ctx: _Ctx, *, rc: int, slug: str, created: List[str], log_path: Path,
+                   handoff: Optional[int] = None) -> int:
     fb, name, handler = ctx.fb, ctx.path.name, ctx.handler
     if created:
         names = ", ".join(created[:4]) + (" \u2026" if len(created) > 4 else "")
         fb.notify("Windows program installed", f"{names} - now in the Start Menu (Wine / Windows apps)")
         print(f"Installed: {names}\nStart Menu entries were created; also listed in Lindos Settings > Windows apps.")
+    if handoff is not None and not created:
+        return handoff  # the installer's hand-off was dealt with (installed, cancelled or explained)
     msiexec = handler in ("msiexec-install", "msiexec-patch") or (handler == "run" and ctx.path.suffix.lower() in (".msi", ".msp"))
     if msiexec and rc in MSI_RESTART_CODES:
         print(f"'{name}' finished; the program asks to be restarted before the change takes effect.")
@@ -1957,15 +2066,30 @@ def _signature_line(info: object) -> str:
 
 
 def _progress_cb(fb: Feedback, title: str) -> Callable[..., None]:
+    last = [-1]
+
     def cb(*args: object, **_kw: object) -> None:
         text = f"Installing {title}\u2026"
         if args and isinstance(args[0], str):
             text = str(args[0])
         elif len(args) >= 2 and isinstance(args[0], (int, float)) and isinstance(args[1], (int, float)) and args[1]:
-            text = f"Installing {title}\u2026 {int(100 * float(args[0]) / float(args[1]))}%"
+            pct = int(100 * float(args[0]) / float(args[1]))
+            if pct == last[0]:
+                return  # a big package reports every megabyte; show each percent once
+            last[0] = pct
+            text = f"Installing {title}\u2026 {pct}%"
         fb.progress(text)
 
     return cb
+
+
+def _human_size(num: float) -> str:
+    n = float(max(0, num))
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} bytes" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"  # pragma: no cover - the loop always returns
 
 
 def _import_package_registry(inst: object, *, slug: str, runner: str, config: object, headless: bool) -> None:
@@ -1986,8 +2110,12 @@ def _import_package_registry(inst: object, *, slug: str, runner: str, config: ob
 
 
 def _handle_msix(ctx: _Ctx, *, package: Optional[Path] = None, confirmed: bool = False,
-                 expect: Optional[Dict[str, str]] = None) -> int:  # noqa: C901 - one linear install flow
-    """MSIX/APPX (+bundles, uploads): inspect → honest refusal or install into a per-package C:\\ drive."""
+                 expect: Optional[Dict[str, str]] = None,
+                 context: str = "") -> int:  # noqa: C901 - one linear install flow
+    """MSIX/APPX (+bundles, uploads): inspect → honest refusal or install into a per-package C:\\ drive.
+
+    ``context`` is a sentence shown above the question (an installer handed us this package).
+    """
     ns, fb = ctx.ns, ctx.fb
     path = package or ctx.path
     name = ctx.path.name if package is None else path.name
@@ -2041,10 +2169,22 @@ def _handle_msix(ctx: _Ctx, *, package: Optional[Path] = None, confirmed: bool =
                              install_dir=str(pfx_path / "drive_c" / "Program Files" / "WindowsApps"
                                              / str(getattr(info, "package_full_name", "") or slug)))
 
+    check_space = getattr(msix, "check_space", None)
+    if callable(check_space):
+        try:
+            check_space(info, pfx_path)  # say so before asking, not after a long unpack
+        except error_cls as exc:
+            return _fail(ctx, f"{title} cannot be installed: {exc}")
+    unpacked = int(getattr(info, "unpacked_bytes", 0) or 0)
+
     lines = [f"Install {title}?", "",
              f"Publisher: {getattr(info, 'publisher_display', '') or getattr(info, 'publisher', '')}",
              f"Version: {getattr(info, 'version', '')} ({getattr(info, 'arch', '') or 'neutral'})",
              _signature_line(info)]
+    if unpacked:
+        lines.append(f"Disk space: about {_human_size(unpacked)} once unpacked")
+    if context:
+        lines[0:0] = [context, ""]
     reason = str(getattr(info, "reason", "") or "")
     if reason:
         lines += ["", reason]

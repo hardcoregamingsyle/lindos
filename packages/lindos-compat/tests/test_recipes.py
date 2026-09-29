@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -206,3 +207,31 @@ def test_apply_reports_failures(repo_recipes_dir: Path, fake_core, home: Path, f
     fake_run2 = type(fake_run)()
     res = recipes.apply_recipe(r, which=fake_which(), run=fake_run2, log_file=home / "recipe.log", prefix_slug="office-alt")
     assert not res.ok and "prefix creation failed" in res.message
+
+
+# --------------------------------------------------------------------------- #
+# claude-desktop: an MSIX-bootstrapper app (SPEC-WINDOWS §28.4a) - honest about what is unverified
+# --------------------------------------------------------------------------- #
+def test_claude_desktop_recipe_is_honest_and_invents_no_ids(repo_recipes_dir: Path):
+    r = recipes.load_recipes(repo_recipes_dir, strict=True)["claude-desktop"]
+    assert r.status == "partial" and r.runner == "wine" and r.winetricks == [] and r.post_cmds == []
+    notes = r.notes.lower()
+    for word in ("msix", "not confirmed", "electron", "no real-wine run", "claude://"):
+        assert word in notes, word
+    assert r.winget_id == ""                                   # not in this repo's data: never guessed
+    assert "lindos-compat winget search claude" in r.notes
+    urls = set(re.findall(r"https?://[^\s'\")]+", json.dumps(r.as_dict())))
+    assert urls == {"https://claude.ai/download"}               # the one homepage; no invented download links
+    assert {a["name"] for a in r.alternatives} >= {"Claude on the web", "Claude Code (terminal)"}
+
+
+def test_winget_id_is_optional_a_string_and_shown_when_set(repo_recipes_dir: Path):
+    data = json.loads((repo_recipes_dir / "7zip.json").read_text(encoding="utf-8"))
+    assert recipes.validate_recipe(data, filename="7zip.json") == []           # absent: fine
+    data["winget_id"] = 7
+    assert any("winget_id" in p for p in recipes.validate_recipe(data, filename="7zip.json"))
+    data["winget_id"] = "7zip.7zip"
+    assert recipes.validate_recipe(data, filename="7zip.json") == []
+    text = recipes.format_recipe(recipes.Recipe.from_dict(data))
+    assert "winget:    7zip.7zip" in text and "lindos-compat winget show 7zip.7zip" in text
+    assert "winget:" not in recipes.format_recipe(recipes.get_recipe("7zip", repo_recipes_dir))

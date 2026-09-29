@@ -1,6 +1,6 @@
 """Updates page (SPEC-UPDATE §37): two honestly-separate channels.
 
-"Operating system & apps" is a single button that opens Mint's own Update Manager
+"Operating system & apps" is a single button that opens the system's Update Manager
 (``mintupdate``) -- unchanged, already works, never touched here. "Lindos components" lists
 every ``lindos-*`` package's installed/available version from ``lindos-update check --json``,
 with a "Check now" (privileged ``apt-get-update`` refresh + re-check) and an "Update now" button
@@ -36,7 +36,7 @@ class UpdatesPage(PageBase):
         osec = self.add_section("Operating system & apps")
         self.os_card = Card(
             "Operating system & apps",
-            "Ubuntu/Mint packages, Firefox, Wine and everything else update through Mint's own Update Manager",
+            "System packages, Firefox, Wine and everything else update through the system Update Manager",
             ("system-software-update",), ("mintupdate", "apt", "system", "operating system"),
         )
         self.os_card.set_control(button("Open Update Manager", "system-software-update", ("suggested-action",), self._open_update_manager))

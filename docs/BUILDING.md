@@ -162,14 +162,108 @@ pkg_available svc_disable svc_mask svc_enable fetch online`).
 | Hook | What it does |
 |---|---|
 | `00-repos.sh` | `dpkg --add-architecture i386`; WineHQ deb822 `.sources` + key (`/etc/apt/keyrings/winehq-archive.key`, `/etc/apt/sources.list.d/winehq-noble.sources`); Valve Steam repo (`/usr/share/keyrings/steam.gpg`, `/etc/apt/sources.list.d/lindos-steam.list` — same paths as `install-gaming.sh`); Flathub system remote; optional Kisak Mesa (`KISAK_MESA=1`, key from Launchpad API + keyserver); optional Mozilla repo (`ADD_MOZILLA_REPO=1`, pinned 1000 — off by default because Mint pins its own firefox); optional `APT_MIRROR` rewrite; `apt-get update` |
-| `10-debloat.sh` | purge `DEBLOAT_PURGE` one package at a time (safety net refuses network/printing basics); `safe_autoremove` (lib.sh: simulates first, marks xfce/mint/lightdm/network-manager/linux-/grub… candidates manual, refuses when > 60 packages would go); disable `DEBLOAT_DISABLE_SERVICES` (bluetooth stays enabled — see the table above); hide `mintreport` / `update-notifier` autostarts; mintwelcome is kept (autostart hidden by lindos-tune / lindos-desktop) |
+| `10-debloat.sh` | purge `DEBLOAT_PURGE` one package at a time (safety net refuses network/printing basics); `safe_autoremove` (lib.sh: simulates first, marks xfce/mint/lightdm/network-manager/linux-/grub… candidates manual, refuses when > 60 packages would go); disable `DEBLOAT_DISABLE_SERVICES` (bluetooth stays enabled — see the table above); hide `mintwelcome` / `mintreport` / `update-notifier` autostarts; mintwelcome stays installed (Mint's metapackages need it) but is never shown — lindos-tune and the Mint sweep hide it as well, the sweep also its menu entry |
 | `20-base.sh` | required set in one transaction (unavailable packages skipped with a loud warning): `xfce4-docklike-plugin xfce4-panel-profiles xfce4-clipman-plugin xfce4-notifyd xfce4-whiskermenu-plugin xfce4-pulseaudio-plugin xfce4-power-manager xfce4-screenshooter xfce4-taskmanager xfce4-appfinder picom systemd-zram-generator earlyoom power-profiles-daemon lm-sensors fancontrol gamemode mangohud python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 gir1.2-glib-2.0 polkitd pkexec flatpak xdg-desktop-portal-gtk xdg-utils desktop-file-utils shared-mime-info fonts-noto-color-emoji winbind cabextract icoutils zenity librsvg2-bin curl wget gpg ca-certificates zstd` + `EXTRA_PACKAGES`; nice-to-have set best effort per package (`fonts-noto-core fonts-inter fonts-jetbrains-mono fonts-liberation libnotify-bin xdotool wmctrl x11-xserver-utils mesa-utils vulkan-tools libvulkan1 mesa-vulkan-drivers pciutils usbutils hdparm nvme-cli smartmontools inxi yad emote baobab gnome-disk-utility pavucontrol gufw timeshift mugshot plymouth-themes plymouth-label`); then `LAPTOP_ESSENTIALS` best effort (firmware, audio UCM configs, Bluetooth, driver metadata, fwupd, a print driver — see the config.env table above and docs/RAM-BUDGET.md); everything `--no-install-recommends` |
 | `30-lindos-debs.sh` | one `apt-get install --no-install-recommends ./…deb` transaction in `LINDOS_DEB_ORDER` (fallback `dpkg -i` + `apt-get -f install`) — the heavy Recommends of lindos-compat/gaming/meta (Wine, Steam, Lutris, …) are *not* pulled onto the ISO; `INCLUDE_WINE` / `INCLUDE_STEAM` / 20-base.sh decide the optional stacks; optional mode packages; `lindos-tune status --json` smoke test |
-| `40-theme.sh` | `/tmp/lindos/assets/install-into-chroot.sh` (Fluent → `Lindos-Dark`/`Lindos-Light`, icons `Lindos`, cursors, fonts); `/usr/libexec/lindos/apply-branding.sh` (os-release sed keeping `ID=linuxmint`, `/etc/issue`, `/etc/lindos-release`, plymouth + wallpaper alternatives); `/usr/libexec/lindos/build-panel-profiles.sh` (`panel.tar.bz2` per mode); `fc-cache`, icon caches, glib schemas, desktop/mime databases; `plymouth-set-default-theme lindos && update-initramfs -u -k all` |
+| `40-theme.sh` | `/tmp/lindos/assets/install-into-chroot.sh` (Fluent → `Lindos-Dark`/`Lindos-Light`, icons `Lindos`, cursors, fonts); `/usr/libexec/lindos/apply-branding.sh` (os-release sed keeping `ID=linuxmint`, `/etc/issue`, `/etc/lindos-release`, plymouth + wallpaper alternatives, and the Mint sweep — see below); `/usr/libexec/lindos/build-panel-profiles.sh` (`panel.tar.bz2` per mode); `fc-cache`, icon caches, glib schemas, desktop/mime databases; `plymouth-set-default-theme lindos && update-initramfs -u -k all` |
 | `50-tune.sh` | `lindos-tune apply --mode ${TUNE_MODE} --system --offline` (presets, sysctl, zram, journald, tmpfiles, earlyoom); honest minimum (preset + fstrim.timer) with a loud warning if lindos-tune is missing |
 | `60-compat.sh` | `INCLUDE_WINE=1` → `/usr/libexec/lindos/install-compat.sh --minimal --from-chroot --no-update` (Ubuntu `wine` + `wine32:i386`, winetricks, cabextract, 32-bit GL/Vulkan; WineHQ *staging* and umu-launcher are installed later at OOBE to keep the ISO small); always: MIME/desktop database refresh + `lindos-compat doctor` report |
 | `70-gaming.sh` | always: `mesa-vulkan-drivers:i386 libgl1-mesa-dri:i386 libvulkan1:i386 steam-devices vulkan-tools mesa-utils` (+ `mangohud:i386` best effort); `INCLUDE_STEAM=1` → `install-gaming.sh --from-chroot ${GAMING_ITEMS}`; `INCLUDE_FLATPAK_LAUNCHERS=1` → Flatpaks. NVIDIA drivers are **not** preinstalled (mintdrivers / `lindos-drivers` at first boot) |
+| `77-mint-sweep.sh` | last pass over what still says "Linux Mint" — see *Mint sweep* below: re-runs `apply-branding.sh --files-only` over the final image, checks Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when `apt-get -s purge` shows nothing else would go with them, prints an audit of everything left; every step guarded, idempotent, never fails the build |
+| `78-installer-brand.sh` | rebrands the live installer (Ubiquity): product name, launcher, artwork, slideshow, GTK skin — see *Installer branding* below; every step guarded (a missing file is a warning), idempotent |
 | `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists, machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
+
+### Installer branding (Ubiquity)
+
+The installer on the ISO is Ubiquity (Linux Mint's fork, GTK frontend). `78-installer-brand.sh` runs
+after every package-installing hook and before `80-cleanup.sh`, so nothing reinstalls Ubiquity over
+its edits. It reads `build/installer/` (staged into the chroot by `build-iso.sh` as
+`/tmp/lindos/installer`) and changes, in the squashfs only:
+
+| Where Ubiquity gets it | What the hook does |
+|---|---|
+| `/var/cache/debconf/templates.dat` — every `ubiquity/text/*` string, all languages | inside `ubiquity/*` stanzas only: `${RELEASE}`, `${DISTRO}` and the hard-coded "Linux Mint" become "Lindos"; the English window title "Install" becomes "Lindos Setup" (a line-count check discards the rewrite if the file's structure changed) |
+| `/usr/share/ubiquity/gtk/*.ui` | "Linux Mint" fall-back labels (e.g. the disk-resize bar) become "Lindos" |
+| `/usr/share/applications/ubiquity.desktop` (the live-desktop launcher; casper substitutes `RELEASE` from `/cdrom/.disk/info` at boot and copies it to the live user's Desktop) | `Name=Install Lindos` in every language, `Icon=lindos-logo`, and `GTK_THEME=Lindos-Setup` inside the existing `sh -c '…'` (nothing else in `Exec=` changes) |
+| `/usr/share/ubiquity-slideshow/slides/` (shown while files are copied; `slideshow.conf` keeps the window size) | replaced by `build/installer/slideshow/`: six static slides, CSS-only, no script, no network — Windows-style look, the five Modes, Windows apps via Wine/Proton, gaming with the honest anti-cheat caveat, privacy, what first-boot Setup does |
+| `/usr/share/ubiquity/pixmaps/{ubuntu_installed,cd_in_tray}.png`, `ubuntu/logo.png` | redrawn from `/usr/share/pixmaps/lindos-logo.svg` with `rsvg-convert` at the original pixel size (a size mismatch keeps the original) |
+| `/usr/share/icons/hicolor/*/apps/{ubiquity,mintubiquity}.svg` | the Lindos logo |
+| `/usr/share/themes/Lindos-Setup/` | `build/installer/themes/Lindos-Setup/gtk-3.0/gtk.css`: `Lindos-Dark` plus accent colours for Ubiquity's own `.ubiquity-next`, `.ubiquity-menubar` and progress bars — colours and buttons only, no geometry; only installed when `Lindos-Dark` is present |
+| `/sbin/casper-stop` ("Please remove the installation medium, then press ENTER") | carries no product name; only a defensive text rewrite |
+
+Deliberately **not** changed: partitioning behaviour, Ubiquity's Python code, compiled `.mo`
+catalogues (a non-English installer can still say "Linux Mint" in a few translated strings),
+`/cdrom/.disk/info` (written by `build-iso.sh`; Ubiquity's `get_release()` and casper read it),
+the live user name and host (`liveuser` / `lindos` on the GRUB command lines — changed by the Mint sweep
+below) and the installed system's `/etc/lsb-release` / GRUB title (also the sweep's). The hook ends with an audit that lists, in `out/hooks/78-installer-brand.log`,
+every installer file that still mentions "Linux Mint". The Ubiquity files it edits are owned by the
+`ubiquity*` packages, which the installer removes from the installed system; the few files the hook
+adds (slideshow, `Lindos-Setup` theme) are tiny and stay behind as orphans.
+
+Hermetic tests: `build/tests/test_installer_brand.py` runs the real hook under bash against a fake root.
+Test seams (unset in a real build): `LINDOS_INSTALLER_ROOT` (prefix for every path),
+`LINDOS_INSTALLER_SRC` (where `build/installer/` is), `LINDOS_RSVG` (rsvg-convert replacement). What
+only a real boot can confirm: how the slideshow renders in Ubiquity's WebKit view, that the GTK skin
+loads and looks right, the launcher on the live desktop, and the strings on every page — eyeball the
+installer in QEMU (`make qemu`) after a build.
+
+### Mint sweep (what still says "Linux Mint")
+
+Lindos is a Linux Mint remaster; the base packages ship menu entries, autostarts, release files and
+browser defaults that say so. `packages/lindos-desktop` carries the sweep (stdlib Python, offline,
+idempotent): `/usr/libexec/lindos/rebrand-base.py` driven by `/usr/share/lindos/branding/base-sweep.json`,
+started by `apply-branding.sh` (lindos-desktop postinst, `40-theme.sh`, and `77-mint-sweep.sh` once more over
+the final image). What a user sees, and what is done about it:
+
+| Where it shows | What Lindos does |
+|---|---|
+| Menu: **Welcome Screen** ("Welcome to Linux Mint") | hidden (`NoDisplay=true`); Lindos Setup is the welcome experience. The package stays (Mint's metapackages depend on it) |
+| Login: the Mint Welcome window next to Lindos Setup | hidden three ways: `Hidden=true` in the system autostart entry (`10-debloat.sh` and the sweep — found by `Exec`, not by file name), `NotShowIn=XFCE` by lindos-tune, and a per-user off switch `/etc/skel/.config/autostart/mintwelcome.desktop` (the same override XFCE's *Session and Startup* dialog writes) |
+| Menu: **Software Manager** | hidden; `lindos-store.desktop` (**Lindos Store**, Lindos icon, "Find, install and remove apps (system packages and Flatpak)") starts the same `mintinstall`. It is not, and is never described as, the Microsoft Store. The window title inside is still upstream's "Software Manager" |
+| Menu: **Update Manager**, **Driver Manager** | kept — Lindos has no replacement for the OS-update and driver GUIs (`lindos-update` only handles `lindos-*` packages, `lindos-drivers` wraps Driver Manager); they get Lindos icons (`lindos-update`, `lindos-drivers`). Their tray icon and window icon are upstream's |
+| Any other entry with "Linux Mint" in Name/GenericName/Comment/Keywords | the text says "Lindos"; an entry whose `Exec` only opens linuxmint.com is hidden. `lindos-*` and `ubiquity*` entries are never touched (the installer hook owns those) |
+| `lsb_release -d`, the MOTD header, other systems' boot menus (os-prober) | `/etc/lsb-release` `DISTRIB_DESCRIPTION` = "Lindos 1.0 (Aurora)" |
+| `/etc/linuxmint/info` (read by Mint's tools) | `DESCRIPTION` and `GRUB_TITLE` say Lindos; `RELEASE`, `CODENAME`, `EDITION`, the URLs stay |
+| Boot menu of the installed system | `/etc/default/grub.d/49-lindos-distributor.cfg`: `GRUB_DISTRIBUTOR="Lindos"` (entries read "Lindos GNU/Linux"; update-grub sources the drop-in after `/etc/default/grub`) |
+| `/etc/os-release` | as before plus `SUPPORT_URL`, `BUG_REPORT_URL`, `PRIVACY_POLICY_URL` of the project |
+| Live session prompt (`mint@mint`) | `username=liveuser hostname=lindos` on the GRUB command lines and in `/etc/casper.conf` (also `FLAVOUR`) — `casper.conf` is copied into the initrd, so it must change before `40-theme.sh` rebuilds it (the postinst does) |
+| Firefox: Linux Mint start page, welcome page, bookmarks, search engine | the homepage prefs, `policies.json` and `distribution.ini` in `/usr/lib/firefox*` and `/etc/firefox` are pointed at `about:home` / cleaned where they name linuxmint.com; anything else is only listed by the audit |
+| Desktop background picker | `mint-backgrounds-*` are purged when `apt-get -s purge` shows nothing but them would be removed; otherwise they stay and the hook says which packages would have gone too |
+| Settings → About | "Based on: Ubuntu 24.04 LTS (noble) · Linux Mint 22.2" — provenance is kept on purpose; the hero line no longer calls Lindos a Mint remaster |
+
+**Kept on purpose (identity — decided, not forgotten).** `ID=linuxmint`, `ID_LIKE`, `VERSION_CODENAME`,
+`UBUNTU_CODENAME` in `/etc/os-release`; `DISTRIB_ID=LinuxMint`, `DISTRIB_RELEASE`, `DISTRIB_CODENAME` in
+`/etc/lsb-release`; `RELEASE`, `CODENAME`, `EDITION` in `/etc/linuxmint/info`; apt sources; package and
+executable names. Mint's own tools (mintupdate, mintsources, mintupgrade), apt templating and Ubiquity's
+"replace / reuse an existing installation" detection read these, so changing them would break updates or the
+installer for no visible gain. Known side effect: the installer names the UEFI boot entry and the ESP folder
+after `DISTRIB_ID`, so firmware boot menus still say `linuxmint`; `fastfetch`-style tools pick Mint's ASCII logo
+from `ID`.
+
+**How it stays applied.** `/etc/apt/apt.conf.d/99lindos-branding` (`DPkg::Post-Invoke`) runs
+`apply-branding.sh --quiet --files-only` after every apt run, so an upgrade of `base-files` or a Mint package
+cannot bring the old text back. `--files-only` skips the Plymouth and wallpaper alternatives: a user's own choice
+there must survive apt runs. Entries the sweep changed carry `X-Lindos-Rebranded=true`; the untouched original
+is saved once in `/var/lib/lindos/rebrand/orig/` and `rebrand-base.py --revert` (run by lindos-desktop's prerm on removal, while the files still exist)
+puts it back.
+
+**Why edit the base's files in place** (instead of `dpkg-divert` or an override earlier in `XDG_DATA_DIRS`):
+the edits keep `Exec`, `TryExec` and every translation exactly as the base ships them, so nothing depends on
+guessing a Mint tool's command line; there is no diversion book-keeping for packages Lindos does not depend
+on; a package may not ship files under `/usr/local/share` (Debian policy) and a prepended `XDG_DATA_DIRS`
+only works where the session environment is inherited; and the Post-Invoke re-run makes an upgrade
+harmless. The price: `dpkg --verify` reports those files as modified, and between an upgrade and the end of the
+apt run (seconds) the old entry exists.
+
+**Checking a build.** `out/hooks/77-mint-sweep.log` ends with an `audit:` list — every place that still says
+Linux Mint (also `python3 /usr/libexec/lindos/rebrand-base.py --audit` on a running system; `--dry-run` shows what
+a sweep would change). Hermetic tests: `packages/lindos-desktop/tests/test_rebrand.py` (the sweep against fake
+roots and through `apply-branding.sh`), `build/tests/test_mint_sweep_hook.py` (the hook against a fake root),
+`tests/test_no_mint_leftovers.py` (fails on any unexplained "Mint" in shipped data). What only a real boot can
+confirm: which of these entries the real Mint 22.2 image actually has (the file and `Exec` names come from
+what is known of Mint's packages, not from a real image — the audit shows what really is there), that Mint
+Welcome no longer appears, the Lindos Store / Update / Driver icons,
+the GRUB titles after `update-grub`, `casper.conf` reaching the initrd, and Firefox's first-run page.
 
 ## 6. `build/mkdeb.sh`
 

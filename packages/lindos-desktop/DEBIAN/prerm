@@ -1,0 +1,17 @@
+#!/bin/sh
+# prerm for lindos-desktop -- while the files still exist, undo the base-system rebrand sweep
+# (Mint launchers hidden/renamed, lsb/casper display fields, Firefox defaults). postrm cannot do
+# this: by then dpkg has already deleted rebrand-base.py.
+set -e
+
+case "${1:-}" in
+    remove|deconfigure)
+        if [ -f /usr/libexec/lindos/rebrand-base.py ] && command -v python3 >/dev/null 2>&1; then
+            python3 /usr/libexec/lindos/rebrand-base.py --revert --quiet 2>/dev/null || true
+        fi
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

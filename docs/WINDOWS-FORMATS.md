@@ -59,6 +59,7 @@ explained** (the reason was already printed/shown — nothing was silently skipp
 | `.dll`, `.ocx`, a driver `.sys`, `.efi` | Explained: "a library/driver, not a program" — there is nothing to run | unsupported |
 | `.msp` (Windows Installer **patch**) | `msiexec /p <patch> REINSTALL=ALL REINSTALLMODE=omus`, run inside the **C:\ drive of the program being patched** (you pick it, or Lindos shows a list) — never `/i`, which Windows Installer refuses on a patch file | partial |
 | `.mst` (Installer **transform**) | Explained: it only makes sense together with the `.msi` it modifies — `lindos-run app.msi TRANSFORMS=x.mst` | partial |
+| An `.exe` "installer" that downloads an app package (`.msix`) and asks Windows to install it | The package is caught when the installer exits and offered through the row below, or explained once — §3.1 | partial |
 | `.msix`, `.appx`, `.msixbundle`, `.appxbundle`, `.msixupload`/`.appxupload` | Unpacked into their own C:\ drive and added to the Start Menu — §3 | partial |
 | `.emsix`/`.eappx`/`.emsixbundle`/`.eappxbundle` (Store-encrypted) | Explained: locked to the Microsoft Store, no program outside Windows can open it | unsupported |
 | `.msixvc` (Xbox/PC Game Pass game package) | Explained: an encrypted Xbox/GDK package, not a Wine-runnable program | unsupported |
@@ -127,6 +128,56 @@ start under Wine). A confirmed install:
 Nothing is installed without your say-so, and packages with **no way to run under Wine** never
 create a C:\ drive at all.
 
+**Big packages.** Desktop apps such as Electron programs come as packages of hundreds of MB.
+Unpacking streams the files one megabyte at a time (nothing is loaded into memory), the zip-slip
+and "zip bomb" guards above stay on, and the question tells you the size up front:
+*"Disk space: about 612.3 MB once unpacked"*. If the disk cannot take it, Lindos says so **before**
+asking — *"Not enough free disk space: the app needs about … but only … is free on that drive"* —
+instead of failing after a long unpack. The progress window moves once per percent, and half-unpacked
+folders left by an install that was killed (power cut, `kill -9`) are deleted a day later.
+
+### 3.1 Installers that download an app package ("MSIX bootstrappers")
+
+Many current Windows "installers" are not the installer at all. The Claude desktop app's setup
+program, as first seen on Lindos, is one example: a small program that downloads a large `.msix`
+into the Windows temp folder and then asks Windows to install it. Wine has no Windows app-deployment service, so this
+used to end in a Windows-looking dialog — roughly *"There is no Windows program configured to
+open this type of file"* — and a file manager showing a temp folder with a huge package and a log file.
+Lindos now handles the hand-off itself, in two layers:
+
+1. **Before the installer runs** (once per C:\ drive, about a second): the C:\ drive gets a file
+   association for `.msix`, `.appx`, `.msixbundle`, `.appxbundle`, `.msixupload`/`.appxupload`,
+   the Store-encrypted variants, `.appinstaller` and the `ms-appinstaller:` link type. It is not a
+   program that installs anything — it only *writes down* which package the installer asked for
+   (`C:\ProgramData\Lindos\handoff.log`) and returns, so the installer's "open this package" call
+   succeeds instead of failing. Nothing else runs at that moment.
+2. **After the installer exits:** Lindos looks at what was written down and at what is new in the
+   C:\ drive's Temp, Downloads and Desktop folders (packages that were already there are never
+   offered again), and decides by the package's *content*:
+
+   | What the installer left behind | What you see |
+   |---|---|
+   | A **desktop app** package | The normal §3 question, with a first line saying which installer downloaded it — *"claude.exe downloaded this app and asked Windows to install it… Install Claude?"* — including publisher, version, signature status and disk space. Say yes and it is unpacked into its own C:\ drive and added to the Start Menu. Nothing is installed without your yes (`--yes` for scripts). |
+   | A **UWP/WinUI** app, a **Store-encrypted** package, or a **damaged/half-downloaded** file | **One** plain message naming the app and the file, why it cannot run here, and what to do instead: a Linux or web version, `lindos-compat winget search "<name>"` (many apps also offer a normal `.exe`/`.msi`), or the Windows virtual machine (`lindos-vm`) / your own Windows over RDP (`lindos-winapps`). The exit code is `3` (explained). |
+   | Only frameworks or resource packages (Visual C++ runtimes, language packs) | Nothing extra — they are components, not the app. |
+   | An `ms-appinstaller:` link | Explained, never followed: Microsoft turned these one-click installs off in 2023 because criminals abused them. Download the package from the publisher's site and open it instead. |
+
+   In every case **Lindos never opens a file manager on the installer's temp folder**, and the
+   installer's own "exit code 1" dialog is not shown on top of a hand-off it already dealt with.
+
+`lindos-run --info setup.exe` lists the strings that make an installer look like such a
+bootstrapper (`"msix_handoff": {"hints": [...]}`), and `lindos-compat recipes show claude-desktop`
+has the honest status of that app (**partial**: the hand-off and unpacking are covered by tests,
+but nobody has yet confirmed on real hardware that the unpacked Electron app runs well).
+
+**What this cannot do.** If the installer *waits for Windows to report the app as installed* (a
+check Wine cannot answer) it will still time out and complain — Lindos then offers the package
+afterwards, as above. If it deletes its download before it exits there is nothing left to offer.
+The hand-off is registered only for Wine C:\ drives (not Proton/`umu` game drives or Bottles); the
+after-exit check works for Proton drives too. Windows itself would apply the package's URL and
+file-type registrations; Lindos does not, so features such as "sign in through the browser and
+return to the app" may not work.
+
 ## 4. `.appinstaller` files
 
 An `.appinstaller` file is not the app — it is a small XML pointer that says *"download this
@@ -144,6 +195,10 @@ one-click installs from these files in 2023), Lindos:
   (name, publisher, and version when given) — a mismatch deletes the download and installs
   nothing;
 * then follows the exact same honest MSIX install flow as §3.
+
+Lindos never registers the `ms-appinstaller:` link type with your desktop or browser. Inside a Wine
+C:\ drive it is registered only as the *recorder* described in §3.1 (so an installer's call does
+not fail); it records only that a link was handed over (never the link text, which could hold commands) and the link is **never downloaded**.
 
 ## 5. PowerShell scripts (`.ps1`)
 

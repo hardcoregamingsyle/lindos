@@ -123,6 +123,14 @@ differently, on purpose:**
 `lindos-compat winget show <id>` always marks the installer it would use, so you can see this
 before installing.
 
+**Installers that fetch an MSIX themselves.** Some catalogue entries point at a small bootstrapper
+`.exe` that downloads an `.msix` and asks Windows to install it. `winget install` runs it through
+`lindos-run` like any other installer, so the same catch applies: when the installer exits, the
+package it left behind is offered through the normal MSIX question — or explained once, naming what
+you can do instead (see [WINDOWS-FORMATS.md](WINDOWS-FORMATS.md) §3.1). Lindos never guesses a
+package id: for an app you cannot find, `lindos-compat winget search <name>` shows exactly what the
+catalogue offers (the `claude-desktop` recipe leaves its `winget_id` empty for that reason).
+
 ## 4. What Lindos refuses, and says so instead of pretending
 
 * **Microsoft Store apps** (ids that look like `9NBLGGH4NNS1`) — the Store is not available on

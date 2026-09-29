@@ -1,8 +1,9 @@
 """The Lindos OOBE window (GTK 3) and ``run_app`` entry point.
 
 One fullscreen, undecorated ``Gtk.Window`` (falls back to maximised when the
-window manager refuses fullscreen), dark ``#202020`` background, a centred
-900×620 card with the page stack, Back/Next buttons and step dots.
+window manager refuses fullscreen) with a dark fluent backdrop, like the Windows 11
+out-of-box experience: a slim step indicator on top, the page stack as a centred
+column of at most 760 px, and a Back / Next bar (Cancel too in ``--reconfigure``).
 """
 from __future__ import annotations
 
@@ -18,17 +19,17 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
-from . import core  # noqa: E402
+from . import core, inhibit  # noqa: E402
 from .i18n import _  # noqa: E402
 from .pages import PAGE_ORDER, Page, PageContext, make_pages  # noqa: E402
 from .plan import Plan, Selections, load_accents, load_catalog, make_printing_executors  # noqa: E402
 from .widgets import (  # noqa: E402
-    Card, StepDots, Swatch, WallpaperThumb, add_class, hbox, load_css_file, vbox,
+    Card, StepIndicator, Swatch, WallpaperThumb, add_class, column_width, hbox, load_css_file, screen_width,
+    step_position, vbox,
 )
 
 log = logging.getLogger("lindos-setup.app")
 
-CARD_W, CARD_H = 900, 620
 UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui")
 CSS_PATH = os.path.join(UI_DIR, "oobe.css")
 
@@ -37,12 +38,13 @@ class SetupWindow(Gtk.Window):
     """Fullscreen wizard window hosting the page stack."""
 
     def __init__(self, ctx: PageContext, pages: List[Page], *, start_page: str = "welcome",
-                 allow_quit: bool = False) -> None:
+                 allow_quit: bool = False, inhibitor: Optional[inhibit.IdleInhibitor] = None) -> None:
         super().__init__(title=_("Lindos Setup"))
         self.ctx = ctx
         self.pages = pages
         self.index = 0
         self.allow_quit = allow_quit
+        self.inhibitor = inhibitor
         self.finished = False
         self.exit_code = 0
         self._fullscreen_checked = False
@@ -58,49 +60,57 @@ class SetupWindow(Gtk.Window):
         self.set_icon_name("lindos-start")
         add_class(self, "oobe")
 
-        # ---- layout ---------------------------------------------------------
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        outer.set_halign(Gtk.Align.CENTER)
-        outer.set_valign(Gtk.Align.CENTER)
-        add_class(outer, "oobe-outer")
+        # ---- layout: slim step line on top, page stack, Back / Next bar ------
+        width = column_width(screen_width())
+        root = vbox(0)
+        add_class(root, "oobe-root")
 
-        card = vbox(0)
-        card.set_size_request(CARD_W, CARD_H)
-        add_class(card, "oobe-card")
+        top = vbox(0)
+        top.set_halign(Gtk.Align.CENTER)
+        top.set_size_request(width, -1)
+        add_class(top, "oobe-top")
+        self.steps = StepIndicator()
+        top.pack_start(self.steps, False, False, 0)
+        root.pack_start(top, False, False, 0)
 
         self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
-        self.stack.set_transition_duration(260)
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_duration(220)
         self.stack.set_hexpand(True)
         self.stack.set_vexpand(True)
         self.stack.set_homogeneous(True)
         for page in self.pages:
             widget = page.build(ctx)
             self.stack.add_named(widget, page.id)
-        card.pack_start(self.stack, True, True, 0)
+        root.pack_start(self.stack, True, True, 0)
 
-        footer = hbox(12)
+        footer = hbox(10)
+        footer.set_halign(Gtk.Align.CENTER)
+        footer.set_size_request(width, -1)
         add_class(footer, "oobe-footer")
         self.back_btn = Gtk.Button(label=_("Back"))
         add_class(self.back_btn, "btn-back")
-        self.back_btn.set_size_request(96, 34)
         self.back_btn.connect("clicked", lambda _b: self.go_back())
         footer.pack_start(self.back_btn, False, False, 0)
 
-        self.dots = StepDots(len(self.pages))
-        footer.set_center_widget(self.dots)
+        # --reconfigure only: a visible way out besides Escape (never shown on the first run)
+        self.cancel_btn = Gtk.Button(label=_("Cancel"))
+        add_class(self.cancel_btn, "btn-cancel")
+        self.cancel_btn.connect("clicked", lambda _b: self.request_quit())
+        self.cancel_btn.set_no_show_all(True)
+        self.cancel_btn.hide()
+        footer.pack_start(self.cancel_btn, False, False, 0)
 
         self.next_btn = Gtk.Button(label=_("Next"))
         add_class(self.next_btn, "btn-next")
-        self.next_btn.set_size_request(120, 34)
         self.next_btn.set_can_default(True)
         self.next_btn.connect("clicked", lambda _b: self.go_next())
         footer.pack_end(self.next_btn, False, False, 0)
-        card.pack_end(footer, False, False, 0)
+        root.pack_end(footer, False, False, 0)
 
-        outer.pack_start(card, False, False, 0)
-        self.add(outer)
+        self.add(root)
         self.set_default(self.next_btn)
+        self._counted = [bool(p.step_counted) for p in self.pages]
 
         # ---- signals --------------------------------------------------------
         self.connect("key-press-event", self._on_key)
@@ -144,17 +154,14 @@ class SetupWindow(Gtk.Window):
 
     def show_page(self, index: int, animate: bool = True) -> None:
         index = max(0, min(index, len(self.pages) - 1))
-        forward = index >= self.index
         self.index = index
         page = self.pages[index]
-        if animate:
-            self.stack.set_transition_type(
-                Gtk.StackTransitionType.SLIDE_LEFT if forward else Gtk.StackTransitionType.SLIDE_RIGHT)
-        else:
-            self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.stack.set_transition_type(
+            Gtk.StackTransitionType.CROSSFADE if animate else Gtk.StackTransitionType.NONE)
         self.stack.set_visible_child_name(page.id)
-        self.dots.set_active(index)
+        self.steps.set_step(step_position(self._counted, index))
         self.set_back_visible(page.can_go_back(self.ctx) and index > 0)
+        self.cancel_btn.set_visible(self.allow_quit and page.id not in ("apply", "done"))
         self.set_next_label(_(page.next_label))
         self.next_btn.set_visible(page.next_visible)
         self.set_next_sensitive(True)
@@ -253,19 +260,19 @@ class SetupWindow(Gtk.Window):
         Windows-OOBE rule: Enter means *Next* everywhere -- selectable cards,
         swatches, thumbnails, check boxes and switches are changed with the
         mouse or Space, so Enter on them still advances.  Only text widgets
-        and explicit action buttons (Back, "Open Lindos Settings", "Check
-        connection again") keep the key.
+        and explicit action buttons (Back, Cancel, "Open Lindos Settings", "Check
+        connection again", "Show details") keep the key; so does a "Learn more" expander.
         """
         focus = self.get_focus()
         if focus is None or focus is self.next_btn:
             return False
-        if isinstance(focus, (Gtk.TextView, Gtk.Entry)):
+        if isinstance(focus, (Gtk.TextView, Gtk.Entry, Gtk.Expander)):
             return True
         if isinstance(focus, (Card, Swatch, WallpaperThumb, Gtk.CheckButton, Gtk.Switch)):
             return False
         if isinstance(focus, Gtk.Button):
             style = focus.get_style_context()
-            return any(style.has_class(c) for c in ("btn-back", "btn-secondary", "btn-link"))
+            return any(style.has_class(c) for c in ("btn-back", "btn-cancel", "btn-secondary", "btn-link"))
         return False
 
     def _on_delete(self, *_args: Any) -> bool:
@@ -275,6 +282,8 @@ class SetupWindow(Gtk.Window):
         return True              # block closing during first-run
 
     def _on_destroy(self, *_args: Any) -> None:
+        if self.inhibitor is not None:
+            self.inhibitor.release()      # finished, cancelled or closed: give the screen back at once
         Gtk.main_quit()
 
 
@@ -340,7 +349,7 @@ def build_context(*, dry_run: bool, first_run: bool, logger: logging.Logger,
     def executors_factory(plan: Plan) -> Dict[str, Any]:
         if dry_run:
             return make_printing_executors(plan)   # lines go through the runner log
-        return core.make_real_executors()
+        return core.make_real_executors(plan)   # every privileged step shares ONE helper run/prompt
 
     logger.info("context: online=%s ram=%s modes=%s browsers=%s wallpapers=%d apps=%d dry_run=%s first_run=%s",
                 "unknown" if online is None else online, ram_total, list(modes), list(browsers),
@@ -386,13 +395,23 @@ def run_app(*, dry_run: bool = False, reconfigure: bool = False, page: Optional[
         logger.warning("oobe.css missing or invalid at %s; using theme defaults", CSS_PATH)
 
     ctx = build_context(dry_run=dry_run, first_run=not reconfigure, logger=logger)
-    win = SetupWindow(ctx, make_pages(), start_page=page or "welcome", allow_quit=reconfigure)
+    # a long download must not blank/lock the screen or suspend the PC (and so ask for a password again)
+    inhibitor: Optional[inhibit.IdleInhibitor] = None
+    if dry_run:
+        logger.info("dry-run: not taking screensaver/power inhibits")
+    else:
+        inhibitor = inhibit.IdleInhibitor()
+        inhibitor.acquire_async()
+    win = SetupWindow(ctx, make_pages(), start_page=page or "welcome", allow_quit=reconfigure,
+                      inhibitor=inhibitor)
     win.present_wizard()
     start_online_probe(ctx)
     try:
         Gtk.main()
     finally:
         ctx.live.close()
+        if inhibitor is not None:
+            inhibitor.release()
     return win.exit_code
 
 

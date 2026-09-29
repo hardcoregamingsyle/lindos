@@ -61,10 +61,15 @@ def _(message: str) -> str:
     return _translation.gettext(message)
 
 
+def N_(message: str) -> str:
+    """Mark ``message`` for translation without translating it yet (class-level page titles)."""
+    return message
+
+
 def ngettext(singular: str, plural: str, n: int) -> str:
     if not _initialised:
         init()
     return _translation.ngettext(singular, plural, n)
 
 
-__all__ = ["DOMAIN", "init", "_", "ngettext"]
+__all__ = ["DOMAIN", "init", "_", "N_", "ngettext"]

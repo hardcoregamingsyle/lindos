@@ -15,7 +15,7 @@ Description: Lindos core library, privileged helper and command-line tools
  polkit-guarded helper /usr/libexec/lindos/lindos-helper, the vendor browser
  installer (Edge/Chrome are downloaded from Microsoft's/Google's apt
  repositories at setup time — their licences forbid shipping them on the ISO;
- Firefox is Mint's .deb), the five mode definitions under
+ Firefox is the system's .deb), the five mode definitions under
  /usr/share/lindos/modes and the CLIs lindos-mode, lindos-browser,
  lindos-config, lindos-ram, lindos-dualboot and lindos-update, plus the
  read-only lindos-update-notify.sh (login/6-hourly systemd --user timer
@@ -30,7 +30,7 @@ Description: Lindos core library, privileged helper and command-line tools
  lindos-update checks for and applies updates to Lindos's own lindos-*
  packages: from a real signed apt repository once one is configured
  (LINDOS_APT_REPO_URL), or by sideloading local .deb files today. It never
- touches the base system, which Mint's own Update Manager already updates.
+ touches the base system, which the system Update Manager already updates.
  apt/dpkg are always present on a Debian/Ubuntu system (Priority: required/
  important), so no extra Depends are needed for this.
  .

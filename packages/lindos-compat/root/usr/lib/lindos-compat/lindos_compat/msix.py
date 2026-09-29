@@ -41,6 +41,7 @@ import stat
 import struct
 import sys
 import tempfile
+import time
 import urllib.parse
 import uuid
 import xml.etree.ElementTree as ET
@@ -70,6 +71,7 @@ __all__ = [
     # helpers for lindos-run (additive to the SPEC API)
     "appinstaller_refusal",
     "check_appinstaller_target",
+    "check_space",
     "trust_label",
     "can_try_anyway",
     "prefix_slug",
@@ -318,6 +320,8 @@ class MsixInfo:
     warnings: List[str]
     #: bundles: the bundle's own Identity Version (``version`` is the chosen app package's); additive field
     bundle_version: str = ""
+    #: bytes the payload files add up to once unpacked (0 when unknown); additive field for the disk-space check
+    unpacked_bytes: int = 0
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -442,7 +446,23 @@ def _check_free(path: Path, need: int) -> None:
     free = _free_bytes(path)
     if free is not None and free < need + _FREE_SPACE_MARGIN:
         raise MsixError(f"Not enough free disk space: the app needs about {_human(need)} but only "
-                        f"{_human(free)} is free on that drive.")
+                        f"{_human(free)} is free on that drive. Free some space (empty the Trash, or remove "
+                        "C:\\ drives you no longer use in Lindos Settings > Windows apps) and try again.")
+
+
+def check_space(info: MsixInfo, prefix: Path) -> None:
+    """Refuse early, in plain words, when the disk holding ``prefix`` cannot take the unpacked app.
+
+    ``install`` checks again (it is the authority); this lets ``lindos-run`` say so *before* it asks
+    "Install?" for a package that is hundreds of MB.  Unknown sizes and unreadable disks pass.
+    """
+    need = int(getattr(info, "unpacked_bytes", 0) or 0)
+    if need <= 0:
+        return
+    base = Path(prefix)
+    while not base.exists() and base.parent != base:
+        base = base.parent
+    _check_free(base, need)
 
 
 # --------------------------------------------------------------------------- #
@@ -1736,7 +1756,8 @@ def _package_info(ctx: _Ctx, path: Path, kind: str, z: _Zip, m: _Manifest, *, se
                     package_family_name=family, apps=apps, dependencies=list(m.dependencies),
                     framework=m.framework, resource_package=m.resource_package, signed=signed,
                     unsigned_marker=unsigned_marker, store_signals=signals, status=status, reason=reason,
-                    selected_package=selected, warnings=all_warnings)
+                    selected_package=selected, warnings=all_warnings,
+                    unpacked_bytes=plan.total if plan is not None else 0)
     return info, plan
 
 
@@ -1982,6 +2003,28 @@ def _extract(z: _Zip, plan: _Plan, staging: Path, on_progress: Optional[Callable
             raise MsixError(f"{e.name!r} is shorter than the package says; the package is damaged.")
         if on_progress is not None and e.zi.file_size == 0:
             on_progress(done, plan.total, e.name)
+
+
+def _sweep_stale(windowsapps: Path, *, max_age_s: float = 24 * 3600) -> None:
+    """Delete half-unpacked ``.lindos-msix-*`` folders of an install that was killed a day or more ago.
+
+    A hundreds-of-MB package that dies mid-way (power cut, ``kill -9``) would otherwise keep its
+    partial copy for ever; recent ones are left alone in case another install is still running.
+    """
+    try:
+        entries = list(windowsapps.iterdir())
+    except OSError:
+        return
+    now = time.time()
+    for entry in entries:
+        if not entry.name.startswith(".lindos-msix-") or entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            if now - entry.stat().st_mtime < max_age_s:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
 
 
 def _swap_into_place(staging: Path, install_dir: Path) -> None:
@@ -2258,6 +2301,7 @@ def install(path: Path, prefix: Path, *, on_progress: Optional[Callable[[int, in
     walker = _CiDirs(drive_c)
     windowsapps = walker.walk(("Program Files", "WindowsApps"), create=True)
     assert windowsapps is not None
+    _sweep_stale(windowsapps)
     win32 = _prefix_is_win32(prefix)
     with _resolve(path, max_bytes=max_bytes, max_ratio=max_ratio, work_dir=windowsapps) as res:
         info = res.info

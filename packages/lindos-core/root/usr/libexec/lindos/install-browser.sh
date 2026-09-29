@@ -191,7 +191,7 @@ install_vendor() {
 
 install_firefox() {
     if [[ "${DRY_RUN}" -eq 0 ]] && is_installed "${FIREFOX_PACKAGE}"; then
-        log "Mozilla Firefox is already installed (Mint .deb)"
+        log "Mozilla Firefox is already installed"
         return 0
     fi
     # never the snap: Mint ships firefox as a .deb from its own repository; if a Ubuntu transitional
