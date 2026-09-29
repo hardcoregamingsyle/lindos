@@ -20,13 +20,22 @@ graphical.target got stuck — see CI-LOGS.md/CONTINUATION.md, run
   1. tails the serial console for the smoke test's ``LINDOS_SMOKE_DONE``
      sentinel (with an overall timeout — a stuck/crashed boot fails the test
      instead of hanging CI forever);
-  2. waits a further grace period for the live desktop (LightDM autologin +
+  2. waits for the guest-side LIVE-SESSION checks (``LINDOS_LIVE_CHECKS_DONE``,
+     printed by /usr/libexec/lindos/qa/ci-live-checks.sh once the XFCE
+     session is up).  The live session is now almost nothing but the
+     installer (docs/BUILDING.md "Installer flow"), so a working desktop is
+     proven by: no first-run wizard (live-no-oobe), the "Install Lindos"
+     launcher on the desktop (live-installer-launcher), the panel and the
+     desktop manager running (live-panel, live-desktop), no sleep/blanking
+     (live-no-sleep) and nothing installing (live-no-installs);
+  3. waits a further grace period for the live desktop (LightDM autologin +
      XFCE) to actually finish drawing;
-  3. takes a screenshot via the QEMU monitor's ``screendump`` (works with
+  4. takes a screenshot via the QEMU monitor's ``screendump`` (works with
      ``-display none`` as long as a real display device — ``-device
      virtio-vga`` — is present, so no X server/VNC/framebuffer capture
-     tooling is needed);
-  4. quits QEMU and reports pass/fail from the serial log alone (never from
+     tooling is needed) and checks with Pillow that it is neither black nor a
+     single colour (a picture of nothing proves nothing);
+  5. quits QEMU and reports pass/fail from the serial log alone (never from
      the guest's own shutdown/exit code, which is unreliable to script).
 
 Nothing here is guessed: every check the smoke-test script runs is itself
@@ -35,8 +44,8 @@ system, not of this test harness.
 
 Usage:
     python3 build/qa/boot_test.py --iso out/lindos-*.iso --out-dir out/qemu-boot-test
-        [--timeout 600] [--desktop-timeout 180] [--grace 90] [--ram 4096] [--cpus 2]
-        [--require-kernel-suffix=-lindos]
+        [--timeout 600] [--desktop-timeout 180] [--live-timeout 420] [--grace 90] [--ram 4096]
+        [--cpus 2] [--require-kernel-suffix=-lindos] [--no-live-checks] [--allow-blank-screenshot]
 
     Note the '=' form for --require-kernel-suffix: since the value itself starts with '-',
     argparse would otherwise mistake it for another option and refuse to consume it.
@@ -81,6 +90,16 @@ DESKTOP_WATCH_STARTED_RE = re.compile(r"^LINDOS_DESKTOP_WATCH_STARTED$")
 # Printed by the same watcher, right before either sentinel above, so a black/never-ready
 # screenshot is diagnosable from serial.log alone (see start_desktop_watch()'s diag() helper).
 DESKTOP_DIAG_RE = re.compile(r"^LINDOS_DESKTOP_DIAG ?(.*)$")
+# ci-boot-smoke-test.sh's start_live_watch() launches ci-live-checks.sh, which prints its own LINDOS_CHECK live-*
+# lines and one of these: STARTED first, DONE (with the number of failed checks) last.  DIAG lines carry the process
+# list / desktop state when something failed, so a failing run is diagnosable from serial.log alone.
+LIVE_WATCH_STARTED_RE = re.compile(r"^LINDOS_LIVE_WATCH_STARTED$")
+LIVE_CHECKS_DONE_RE = re.compile(r"^LINDOS_LIVE_CHECKS_DONE(?: fails=(\d+))?")
+LIVE_DIAG_RE = re.compile(r"^LINDOS_LIVE_DIAG ?(.*)$")
+# What the live session must prove (see ci-live-checks.sh).  All of them must be reported OK: a check that never
+# ran is a failure, otherwise a desktop that never came up would pass by saying nothing.
+REQUIRED_LIVE_CHECKS = ("live-no-oobe", "live-installer-launcher", "live-panel", "live-desktop", "live-no-sleep",
+                        "live-no-installs")
 MONITOR_PROMPT = b"(qemu) "
 
 
@@ -170,7 +189,12 @@ def build_qemu_argv(*, vmlinuz: Path, initrd: Path, iso: Path, serial_log: Path,
         # rest of the run. `plymouth.enable=0` skips starting plymouth at all, so systemd's normal
         # verbose status keeps flowing to ttyS0 for the whole boot regardless of what the display
         # is doing, whether or not lightdm/Xorg ever actually finish.
-        "boot=casper username=liveuser hostname=lindos plymouth.enable=0 "
+        # The first words are those of the shipped "Try Lindos (live session)" entry
+        # (build/overlay/boot/grub/grub.cfg), so the OEM-mode answers go through casper's preseed exactly as on
+        # a real boot; the rest is CI-only.
+        "boot=casper oem-config/enable=true "
+        "ubiquity/success_command=/usr/libexec/lindos/installer/finalize.sh "
+        "username=liveuser hostname=lindos plymouth.enable=0 "
         f"console=ttyS0,115200n8 {CI_BOOT_TEST_FLAG} --"
         # ^ Deliberately NOT `systemd.run={SMOKE_SCRIPT_PATH} ...`: with plymouth.enable=0 in
         # place (above), run 36370906849 proved that theory wrong for the *real* remaining
@@ -262,6 +286,12 @@ def tail_for_desktop_ready(serial_log: Path, *, timeout: float) -> Optional[str]
     return _tail_for(serial_log, [DESKTOP_READY_RE, DESKTOP_READY_TIMEOUT_RE], timeout=timeout)
 
 
+def tail_for_live_checks(serial_log: Path, *, timeout: float) -> Optional[str]:
+    """Poll serial_log for LINDOS_LIVE_CHECKS_DONE (ci-live-checks.sh has judged the live session); the matched line,
+    or None if the watcher never got that far (never launched, or the guest died first)."""
+    return _tail_for(serial_log, [LIVE_CHECKS_DONE_RE], timeout=timeout)
+
+
 def parse_report(serial_log: Path) -> dict:
     text = serial_log.read_text(encoding="utf-8", errors="replace") if serial_log.exists() else ""
     checks: dict[str, dict] = {}
@@ -273,6 +303,10 @@ def parse_report(serial_log: Path) -> dict:
     desktop_ready_line: Optional[str] = None
     desktop_watch_started = False
     desktop_diag: List[str] = []
+    live_watch_started = False
+    live_checks_done = False
+    live_fails: Optional[int] = None
+    live_diag: List[str] = []
     for raw in text.splitlines():
         line = raw.strip()
         m = CHECK_RE.match(line)
@@ -308,13 +342,31 @@ def parse_report(serial_log: Path) -> dict:
         m = DESKTOP_DIAG_RE.match(line)
         if m:
             desktop_diag.append(m.group(1))
+            continue
+        if LIVE_WATCH_STARTED_RE.match(line):
+            live_watch_started = True
+            continue
+        m = LIVE_CHECKS_DONE_RE.match(line)
+        if m:
+            live_checks_done = True
+            live_fails = int(m.group(1)) if m.group(1) else None
+            continue
+        m = LIVE_DIAG_RE.match(line)
+        if m:
+            live_diag.append(m.group(1))
     return {"checks": checks, "info": info, "failed_units": failed_units, "smoke_rc": smoke_rc,
             "booted": "LINDOS_SMOKE_START" in text, "doctor_fails": doctor_fails,
             "fail_logs": fail_logs, "desktop_ready_line": desktop_ready_line,
-            "desktop_watch_started": desktop_watch_started, "desktop_diag": desktop_diag}
+            "desktop_watch_started": desktop_watch_started, "desktop_diag": desktop_diag,
+            "live_watch_started": live_watch_started, "live_checks_done": live_checks_done,
+            "live_fails": live_fails, "live_diag": live_diag}
 
 
-def take_screenshot(monitor_sock: Path, out_png: Path) -> bool:
+def take_screenshot(monitor_sock: Path, out_png: Path, quit_after: bool = True) -> bool:
+    """Save the guest's screen (QEMU monitor ``screendump``) as *out_png* (a raw .ppm when Pillow is missing).
+
+    *quit_after* (the default, what the boot test wants) also tells QEMU to quit once the picture is taken;
+    build/qa/install_test.py takes progress pictures of a running install and passes False."""
     try:
         mon = MonitorClient(monitor_sock)
     except RuntimeError as exc:
@@ -337,11 +389,63 @@ def take_screenshot(monitor_sock: Path, out_png: Path) -> bool:
         log(f"screenshot saved: {out_png}")
         return True
     finally:
-        try:
-            mon.command("quit")
-        except (RuntimeError, OSError):
-            pass
+        if quit_after:
+            try:
+                mon.command("quit")
+            except (RuntimeError, OSError):
+                pass
         mon.close()
+
+
+def screenshot_has_content(path: Path, *, min_stddev: float = 4.0, min_colors: int = 48) -> "tuple[Optional[bool], str]":
+    """Is the screenshot a picture of something?  (True, stats) for one with content, (False, why) for a black or
+    single-colour frame (QEMU's 'Guest has not initialized the display' placeholder has only a handful of colours
+    too), (None, why) when it cannot be judged (no Pillow, unreadable file).  A desktop has hundreds of colours."""
+    try:
+        from PIL import Image, ImageStat  # type: ignore[import-not-found]
+    except ImportError:
+        return None, "Pillow not installed"
+    try:
+        with Image.open(path) as im:
+            size = im.size
+            small = im.convert("RGB")
+            small.thumbnail((320, 240))
+            gray = small.convert("L")
+            lo, hi = gray.getextrema()
+            std = ImageStat.Stat(gray).stddev[0]
+            colors = small.getcolors(maxcolors=1 << 16)
+            n_colors = len(colors) if colors is not None else 1 << 16
+    except Exception as exc:  # noqa: BLE001 - a corrupt/missing file is "cannot judge", not a crash
+        return None, f"could not read {path.name}: {exc}"
+    stats = f"{size[0]}x{size[1]}, {n_colors} colours, brightness {lo}..{hi}, stddev {std:.1f}"
+    if std < min_stddev or n_colors < min_colors:
+        return False, stats
+    return True, stats
+
+
+def live_verdict(report: dict) -> List[str]:
+    """Why the LIVE-SESSION part of a boot fails (empty = it passes).
+
+    Every REQUIRED_LIVE_CHECKS entry must be reported and OK - "never reported" fails as well, so a desktop that
+    never came up (the guest-side watcher waits for the panel) cannot pass by staying silent.  Failed checks are
+    already covered by the generic 'any LINDOS_CHECK FAIL' rule; they are listed here with the reason the guest
+    printed, which is what a maintainer needs first."""
+    problems: List[str] = []
+    checks = report.get("checks", {})
+    for name in REQUIRED_LIVE_CHECKS:
+        val = checks.get(name)
+        if val is None:
+            problems.append(f"live check {name} never reported")
+        elif val["status"] != "OK":
+            why = [ln.split(": ", 1)[1] for ln in report.get("fail_logs", []) if ln.startswith(name + ": ")]
+            problems.append(f"live check {name} FAILED" + (f": {why[0]}" if why else ""))
+    if not report.get("live_watch_started"):
+        problems.append("the live-session watcher never started (ci-live-checks.sh missing from the ISO, or "
+                        "start_live_watch() did not run)")
+    elif not report.get("live_checks_done"):
+        problems.append("the live-session watcher never printed LINDOS_LIVE_CHECKS_DONE (the desktop never came up, or "
+                        "the guest died first)")
+    return problems
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -353,6 +457,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="seconds to wait for LINDOS_DESKTOP_READY (the detached guest-side "
                          "watcher) after the smoke test finishes, before giving up on it and "
                          "moving on to the grace period + screenshot anyway")
+    p.add_argument("--live-timeout", type=int, default=420,
+                    help="seconds to wait for LINDOS_LIVE_CHECKS_DONE (ci-live-checks.sh: no first-run wizard, the "
+                         "Install Lindos launcher, panel/desktop, no sleep) once the desktop watcher has answered")
+    p.add_argument("--no-live-checks", action="store_true",
+                    help="do not require the live-session checks (an ISO built before ci-live-checks.sh existed)")
+    p.add_argument("--allow-blank-screenshot", action="store_true",
+                    help="do not fail on a black/single-colour screenshot (it is otherwise the proof of a working desktop)")
     p.add_argument("--grace", type=int, default=90, help="extra seconds after smoke-done before the screenshot")
     p.add_argument("--ram", type=int, default=4096, help="guest RAM in MB")
     p.add_argument("--cpus", type=int, default=2, help="guest vCPUs")
@@ -400,6 +511,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "screenshotting anyway for debugging")
             else:
                 log(f"desktop watcher: {ready_line}")
+            if not ns.no_live_checks:
+                log(f"waiting up to {ns.live_timeout}s for LINDOS_LIVE_CHECKS_DONE "
+                    f"(the live-session checks: no first-run wizard, installer launcher, panel, no sleep)...")
+                live_line = tail_for_live_checks(serial_log, timeout=ns.live_timeout)
+                log(f"live-session checks: {live_line or 'TIMEOUT (see the report below)'}")
             log(f"waiting {ns.grace}s for the live desktop to render before the screenshot...")
             time.sleep(ns.grace)
         took_shot = take_screenshot(monitor_sock, screenshot)
@@ -443,7 +559,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("  desktop-watch diagnostics (LINDOS_DESKTOP_DIAG):")
         for line in report["desktop_diag"]:
             print(f"    {line}")
-    print(f"  screenshot: {'captured' if took_shot else 'NOT captured'}")
+    if report["live_diag"]:
+        print("  live-session diagnostics (LINDOS_LIVE_DIAG):")
+        for line in report["live_diag"]:
+            print(f"    {line}")
+    print(f"  live-session watcher: started={report['live_watch_started']} done={report['live_checks_done']}"
+          + (f" fails={report['live_fails']}" if report["live_fails"] is not None else ""))
+    picture = next((c for c in (screenshot, screenshot.with_suffix(".ppm")) if c.exists()), None)
+    has_content, shot_stats = screenshot_has_content(picture) if took_shot and picture else (None, "not captured")
+    content_word = {True: "ok", False: "BLANK", None: "not judged"}[has_content]
+    print(f"  screenshot: {'captured' if took_shot else 'NOT captured'} — content check: {content_word} ({shot_stats})")
 
     ok = True
     if report["smoke_rc"] is None:
@@ -453,6 +578,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"FAIL: smoke test reported rc={report['smoke_rc']}")
         ok = False
     if any(v["status"] != "OK" for v in report["checks"].values()):
+        ok = False
+    if not ns.no_live_checks:
+        for problem in live_verdict(report):
+            print(f"FAIL: {problem}")
+            ok = False
+    if has_content is False and not ns.allow_blank_screenshot:
+        print(f"FAIL: the screenshot is blank ({shot_stats}) — the desktop did not draw, so it proves nothing")
         ok = False
     if ns.require_kernel_suffix:
         uname = report["info"].get("uname", "")

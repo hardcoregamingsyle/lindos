@@ -2,12 +2,15 @@
 
 Two products come out of this repository:
 
-1. **twelve `.deb` packages** (`out/debs/lindos-*_1.0.0_all.deb`) — installable on any Linux
-   Mint 22.x XFCE / Ubuntu 24.04 system (the nine packages `lindos-meta` Depends on, including
-   `lindos-transfer` from Addendum W, plus `lindos-kernel`, and the opt-in `lindos-vm` /
-   `lindos-winapps` from Addendum V);
+1. **thirteen `.deb` packages** (`out/debs/lindos-*_1.0.0_all.deb`) — installable on any Linux
+   Mint 22.x XFCE / Ubuntu 24.04 system (the eight packages `lindos-meta` Depends on, including
+   `lindos-transfer` from Addendum W, plus `lindos-meta` itself and `lindos-kernel`, the opt-in
+   `lindos-vm` / `lindos-winapps` from Addendum V, and `lindos-installer`, the installer flow that
+   exists on the installation medium only — see "Installer flow" in §5);
 2. **the ISO** (`out/lindos-1.0.0-xfce-64bit.iso`) — Linux Mint 22.2 XFCE remastered with those
-   packages, the Lindos theme assets, the base tune, Wine and Steam pre-installed.
+   packages, the Lindos theme assets, the base tune, Wine and Steam pre-installed, and an installer
+   that downloads and installs the rest (updates, drivers, Chrome, Wine/Proton, launchers, Mode
+   apps) while it installs.
 
 Everything is driven by `Makefile` → `build/*.sh` → `build/config.env`. Every knob is an
 environment variable with a default (`: "${VAR:=default}"`), so `INCLUDE_STEAM=0 make iso` works
@@ -92,24 +95,33 @@ Steps, in order (each logged to `out/build.log`, hooks additionally to `out/hook
    plymouth theme (Cubic-style). `0` keeps Mint's kernel/initrd.
 9. **squashfs** — `mksquashfs -comp zstd -Xcompression-level 19 -b 1M` (`SQUASHFS_COMP`,
    `SQUASHFS_ARGS`); `casper/filesystem.size`, `filesystem.manifest` (`dpkg-query -W`),
-   `filesystem.manifest-remove`.
+   `filesystem.manifest-remove` (the base ISO's list is kept and `LIVE_ONLY_PACKAGES` —
+   `lindos-installer` — is appended, so the installer removes it from the new system; without a base
+   list the build only warns).
 10. **overlay + branding** — `build/overlay/` copied verbatim (`boot/grub/grub.cfg`,
     `boot/grub/loopback.cfg`, `.disk/info`, `README.diskdefines`), then `@LINDOS_VERSION@`,
     `@LINDOS_VERSION_SHORT@`, `@LINDOS_CODENAME@`, `@MINT_VERSION@`, `@DISK_INFO@`,
     `@ISO_VOLID@` placeholders are filled from `config.env` and `@PRESEED@` from the base
-    ISO's `preseed/*.seed` (Mint's `file=/cdrom/preseed/linuxmint.seed`, empty when absent; the
-    OEM entry keeps `only-ubiquity`); the build dies on an unfilled placeholder or a
-    kernel/initrd path in `grub.cfg` that is missing from the tree; every existing
-    `isolinux/*.cfg`, `boot/grub/**/*.cfg` and `README.diskdefines` is sed-branded (Mint
-    strings → Lindos) and `initrd`/`initrd.lz` names fixed; `md5sum.txt` regenerated.
-11. **ISO** — method `mkisofs` (default): `xorriso -indev BASE -report_el_torito as_mkisofs`
+    ISO's `preseed/*.seed` — **empty on the Mint 22.2 ISO, which has no `preseed/` directory**; the
+    boot entries are the installer-flow entries of SPEC §17.1 (`Install Lindos` first, with
+    `only-ubiquity oem-config/enable=true`; the old "OEM install (for manufacturers)" entry is gone);
+    the BIOS menu `isolinux/live.cfg` is regenerated from them by `build/lib/boot_menu.py`; the build dies
+    on an unfilled placeholder, on a first entry that lost `only-ubiquity oem-config/enable=true`, on any
+    `username=mint`/`hostname=mint`, or on a kernel/initrd path in `grub.cfg` that is missing from the
+    tree; every existing `isolinux/*.cfg`, `boot/grub/**/*.cfg` and `README.diskdefines` is sed-branded
+    (Mint strings → Lindos) and `initrd`/`initrd.lz` names fixed.
+11. **oem-config pool check** (`verify_oem_offline`) — `build/lib/verify_oem_pool.py` proves that the
+    medium can supply oem-config to the new system (see "Installer flow"); the build fails when it cannot,
+    unless `OEM_DEBS_DIR` names a matching fallback set or `REQUIRE_OEM_POOL=0`. Then `md5sum.txt` is
+    regenerated.
+12. **ISO** — method `mkisofs` (default): `xorriso -indev BASE -report_el_torito as_mkisofs`
     describes the base ISO's boot equipment (GRUB MBR, protective GPT, appended EFI partition)
     and those options are replayed verbatim with `xorriso -as mkisofs`, so BIOS + UEFI boot
     exactly like Mint's; the base ISO's `--modification-date` is kept (`KEEP_ISO_MODDATE=1`) so
     the EFI GRUB finds the medium by fs-uuid. Method `replay`: `xorriso -indev BASE -outdev OUT
     -boot_image any replay -update_r ISO_DIR /`. Each falls back to the other automatically.
     Volume id `LINDOS_1_0_0` (`ISO_VOLID`), publisher/app id from `config.env`.
-12. **verify + sha256** — `out/<ISO_NAME>.sha256`; `--no-cleanup` keeps `out/work/`.
+13. **verify + sha256** — `out/<ISO_NAME>.sha256`; `--no-cleanup` keeps `out/work/`.
 
 Traps unmount the chroot binds on any failure. Work files: `out/work/{iso,squashfs-root,orig,
 eltorito-report.txt,mkisofs-opts.txt}`.
@@ -130,7 +142,7 @@ eltorito-report.txt,mkisofs-opts.txt}`.
 | `SQUASHFS_COMP` / `SQUASHFS_ARGS` | `zstd` / `-Xcompression-level 19 -b 1M` | |
 | `ISO_VOLID` / `ISO_PUBLISHER` / `ISO_APPID` / `DISK_INFO` | `LINDOS_1_0_0` / `Lindos Team` / `Lindos 1.0.0 Aurora` / `Lindos 1.0.0 "Aurora" - Release amd64` | |
 | `MIN_FREE_GB` | `15` | free space required in `OUT_DIR` |
-| `ISO_METHOD` | `mkisofs` | `mkisofs` \| `replay` (see step 11) |
+| `ISO_METHOD` | `mkisofs` | `mkisofs` \| `replay` (see step 12) |
 | `KEEP_ISO_MODDATE` | `1` | keep base ISO modification date (GRUB fs uuid) |
 | `SYNC_CASPER_KERNEL` | `1` | copy chroot kernel/initrd into `casper/` |
 | `LINDOS_PASSTHRU_VARS` | `HEROIC_VERSION HEROIC_SHA256 PRISM_PPA ACCEPT_MSCOREFONTS_EULA` | extra env forwarded into the hooks |
@@ -143,7 +155,10 @@ eltorito-report.txt,mkisofs-opts.txt}`.
 | `DEBLOAT_DISABLE_SERVICES` | `ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service speech-dispatcher.service NetworkManager-wait-online.service` | 10-debloat.sh: disabled, never purged. `bluetooth.service` is deliberately **not** here — it stays enabled by default (laptops need Bluetooth headphones/mice, and it is cheap when idle); only Lite mode's own `tune.d`/`mode.json` turns it off (see docs/RAM-BUDGET.md) |
 | `EXTRA_PACKAGES` | *(empty)* | appended to 20-base.sh's required list |
 | `LAPTOP_ESSENTIALS` | `linux-firmware firmware-sof-signed alsa-ucm-conf pipewire-audio wireplumber pipewire-pulse bluez blueman intel-microcode amd64-microcode ubuntu-drivers-common fwupd printer-driver-gutenprint ipp-usb` | 20-base.sh: laptop hardware-enablement packages, best effort (see docs/RAM-BUDGET.md for the size estimate and why `printer-driver-all`/`hplip` are not here) |
-| `LINDOS_DEB_ORDER` | `lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-meta` | 30-lindos-debs.sh (`lindos-transfer` installs before `lindos-setup` so the OOBE's transfer page can call it, SPEC-WINDOWS §33) |
+| `LINDOS_DEB_ORDER` | `lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta` | 30-lindos-debs.sh (`lindos-transfer` installs before `lindos-setup` so the OOBE's transfer page can call it, SPEC-WINDOWS §33; `lindos-installer` is the medium-only installer flow, SPEC §17) |
+| `LIVE_ONLY_PACKAGES` | `lindos-installer` | build-iso.sh: appended (space separated) to `casper/filesystem.manifest-remove`, so the installer removes them from the installed system |
+| `REQUIRE_OEM_POOL` | `1` | build-iso.sh `verify_oem_offline`: `1` = fail the build when the medium cannot supply `oem-config` at the squashfs's ubiquity version (Ubiquity would silently skip it and the first boot would have no account wizard); `0` = warn only |
+| `OEM_DEBS_DIR` | *(empty)* | build-iso.sh: a directory of `oem-config` + `oem-config-gtk` (+ closure) `.deb`s of the squashfs's ubiquity version; copied to `/lindos/oem-debs` on the medium and installed by `finalize.sh` with `dpkg -i` when Ubiquity did not install oem-config itself |
 | `INSTALL_MODE_PACKAGES` | `1` | 30-lindos-debs.sh: also apt-install `modes/${TUNE_MODE}/mode.json` packages (best effort) |
 | `PLYMOUTH_THEME` | `lindos` | 40-theme.sh |
 | `TUNE_MODE` | `everyday` | 50-tune.sh: `lindos-tune apply --mode ${TUNE_MODE} --system --offline` |
@@ -167,11 +182,12 @@ pkg_available svc_disable svc_mask svc_enable fetch online`).
 | `30-lindos-debs.sh` | one `apt-get install --no-install-recommends ./…deb` transaction in `LINDOS_DEB_ORDER` (fallback `dpkg -i` + `apt-get -f install`) — the heavy Recommends of lindos-compat/gaming/meta (Wine, Steam, Lutris, …) are *not* pulled onto the ISO; `INCLUDE_WINE` / `INCLUDE_STEAM` / 20-base.sh decide the optional stacks; optional mode packages; `lindos-tune status --json` smoke test |
 | `40-theme.sh` | `/tmp/lindos/assets/install-into-chroot.sh` (Fluent → `Lindos-Dark`/`Lindos-Light`, icons `Lindos`, cursors, fonts); `/usr/libexec/lindos/apply-branding.sh` (os-release sed keeping `ID=linuxmint`, `/etc/issue`, `/etc/lindos-release`, plymouth + wallpaper alternatives, and the Mint sweep — see below); `/usr/libexec/lindos/build-panel-profiles.sh` (`panel.tar.bz2` per mode); `fc-cache`, icon caches, glib schemas, desktop/mime databases; `plymouth-set-default-theme lindos && update-initramfs -u -k all` |
 | `50-tune.sh` | `lindos-tune apply --mode ${TUNE_MODE} --system --offline` (presets, sysctl, zram, journald, tmpfiles, earlyoom); honest minimum (preset + fstrim.timer) with a loud warning if lindos-tune is missing |
-| `60-compat.sh` | `INCLUDE_WINE=1` → `/usr/libexec/lindos/install-compat.sh --minimal --from-chroot --no-update` (Ubuntu `wine` + `wine32:i386`, winetricks, cabextract, 32-bit GL/Vulkan; WineHQ *staging* and umu-launcher are installed later at OOBE to keep the ISO small); always: MIME/desktop database refresh + `lindos-compat doctor` report |
-| `70-gaming.sh` | always: `mesa-vulkan-drivers:i386 libgl1-mesa-dri:i386 libvulkan1:i386 steam-devices vulkan-tools mesa-utils` (+ `mangohud:i386` best effort); `INCLUDE_STEAM=1` → `install-gaming.sh --from-chroot ${GAMING_ITEMS}`; `INCLUDE_FLATPAK_LAUNCHERS=1` → Flatpaks. NVIDIA drivers are **not** preinstalled (mintdrivers / `lindos-drivers` at first boot) |
+| `60-compat.sh` | `INCLUDE_WINE=1` → `/usr/libexec/lindos/install-compat.sh --minimal --from-chroot --no-update` (Ubuntu `wine` + `wine32:i386`, winetricks, cabextract, 32-bit GL/Vulkan; WineHQ *staging* and umu-launcher are installed by the installer, step `compat`, to keep the ISO small); always: MIME/desktop database refresh + `lindos-compat doctor` report |
+| `70-gaming.sh` | always: `mesa-vulkan-drivers:i386 libgl1-mesa-dri:i386 libvulkan1:i386 steam-devices vulkan-tools mesa-utils` (+ `mangohud:i386` best effort); `INCLUDE_STEAM=1` → `install-gaming.sh --from-chroot ${GAMING_ITEMS}`; `INCLUDE_FLATPAK_LAUNCHERS=1` → Flatpaks. NVIDIA drivers are **not** preinstalled (the installer's `drivers` step installs proprietary GPU drivers only with consent and never when Secure Boot would need a key enrolment; otherwise mintdrivers / `lindos-drivers` on demand) |
 | `77-mint-sweep.sh` | last pass over what still says "Linux Mint" — see *Mint sweep* below: re-runs `apply-branding.sh --files-only` over the final image, checks Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when `apt-get -s purge` shows nothing else would go with them, prints an audit of everything left; every step guarded, idempotent, never fails the build |
 | `78-installer-brand.sh` | rebrands the live installer (Ubiquity): product name, launcher, artwork, slideshow, GTK skin — see *Installer branding* below; every step guarded (a missing file is a warning), idempotent |
-| `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists, machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
+| `79-installer-flow.sh` | wires the installer flow into Ubiquity — see *Installer flow* below: refuses a host outside the chroot; **dies** if Chrome/Edge is installed in the image (SPEC §0.1), if the `lindos-installer` files or `/usr/lib/ubiquity` are missing, or if the deployed hook would be skipped by Ubiquity (a `.` in the name, not executable, a symlink, a syntax error, `set -e`); `install -m 0755` of `target-config.sh` as `/usr/lib/ubiquity/target-config/50lindos-install`; `debconf-set-selections` of `lindos.seed` and a read-back of `ubiquity/success_command`; logs the target-config directory and the ubiquity version; idempotent. Test seams `LINDOS_INSTALLER_ROOT`, `LINDOS_DEBCONF_SET`, `LINDOS_DEBCONF_COMMUNICATE`, `LINDOS_DPKG_QUERY` |
+| `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists (**on purpose, still**: the base ISO's lists are stale by install time and cost ~100 MB in the squashfs; the installer hook refreshes the new system's lists as its first step), machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
 
 ### Installer branding (Ubiquity)
 
@@ -185,13 +201,15 @@ its edits. It reads `build/installer/` (staged into the chroot by `build-iso.sh`
 | `/var/cache/debconf/templates.dat` — every `ubiquity/text/*` string, all languages | inside `ubiquity/*` stanzas only: `${RELEASE}`, `${DISTRO}` and the hard-coded "Linux Mint" become "Lindos"; the English window title "Install" becomes "Lindos Setup" (a line-count check discards the rewrite if the file's structure changed) |
 | `/usr/share/ubiquity/gtk/*.ui` | "Linux Mint" fall-back labels (e.g. the disk-resize bar) become "Lindos" |
 | `/usr/share/applications/ubiquity.desktop` (the live-desktop launcher; casper substitutes `RELEASE` from `/cdrom/.disk/info` at boot and copies it to the live user's Desktop) | `Name=Install Lindos` in every language, `Icon=lindos-logo`, and `GTK_THEME=Lindos-Setup` inside the existing `sh -c '…'` (nothing else in `Exec=` changes) |
-| `/usr/share/ubiquity-slideshow/slides/` (shown while files are copied; `slideshow.conf` keeps the window size) | replaced by `build/installer/slideshow/`: six static slides, CSS-only, no script, no network — Windows-style look, the five Modes, Windows apps via Wine/Proton, gaming with the honest anti-cheat caveat, privacy, what first-boot Setup does |
+| `/usr/share/ubiquity-slideshow/slides/` (shown while files are copied; `slideshow.conf` keeps the window size) | replaced by `build/installer/slideshow/`: six static slides, CSS-only, no script, no network — Windows-style look, the five Modes, Windows apps via Wine/Proton, gaming with the honest anti-cheat caveat, privacy, and what the installer is downloading now versus what the first boot asks (account, then Lindos Setup) |
 | `/usr/share/ubiquity/pixmaps/{ubuntu_installed,cd_in_tray}.png`, `ubuntu/logo.png` | redrawn from `/usr/share/pixmaps/lindos-logo.svg` with `rsvg-convert` at the original pixel size (a size mismatch keeps the original) |
 | `/usr/share/icons/hicolor/*/apps/{ubiquity,mintubiquity}.svg` | the Lindos logo |
 | `/usr/share/themes/Lindos-Setup/` | `build/installer/themes/Lindos-Setup/gtk-3.0/gtk.css`: `Lindos-Dark` plus accent colours for Ubiquity's own `.ubiquity-next`, `.ubiquity-menubar` and progress bars — colours and buttons only, no geometry; only installed when `Lindos-Dark` is present |
 | `/sbin/casper-stop` ("Please remove the installation medium, then press ENTER") | carries no product name; only a defensive text rewrite |
 
-Deliberately **not** changed: partitioning behaviour, Ubiquity's Python code, compiled `.mo`
+Deliberately **not** changed: partitioning behaviour, Ubiquity's Python code (so the OEM mode's
+window title "OEM mode, for manufacturers only", the OEM-id box on the language page and the literal
+"OEM Configuration (temporary user)" stay Ubiquity's own text), compiled `.mo`
 catalogues (a non-English installer can still say "Linux Mint" in a few translated strings),
 `/cdrom/.disk/info` (written by `build-iso.sh`; Ubiquity's `get_release()` and casper read it),
 the live user name and host (`liveuser` / `lindos` on the GRUB command lines — changed by the Mint sweep
@@ -200,12 +218,164 @@ every installer file that still mentions "Linux Mint". The Ubiquity files it edi
 `ubiquity*` packages, which the installer removes from the installed system; the few files the hook
 adds (slideshow, `Lindos-Setup` theme) are tiny and stay behind as orphans.
 
+The `Lindos-Setup` skin is applied only through the launcher's `Exec` line, so the `Install Lindos` boot
+entries (`only-ubiquity`, which start `ubiquity-dm` on its own X server) and the oem-config first-boot
+wizard show Ubiquity with the `Lindos-Dark` defaults instead. Systemd drop-ins that set `GTK_THEME` for
+`ubiquity.service`/`oem-config.service` could change that; they are not done (untested idea).
+
 Hermetic tests: `build/tests/test_installer_brand.py` runs the real hook under bash against a fake root.
 Test seams (unset in a real build): `LINDOS_INSTALLER_ROOT` (prefix for every path),
 `LINDOS_INSTALLER_SRC` (where `build/installer/` is), `LINDOS_RSVG` (rsvg-convert replacement). What
 only a real boot can confirm: how the slideshow renders in Ubiquity's WebKit view, that the GTK skin
 loads and looks right, the launcher on the live desktop, and the strings on every page — eyeball the
 installer in QEMU (`make qemu`) after a build.
+
+### Installer flow (Ubiquity OEM mode)
+
+The flow (SPEC §17; the user-facing version is [INSTALLER.md](INSTALLER.md)): the live session shows
+nothing but the installer; the installer does everything heavy while it installs (updates, drivers,
+Chrome, Wine/Proton and launchers, the Modes' apps and Flatpaks); the first boot of the new system
+only asks for the account (Ubiquity's oem-config wizard) and then runs the install-free Lindos Setup.
+The mechanism is **Ubiquity in OEM mode** plus two scripts of the medium-only package
+`lindos-installer`.
+
+**Where everything is**
+
+| In the repository | On the medium / in the installed system | Role |
+|---|---|---|
+| `packages/lindos-installer/.../installer/target-config.sh` | copied by `79-installer-flow.sh` to `/usr/lib/ubiquity/target-config/50lindos-install` (mode 0755, no `.` in the name) | the **hook**: downloads and installs into `/target` |
+| `.../installer/lib.sh` | `/usr/libexec/lindos/installer/lib.sh` | helpers (logging, time boxes, entering the target, install-state, holds, repair); also the runner `bash lib.sh --enter TARGET CMD…` |
+| `.../installer/finalize.sh` | `/usr/libexec/lindos/installer/finalize.sh` | `ubiquity/success_command`: arms oem-config, <5 s |
+| `.../share/lindos/installer/lindos.seed` | baked into the image's debconf database by `79` | `oem-config/enable`, `ubiquity/success_command`, `download_updates=false`, `apt-setup/multiarch=i386`, `user-setup/allow-password-empty=true` |
+| `.../share/lindos/installer/lindos-installer.templates` | same path | the one-line status template (`db_progress INFO`) |
+| `.../share/lindos/installer/extras.json` | same path | union of every Mode's extras (generated by `build/lib/installer_extras.py --write`; `--check` fails when stale) |
+| `build/chroot/79-installer-flow.sh` | runs in the chroot after 78, before 80 | deploys the hook, bakes the seed, audits |
+| `build/lib/boot_menu.py` | run by `build-iso.sh` | generates `isolinux/live.cfg` from `grub.cfg` |
+| `build/lib/verify_oem_pool.py` | run by `build-iso.sh` (`verify_oem_offline`) | proves the medium can supply oem-config |
+| `build/overlay/boot/grub/{grub,loopback}.cfg` | ISO root | the boot entries (SPEC §17.1) |
+| `packages/lindos-core`: `lindos/{session,installstate}.py`, `is-live-session`, `oem-config-pending`, `wait-for-network`, `browser-firstboot.sh`, `lindos-live-inhibit.service`, `install-browser.sh` | installed system | the shared helpers, the silent retry and the `--in-installer` mode |
+| `packages/lindos-gaming`: `driver-firstboot.sh` + service; `install-gaming.sh`; `packages/lindos-compat`: `install-compat.sh` | installed system | silent driver retry; `--in-installer` mode of both scripts |
+| `packages/lindos-desktop`: `lindos-live-session.desktop`, `live-session-power.sh` | installed system (acts only in a live session) | never-sleep for the live desktop |
+
+`lindos-installer` is installed into the squashfs by `30-lindos-debs.sh` (`LINDOS_DEB_ORDER`) and
+listed in `casper/filesystem.manifest-remove` (`LIVE_ONLY_PACKAGES`), so Ubiquity removes it from the
+new system; `lindos-meta` does not depend on it.
+
+**The hook contract** (full text: SPEC §17.3). Ubiquity runs every executable file without a `.` in its
+name in `/usr/lib/ubiquity/target-config` once per installation, in the *live* environment as root, in
+`os.listdir()` order (not sorted), as `log-output -t ubiquity --pass-stdout HOOK`; the exit status is
+ignored and there is **no timeout**, so a hook that hangs hangs every install and a hook that leaves
+dpkg broken makes Ubiquity's later steps (language packs, codecs, removals) silently skip or abort.
+Hence: always exit 0, no `set -e`, never write to stdout (it is the debconf pipe), every step
+time-boxed and clamped to one 45-minute budget, downloads (killable) split from dpkg runs (never killed),
+a repair pass after every step, kernel/boot-loader/Ubiquity families held and released on every exit
+path, no mount left behind (private mount namespace), markers only after verified success. A
+deployed name that contains a `.` or lacks the exec bit makes Ubiquity skip the hook **silently** —
+`79` refuses both (and a `set -e`, a syntax error, a symlink) and logs `ls -l` of the directory.
+
+**Ubiquity's OEM mode, in short.** With `oem-config/enable=true` the installer's account page becomes a
+*temporary* account (`oem`, computer name, password, empty allowed here through
+`user-setup/allow-password-empty=true`) — a preseed cannot hide that page. OEM mode does **not** arm the
+first-boot wizard by itself (upstream a human runs `oem-config-prepare`), so `finalize.sh` does its
+essentials: units to `/lib/systemd/system`, enable, `set-default oem-config.target`, but *without* its
+deletion of the NetworkManager profiles; it also strips the stale `autologin-user=oem` from
+`lightdm.conf`, locks `oem` and resets `allow-password-empty` (SPEC §17.7).
+
+**Steps, states and switches.** Steps run `browser drivers updates compat gaming mode_extras flatpaks`
+and end in `/var/lib/lindos/install-state.json` as `done | pending | skipped | failed`
+(`lindos-config install-state [--json]`; `python3 -m lindos.installstate [--root DIR] show`). Kernel
+words: `lindos.install=off`, `lindos.install_budget=SECONDS` (default 2700),
+`lindos.proprietary_drivers=1` (consent, SPEC §17.5). The hook refreshes the new system's apt lists
+first, holds the families it must not touch, and does `apt-get upgrade` (never `dist-upgrade`).
+
+**Logs.** `/var/log/lindos/installer-hook.log` (live environment, written while installing — open a
+terminal in the *Try* session to follow it), `/target/var/log/lindos/installer.log` = `/var/log/lindos/
+installer.log` after the reboot (the same lines plus `finalize.sh`'s), Ubiquity's own
+`/var/log/installer/syslog`, the install scripts' `/var/log/lindos/install-*.log`. On a failure to
+arm oem-config: `/var/lib/lindos/oem-config-not-armed` holds the reason.
+
+**Build-time guards** (`build-iso.sh`): the first `grub.cfg` entry must keep `only-ubiquity
+oem-config/enable=true`; no `username=mint`/`hostname=mint` anywhere in `boot/grub` or `isolinux`;
+`isolinux/live.cfg` is rewritten from the GRUB entries (`boot_menu.py`); `verify_oem_offline` fails the
+build unless the pool carries matching `oem-config` + `oem-config-gtk` or `OEM_DEBS_DIR` names a fallback
+set (copied to `/lindos/oem-debs` and installed by `finalize.sh`) — `REQUIRE_OEM_POOL=0` downgrades
+that to a warning; `79` dies when the hook, the scripts or `/usr/lib/ubiquity` are missing, or when
+Chrome/Edge are installed in the image (SPEC §0.1).
+
+**Base-ISO assumptions** (re-check them whenever `MINT_VERSION` / `BASE_ISO_URL` changes; the first four
+were read from the real Mint 22.2 XFCE ISO's file tree and from Ubiquity's upstream source, none of it
+run):
+1. Ubiquity is Mint's fork 24.04.3+mintNN; `run_target_config_hooks` behaves as described above
+   (re-read `scripts/plugininstall.py` of the new version; it differs between releases).
+2. The medium's `pool/main/u/ubiquity/` holds `oem-config` and `oem-config-gtk` of the same version as
+   the squashfs's `ubiquity`; `.disk/info`, `.disk/cd_type` and `dists/` exist (apt-setup's `cdrom:`
+   generator needs them); `aptdaemon` and `python3-aptdaemon.gtk3widgets` are installed or in the pool.
+3. There is **no `preseed/` directory**: `@PRESEED@` in the overlay is empty (the old text about Mint's
+   `linuxmint.seed` was wrong for 22.2). A Lindos preseed would need its own file plus a `file=` word in
+   every boot entry (GRUB, loopback and isolinux); the flow uses the baked debconf database and
+   individual `owner/key=value` kernel words instead (no spaces allowed in values).
+4. The base target's apt sources are `/etc/apt/sources.list.d/official-package-repositories.list` (Mint
+   `zara` + Ubuntu `noble*`, http) plus the `deb cdrom:` line apt-setup adds; the hook never reads the
+   latter (`Dir::Etc::SourceList=/dev/null`) so nothing asks for the medium.
+5. `casper/filesystem.manifest-remove` exists; without it the build only warns and `lindos-installer`
+   would stay on the installed system.
+
+**What the base's `80-cleanup.sh` does to this.** It deletes `/var/lib/apt/lists` (stale lists cost ~100
+MB in the squashfs) — so on a stock-Mint comparison Ubiquity's own language-pack and codec steps were
+silent no-ops without lists. The hook's first act in the target is `apt-get update`, which repairs that as
+a side effect; **consequence:** after the hook the target has network lists and Ubiquity's later
+`install_language_packs` / `install_extras` / `install_restricted_extras` go online too (longer, and a
+dropped connection there is not caught by the hook).
+
+**Testing it without real hardware.** Hermetic tests run on any host (fake `/target`, a fake
+`LINDOS_TARGET_RUNNER`, `LINDOS_INSTALL_BUDGET`, `LINDOS_TIMEOUT_PCT`, `LINDOS_TEST_CMDLINE`,
+`LINDOS_DRY_RUN=1`): `packages/lindos-installer/tests` (hook, finalize, `--in-installer` modes, package
+layout), `build/tests/test_installer_flow_hook.py` (79 against a fake root, `LINDOS_INSTALLER_ROOT`),
+`build/tests/test_verify_oem_pool.py`, `tests/test_boot_menu.py`, `packages/lindos-core/tests`
+(`test_session`, `test_installstate`, `test_wait_for_network`, the first-boot scripts) and
+`packages/lindos-settings/tests/test_setup_pending.py`. They prove the logic; **only a real install proves
+the mechanism** — this is the QEMU procedure, expect several rounds:
+
+1. *Build check.* `out/hooks/79-installer-flow.log` shows `deployed …/50lindos-install (mode 0755 …)`, the
+   directory listing next to the base's own hooks, and `read back ubiquity/success_command`; `out/build.log`
+   shows the `oem-config pool check` result; `xorriso -indev out/lindos-*.iso -find /pool -name
+   'oem-config*'` lists both packages (and `-find /lindos/oem-debs` when a fallback set was used).
+2. *Boot both menus.* `make qemu-uefi` and `make qemu` (BIOS): entry 1 must go straight to the installer
+   (no desktop), entry 3 must give the live desktop with an *Install Lindos* icon and **no** Lindos Setup
+   window; the desktop must never blank or suspend (`lindos-live-inhibit.service`, `live-session-power.sh`).
+3. *Install online.* `build/test-qemu.sh --uefi --disk 30` (or `--disk` with BIOS), Try entry so you have a
+   terminal: start *Install Lindos*, follow `tail -f /var/log/lindos/installer-hook.log` and watch the
+   installer's status line change per step. Accept the temporary-account page (empty password).
+4. *Inspect before rebooting* (from the live terminal, `/target` is still mounted): `mount | grep /target`
+   shows only the partition mounts (none of `/proc /sys /dev /run`); `chroot /target dpkg --audit` is empty;
+   `chroot /target dpkg -s google-chrome-stable`; `cat /target/var/lib/lindos/install-state.json`;
+   `chroot /target apt-mark showhold` is empty and `/target/etc/apt/preferences.d/00lindos-installer.pref`
+   is gone; `readlink /target/etc/systemd/system/default.target` is `oem-config.target`;
+   `/target/lib/systemd/system/oem-config.{service,target}` exist; no `autologin-user=oem` in
+   `/target/etc/lightdm/lightdm.conf`; `chroot /target passwd -S oem` says locked; `browser-firstboot.done`
+   and `driver-firstboot.done` exist; `/target/var/log/lindos/installer.log` reads sensibly and ends with
+   `finalize: oem-config is armed`.
+5. *First boot.* Boot the disk: the oem-config account wizard must appear (not the installer, not a
+   desktop), the wizard must create the account and delete `oem`, LightDM must start, and
+   `lindos-setup --first-run` must start for the new user without any download or update
+   (`journalctl -b` shows the retry units did not run before the wizard). Check what the wizard looks like.
+6. *Failure drills.* Offline (`-nic none` in the command line `test-qemu.sh --dry-run` prints): the install
+   completes, `online` is `false`, every step is `pending`; boot online later and the silent retries add
+   Chrome/drivers, Settings › Apps lists the rest. A black-holed network (packets dropped): the hook times
+   out inside its budget and `dpkg --audit` is still empty. `kill -TERM` the hook mid-download: holds are
+   gone, dpkg is clean. `lindos.install=off`: every step `skipped`. Secure Boot with an NVIDIA GPU (real
+   hardware only): the proprietary driver step is `skipped` with the reason.
+7. *Automate it.* The CI work adds a QEMU install test: `build/qa/install_test.py` installs the ISO onto a
+   blank virtual disk with Ubiquity in OEM mode driven by a CI-only preseed (`automatic-ubiquity`), powers the
+   guest off and mounts the disk read-only; `build/qa/install_checks.py` asserts the properties of item 4 on
+   the mounted tree (unit-tested with fake trees in `build/tests`), `build/qa/ci-observer.sh` logs the run to
+   the serial console, and the installed disk is then booted to see that oem-config, not a desktop, starts.
+   It is a manual `workflow_dispatch` job and, when this was written, had **not run on GitHub Actions**
+   (check `build/qa/` and `.github/workflows/ci.yml` for its state; `CI-LOGS.md` has the history). Never put
+   `automatic-ubiquity` on a consumer boot entry: when its X server fails it falls back to an unattended
+   `ubiquity noninteractive` install.
+
+What only a real install can confirm is listed in [INSTALLER.md](INSTALLER.md#known-limitations-and-what-is-unverified).
 
 ### Mint sweep (what still says "Linux Mint")
 
@@ -316,7 +486,9 @@ build/test-qemu.sh [ISO] [--uefi] [--headless] [--disk [GB]] [--boot-disk] [--ra
 Default ISO = newest `out/lindos-*.iso`; `--disk` attaches `out/qemu/lindos-test.qcow2` (created
 on demand, `QEMU_DISK_GB`) for installation tests, `--boot-disk` boots from it afterwards;
 `--uefi` copies `OVMF_VARS` to `out/qemu/OVMF_VARS.fd`. Check both `make qemu` (BIOS) and
-`make qemu-uefi` after every change to the overlay or the ISO method.
+`make qemu-uefi` after every change to the overlay or the ISO method. The full install → account wizard →
+Lindos Setup check (online, offline, black-holed network, killed hook) is the procedure at the end of
+"Installer flow" in §5; use `--dry-run` to see the QEMU command line, for example to add `-nic none`.
 
 ## 10. Building and verifying on GitHub Actions
 
@@ -359,3 +531,9 @@ runner just does the same steps on a machine with a real Linux kernel, `/dev/kvm
 * `BASE_ISO_SHA256`, `SELAWIK_SHA256`, `INTER_SHA256`, `HEROIC_SHA256`, `NBFC_SHA256` are empty
   by default (observed hashes are printed/recorded) — fill them in for a release build.
 * Only the classic single-squashfs Mint/Ubuntu layout is supported.
+* **The installer flow has never run end to end.** Everything under "Installer flow" was written against
+  the upstream source of Ubiquity/casper/oem-config and unit-tested with fake targets. The CI `boot-test`
+  job boots `casper/vmlinuz` + `initrd` directly (no GRUB, no isolinux, `boot=casper ... lindos.ci_boot_test`),
+  so it exercises the live session, never the `Install Lindos` entries, the hook or the first-boot wizard.
+  The QEMU install test (`build/qa/install_test.py`) is the job that will; until it has run green on GitHub
+  Actions (see `CI-LOGS.md`), the manual procedure in "Installer flow" is the only real test. The honest list: [INSTALLER.md](INSTALLER.md#known-limitations-and-what-is-unverified).

@@ -35,6 +35,7 @@ INSTALL_COMPAT_SCRIPT = "/usr/libexec/lindos/install-compat.sh"
 INSTALL_GAMING_SCRIPT = "/usr/libexec/lindos/install-gaming.sh"
 SYSCTL_MODE_CONF = "/etc/sysctl.d/90-lindos-mode.conf"
 APT_KEYRINGS_DIR = "/etc/apt/keyrings"
+INSTALL_STATE = "/var/lib/lindos/install-state.json"   # what the installer did / could not do (lindos.installstate)
 
 # --- user locations (``~`` is expanded at call time) ---------------------------------------
 USER_CONF_DIR = "~/.config/lindos"
@@ -57,6 +58,7 @@ _SYSTEM_NAMES = (
     "SYSTEM_CONF_DIR", "SYSTEM_CONF", "SHARE_DIR", "MODES_DIR", "RECIPES_DIR", "LIBEXEC_DIR",
     "HELPER", "HELPER_LOG", "SYSTEM_LOG_DIR", "WALLPAPERS_DIR", "INSTALL_BROWSER_SCRIPT",
     "INSTALL_COMPAT_SCRIPT", "INSTALL_GAMING_SCRIPT", "SYSCTL_MODE_CONF", "APT_KEYRINGS_DIR",
+    "INSTALL_STATE",
 )
 _USER_NAMES = (
     "USER_CONF_DIR", "USER_CONF", "SETUP_DONE", "STATE_DIR", "PREFIXES_DIR", "APPS_DB", "LOG_DIR",
@@ -156,6 +158,10 @@ def sysctl_mode_conf() -> str:
     return resolve(SYSCTL_MODE_CONF)
 
 
+def install_state() -> str:
+    return resolve(INSTALL_STATE)
+
+
 def user_conf_dir() -> str:
     return resolve(USER_CONF_DIR)
 
@@ -212,12 +218,12 @@ def mode_dir(mode_id: str) -> str:
 __all__ = [
     "SYSTEM_CONF_DIR", "SYSTEM_CONF", "SHARE_DIR", "MODES_DIR", "RECIPES_DIR", "LIBEXEC_DIR",
     "HELPER", "HELPER_LOG", "SYSTEM_LOG_DIR", "WALLPAPERS_DIR", "INSTALL_BROWSER_SCRIPT",
-    "INSTALL_COMPAT_SCRIPT", "INSTALL_GAMING_SCRIPT", "SYSCTL_MODE_CONF", "APT_KEYRINGS_DIR",
+    "INSTALL_COMPAT_SCRIPT", "INSTALL_GAMING_SCRIPT", "SYSCTL_MODE_CONF", "APT_KEYRINGS_DIR", "INSTALL_STATE",
     "USER_CONF_DIR", "USER_CONF", "SETUP_DONE", "STATE_DIR", "PREFIXES_DIR", "APPS_DB", "LOG_DIR",
     "XFCONF_DIR", "PANEL_DIR", "GTK3_DIR", "GTK4_DIR", "AUTOSTART_DIR", "ROOT_ENV", "HOME_ENV",
     "root", "home", "resolve", "get", "all_paths", "ensure_dir",
     "system_conf_dir", "system_conf", "share_dir", "modes_dir", "recipes_dir", "libexec_dir",
-    "helper", "helper_log", "system_log_dir", "wallpapers_dir", "sysctl_mode_conf",
+    "helper", "helper_log", "system_log_dir", "wallpapers_dir", "sysctl_mode_conf", "install_state",
     "user_conf_dir", "user_conf", "setup_done", "state_dir", "prefixes_dir", "apps_db",
     "log_dir", "xfconf_dir", "panel_dir", "gtk3_dir", "gtk4_dir", "autostart_dir", "mode_dir",
 ]

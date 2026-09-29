@@ -36,7 +36,8 @@ def bash_available():
 # --- package / paths ------------------------------------------------------------------------
 def test_package_metadata() -> None:
     assert lindos.__version__ == "1.0.0" and lindos.__codename__ == "Aurora"
-    for name in ("paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram", "dualboot"):
+    for name in ("paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram", "dualboot",
+                 "session", "installstate"):
         __import__(f"lindos.{name}")
 
 
@@ -50,6 +51,7 @@ def test_spec_paths_constants() -> None:
     assert paths.PREFIXES_DIR == "~/.local/share/lindos/prefixes"
     assert paths.APPS_DB == "~/.local/share/lindos/apps.json"
     assert paths.LOG_DIR == "~/.local/state/lindos"
+    assert paths.INSTALL_STATE == "/var/lib/lindos/install-state.json"
 
 
 def test_paths_env_overrides(core_env) -> None:
@@ -59,8 +61,10 @@ def test_paths_env_overrides(core_env) -> None:
     assert Path(paths.user_conf()) == home / ".config" / "lindos" / "config.json"
     assert Path(paths.apps_db()) == home / ".local" / "share" / "lindos" / "apps.json"
     assert Path(paths.resolve("~")) == home
+    assert Path(paths.install_state()) == root / "var" / "lib" / "lindos" / "install-state.json"
+    assert Path(paths.get("INSTALL_STATE")) == Path(paths.install_state())
     everything = paths.all_paths()
-    assert set(everything) >= {"SYSTEM_CONF", "MODES_DIR", "USER_CONF", "APPS_DB", "LOG_DIR"}
+    assert set(everything) >= {"SYSTEM_CONF", "MODES_DIR", "USER_CONF", "APPS_DB", "LOG_DIR", "INSTALL_STATE"}
     assert all(str(root) in v or str(home) in v for v in everything.values())
     with pytest.raises(KeyError):
         paths.get("NOPE")
@@ -144,6 +148,8 @@ def test_helper_actions_match_spec() -> None:
     # a well-formed, contained apply_system path must still validate (sec-core:F1 regression
     # guard: the tightened containment check must not reject legitimate paths).
     ("apply-mode", {"mode": "gaming", "apply_system": "/usr/share/lindos/modes/gaming/apply-system.sh"}),
+    ("apply-mode", {"mode": "gaming", "install": False}),
+    ("apply-mode", {"mode": "gaming", "install": True}),
     ("reboot-to-windows", {"method": "bootnext", "entry": "0001"}),
     ("reboot-to-windows", {"method": "bootnext", "entry": "00AB", "reboot": False}),
     ("reboot-to-windows", {"method": "grub-reboot", "menuentry": "osprober-efi-ABCD-1234"}),
@@ -199,6 +205,7 @@ def test_validate_payload_accepts(action: str, payload: dict) -> None:
     ("apply-mode", {"mode": "gaming",
                     "apply_system": "/usr/share/lindos/modes/./apply-system.sh"}),
     ("apply-mode", {"mode": "nope"}),
+    ("apply-mode", {"mode": "gaming", "install": "no"}),
     ("enable-earlyoom", {"enable": "yes"}),
     ("set-fan-profile", {"profile": "a" * 100}),
     ("set-sched", {"profile": "scx_evil"}),
@@ -235,6 +242,15 @@ def test_validate_payload_accepts(action: str, payload: dict) -> None:
 def test_validate_payload_rejects(action: str, payload) -> None:
     with pytest.raises(lhelper.PayloadError):
         lhelper.validate_payload(action, payload)
+
+
+def test_apply_mode_install_flag_is_validated_and_defaults_to_true() -> None:
+    assert lhelper.validate_payload("apply-mode", {"mode": "gaming"})["install"] is True
+    assert lhelper.validate_payload("apply-mode", {"mode": "gaming", "install": False})["install"] is False
+    assert lhelper.validate_payload("apply-mode", {"mode": "gaming", "install": True})["install"] is True
+    batch = lhelper.validate_payload("run-batch", {"steps": [
+        {"id": "apply-mode", "action": "apply-mode", "payload": {"mode": "gaming", "install": False}}]})
+    assert batch["steps"][0]["payload"]["install"] is False
 
 
 def test_unit_whitelist_helpers() -> None:
@@ -295,6 +311,32 @@ def test_helper_dry_run_apply_mode(core_env, run_cli) -> None:
     assert "system.json" in out
     log_file = core_env["root"] / "var" / "log" / "lindos" / "helper.log"
     assert log_file.is_file() and "apply-mode" in log_file.read_text(encoding="utf-8")
+
+
+def test_helper_dry_run_apply_mode_install_false_installs_nothing(core_env, run_cli) -> None:
+    """The first-boot wizard sends install=false: even online, no apt/flatpak install runs - but
+    the configuration half (lindos-tune apply ...) still does."""
+    from lindos import modes
+    plan = modes.build_system_plan(modes.get_mode("gaming"), install=False)
+    assert plan["install"] is False and plan["packages"] and plan["flatpaks"]   # plan still describes the mode
+    proc = run_cli("lindos-helper", "apply-mode", json.dumps(plan), env=ONLINE_ENV)
+    assert proc.returncode == 0, proc.stderr
+    out = _unquoted(proc.stdout)
+    assert "apt-get install" not in out and "apt-get update" not in out
+    assert "flatpak install" not in out and "flatpak remote-add" not in out
+    assert "install disabled" in (proc.stdout + proc.stderr)
+    assert "lindos-tune apply --mode gaming --system" in out
+
+
+def test_helper_dry_run_apply_mode_install_false_inside_run_batch(core_env, run_cli) -> None:
+    from lindos import modes
+    plan = modes.build_system_plan(modes.get_mode("creator"), install=False)
+    batch = {"steps": [{"id": "apply-mode", "action": "apply-mode", "payload": plan}]}
+    proc = run_cli("lindos-helper", "run-batch", json.dumps(batch), env=ONLINE_ENV)
+    assert proc.returncode == 0, proc.stderr
+    out = _unquoted(proc.stdout)
+    assert "apt-get install" not in out and "flatpak install" not in out
+    assert "lindos-tune apply --mode creator --system" in out
 
 
 def test_helper_dry_run_apply_mode_without_lindos_tune(core_env, run_cli) -> None:
@@ -472,6 +514,17 @@ def test_ram_snapshot_and_report() -> None:
 
 
 # --- CLIs -----------------------------------------------------------------------------------------
+def test_cli_lindos_mode_set_no_install(core_env, run_cli) -> None:
+    def plan_of(*extra: str) -> dict:
+        proc = run_cli("lindos-mode", "set", "gaming", "--dry-run", "--json", *extra)
+        assert proc.returncode == 0, proc.stderr
+        message = next(s["message"] for s in json.loads(proc.stdout)["steps"] if s["name"] == "system")
+        return json.loads(message.split("with plan: ", 1)[1])
+
+    assert plan_of()["install"] is True
+    assert plan_of("--no-install")["install"] is False
+
+
 def test_cli_lindos_mode(core_env, run_cli) -> None:
     lst = run_cli("lindos-mode", "list", "--json")
     assert lst.returncode == 0, lst.stderr
@@ -611,13 +664,17 @@ def test_install_browser_repo_only_rejects_firefox() -> None:
 # --- lindos-browser-firstboot.service / browser-firstboot.sh (SPEC §0.1, §4.4, §6, §8) -----------
 FIRSTBOOT_SERVICE = ROOT / "usr" / "lib" / "systemd" / "system" / "lindos-browser-firstboot.service"
 FIRSTBOOT_SCRIPT = LIBEXEC / "browser-firstboot.sh"
+PYLIB = ROOT / "usr" / "lib" / "python3" / "dist-packages"
+NOT_LIVE_CMDLINE = "BOOT_IMAGE=/boot/vmlinuz-6.14.0-lindos root=UUID=0000 ro quiet splash"
 
 
 def test_browser_firstboot_service_unit() -> None:
     unit = FIRSTBOOT_SERVICE.read_text(encoding="utf-8")
     assert "\r\n" not in unit
     # never in the live/ISO session
-    assert "ConditionKernelCommandLine=!boot=casper" in unit
+    assert "ConditionKernelCommandLine=!boot=casper" in unit and "ConditionKernelCommandLine=!boot=live" in unit
+    # not before the new user finished Ubiquity's oem-config first-boot wizard
+    assert "ConditionPathExists=!/lib/systemd/system/oem-config.target" in unit
     # run-once guard + never blocks boot
     assert "ConditionPathExists=!/var/lib/lindos/browser-firstboot.done" in unit
     assert "ConditionVirtualization=!container" in unit
@@ -636,6 +693,11 @@ def test_browser_firstboot_script_shape() -> None:
     assert "boot=casper" in text
     # run-once marker (STATE_DIR="${LINDOS_ROOT:-}/var/lib/lindos", MARKER="${STATE_DIR}/browser-firstboot.done")
     assert "/var/lib/lindos" in text and "browser-firstboot.done" in text
+    # the live-session test is the shared helper's, not a private copy of the cmdline grep
+    assert "is-live-session" in text and "oem-config-pending" in text
+    assert "/proc/cmdline" not in text
+    # install-state first: terminal -> exit at once; retry outcomes are recorded
+    assert "lindos.installstate" in text and "status browser" in text and "mark browser" in text
     # reuses install-browser.sh; never duplicates Google's repo/key URLs or calls apt directly
     assert "install-browser.sh" in text
     assert "dl.google.com" not in text
@@ -662,6 +724,9 @@ def _firstboot_sandbox(tmp_path: Path, *, install_rc: int = 0, system_browser: O
     (root / "usr" / "libexec" / "lindos").mkdir(parents=True)
     (root / "etc" / "lindos").mkdir(parents=True)
     shutil.copy(FIRSTBOOT_SCRIPT, root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")
+    # the shared helpers the script asks (shipped next to it by lindos-core)
+    for helper_name in ("is-live-session", "oem-config-pending"):
+        shutil.copy(LIBEXEC / helper_name, root / "usr" / "libexec" / "lindos" / helper_name)
     canary = tmp_path / "install-browser-was-called"
     fake_install = root / "usr" / "libexec" / "lindos" / "install-browser.sh"
     fake_install.write_text(
@@ -689,16 +754,22 @@ def _firstboot_sandbox(tmp_path: Path, *, install_rc: int = 0, system_browser: O
     return root, fakebin, canary
 
 
+def _firstboot_env(root: Path, *, cmdline: Optional[str] = None) -> dict:
+    """Hermetic environment: fake (by default NOT live) kernel command line, the in-tree lindos module."""
+    env = dict(os.environ)
+    env["LINDOS_ROOT"] = str(root)
+    cmdline_file = root.parent / "fake-cmdline"
+    cmdline_file.write_text(NOT_LIVE_CMDLINE if cmdline is None else cmdline, encoding="utf-8")
+    env["LINDOS_TEST_CMDLINE"] = str(cmdline_file)
+    env["LINDOS_PYTHON"] = sys.executable
+    env["PYTHONPATH"] = str(PYLIB) + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
 def _run_firstboot(root: Path, fakebin: Path, *, cmdline: Optional[str] = None, force: bool = False,
                    tmp_path: Optional[Path] = None):
-    env = dict(os.environ)
+    env = _firstboot_env(root, cmdline=cmdline)
     env["PATH"] = str(fakebin) + os.pathsep + env.get("PATH", "")
-    env["LINDOS_ROOT"] = str(root)
-    if cmdline is not None:
-        assert tmp_path is not None
-        cmdline_file = tmp_path / "fake-cmdline"
-        cmdline_file.write_text(cmdline, encoding="utf-8")
-        env["LINDOS_TEST_CMDLINE"] = str(cmdline_file)
     args = [bash_available(), str(root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")]
     if force:
         args.append("--force")
@@ -737,8 +808,7 @@ def test_browser_firstboot_run_once_guard(tmp_path: Path) -> None:
 def test_browser_firstboot_requires_root(tmp_path: Path) -> None:
     root, _fakebin, canary = _firstboot_sandbox(tmp_path)
     # no fake 'id' on PATH here -> the real (non-root) id -u is used
-    env = dict(os.environ)
-    env["LINDOS_ROOT"] = str(root)
+    env = _firstboot_env(root)
     proc = subprocess.run([bash_available(), str(root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")],
                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
     assert proc.returncode == 0
@@ -780,6 +850,154 @@ def test_browser_firstboot_skips_when_another_browser_chosen(tmp_path: Path) -> 
     assert "not chrome" in proc.stderr
     assert not canary.exists(), "must not download Chrome when the user picked another browser"
     assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+def _write_install_state(root: Path, steps: dict) -> Path:
+    path = root / "var" / "lib" / "lindos" / "install-state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema": 1, "updated": "2026-09-29T10:00:00Z", "online": True, "steps": {
+        name: {"status": status, "detail": "", "time": "2026-09-29T10:00:00Z"} for name, status in steps.items()}}),
+        encoding="utf-8")
+    return path
+
+
+def _read_install_state(root: Path) -> dict:
+    return json.loads((root / "var" / "lib" / "lindos" / "install-state.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+@pytest.mark.parametrize("recorded", ["done", "skipped"])
+def test_browser_firstboot_terminal_install_state_exits_at_once(tmp_path: Path, recorded: str) -> None:
+    """The installer already did (or consciously skipped) Chrome: no retry, marker written."""
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    _write_install_state(root, {"browser": recorded})
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0, proc.stderr
+    assert f"browser={recorded}" in proc.stderr
+    assert not canary.exists(), "install-browser.sh must not run when the installer handled the step"
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+    assert _read_install_state(root)["steps"]["browser"]["status"] == recorded   # untouched
+    mimeapps = root / "etc" / "xdg" / "mimeapps.list"
+    if recorded == "done":
+        # the installer installed Chrome: the one thing left for us is the system-wide default for new users
+        assert "x-scheme-handler/https=google-chrome.desktop" in mimeapps.read_text(encoding="utf-8")
+    else:
+        assert not mimeapps.exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_done_but_another_browser_configured_leaves_the_default_alone(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, system_browser="firefox")
+    _write_install_state(root, {"browser": "done"})
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0 and not canary.exists()
+    assert not (root / "etc" / "xdg" / "mimeapps.list").exists()
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_installer_flag_beats_the_live_kernel_command_line(tmp_path: Path) -> None:
+    """Inside the installer's 'chroot /target' /proc/cmdline still says boot=casper; LINDOS_INSTALLER=1
+    is the explicit 'this is the installed system' signal."""
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    live = "BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash"
+    refused = _run_firstboot(root, fakebin, cmdline=live)
+    assert "refusing to run" in refused.stderr and not canary.exists()
+    env = _firstboot_env(root, cmdline=live)
+    env["PATH"] = str(fakebin) + os.pathsep + env.get("PATH", "")
+    env["LINDOS_INSTALLER"] = "1"
+    proc = subprocess.run([bash_available(), str(root / "usr" / "libexec" / "lindos" / "browser-firstboot.sh")],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env)
+    assert proc.returncode == 0, proc.stderr
+    assert canary.exists() and (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+@pytest.mark.parametrize("recorded", ["pending", "failed"])
+def test_browser_firstboot_retries_pending_and_records_done(tmp_path: Path, recorded: str) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, install_rc=0)
+    _write_install_state(root, {"browser": recorded, "drivers": "done"})
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0, proc.stderr
+    assert canary.read_text(encoding="utf-8").strip() == "chrome"          # the silent retry really ran
+    state = _read_install_state(root)
+    assert state["steps"]["browser"]["status"] == "done"
+    assert state["steps"]["drivers"]["status"] == "done"                     # other steps untouched
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+    assert "google-chrome.desktop" in (root / "etc" / "xdg" / "mimeapps.list").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_retry_failure_is_recorded_and_retried_later(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, install_rc=1)
+    _write_install_state(root, {"browser": "pending"})
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0
+    assert canary.exists()
+    entry = _read_install_state(root)["steps"]["browser"]
+    assert entry["status"] == "failed" and "exit 1" in entry["detail"]
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_offline_records_pending_when_nothing_was_recorded(tmp_path: Path) -> None:
+    root, fakebin, _canary = _firstboot_sandbox(tmp_path, install_rc=3)
+    proc = _run_firstboot(root, fakebin)        # no install-state.json at all (legacy / installer skipped)
+    assert proc.returncode == 0
+    entry = _read_install_state(root)["steps"]["browser"]
+    assert entry["status"] == "pending" and "offline" in entry["detail"]
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_other_browser_is_recorded_as_skipped(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path, system_browser="firefox")
+    _write_install_state(root, {"browser": "pending"})
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0
+    assert not canary.exists()
+    assert _read_install_state(root)["steps"]["browser"]["status"] == "skipped"
+    assert (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_waits_for_the_oem_config_wizard(tmp_path: Path) -> None:
+    """oem-config.target present = Ubiquity's first-boot wizard armed/not finished: nothing is touched."""
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    _write_install_state(root, {"browser": "pending"})
+    unit = root / "lib" / "systemd" / "system" / "oem-config.target"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\nDescription=oem-config\n", encoding="utf-8")
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0
+    assert "oem-config" in proc.stderr and "pending" in proc.stderr
+    assert not canary.exists()
+    assert not (root / "var" / "lib" / "lindos" / "browser-firstboot.done").exists()
+    assert _read_install_state(root)["steps"]["browser"]["status"] == "pending"
+    # the wizard finished and removed its unit: the retry runs now
+    unit.unlink()
+    proc2 = _run_firstboot(root, fakebin)
+    assert proc2.returncode == 0 and canary.exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_without_the_shared_helper_assumes_live(tmp_path: Path) -> None:
+    """Cannot ask is-live-session -> the safe answer is 'live': never install on a guess."""
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    (root / "usr" / "libexec" / "lindos" / "is-live-session").unlink()
+    proc = _run_firstboot(root, fakebin)
+    assert proc.returncode == 0 and "refusing to run" in proc.stderr
+    assert not canary.exists()
+
+
+@pytest.mark.skipif(bash_available() is None, reason="bash not available")
+def test_browser_firstboot_live_session_leaves_install_state_alone(tmp_path: Path) -> None:
+    root, fakebin, canary = _firstboot_sandbox(tmp_path)
+    state_file = _write_install_state(root, {"browser": "pending"})
+    before = state_file.read_text(encoding="utf-8")
+    proc = _run_firstboot(root, fakebin, cmdline="BOOT_IMAGE=/casper/vmlinuz boot=live quiet splash")
+    assert proc.returncode == 0 and not canary.exists()
+    assert state_file.read_text(encoding="utf-8") == before
 
 
 def test_debian_control_and_conffiles() -> None:

@@ -127,8 +127,8 @@ def install(bid: str, log: LogFn = print) -> bool:
     """Install *bid* through the helper action ``install-browser``.
 
     Returns True when the browser ends up installed.  Offline → logs a clear notice and
-    returns False (Firefox on the ISO is the fallback; the setup wizard tells the user how to
-    finish later: ``lindos-browser install <id>``).
+    returns False (Firefox on the ISO is the fallback; Settings > Apps offers "Install now" and
+    ``lindos-browser install <id>`` finishes it later).
     """
     info = _check(bid)
     ready = install_preflight(bid, log)

@@ -1,17 +1,28 @@
 [Unit]
-Description=Lindos: detect recommended GPU/Wi-Fi/audio drivers once at first boot
+Description=Lindos: silent retry of the driver install (installed system only)
 Documentation=man:lindos-drivers(1)
-# Runs exactly once per installation: the marker is written by the script.  It only DETECTS and
-# records recommendations (and, when online + not OEM, writes an install offer for the OOBE /
-# Lindos Settings to surface) — it NEVER installs proprietary drivers without user consent
-# (SPEC-VM.md section 24).  Never runs inside containers/chroots.
+# The INSTALLER installs drivers while installing and records the result in
+# /var/lib/lindos/install-state.json (step 'drivers').  This oneshot is only the SILENT background
+# retry for what the installer could not do (offline install, timeout, failure): driver-firstboot.sh
+# reads install-state first - 'done'/'skipped' -> it writes the marker and exits at once;
+# 'pending'/'failed'/unknown -> while online it retries without any window or wizard.  A retry never
+# goes beyond the installer's own consent (SPEC-VM.md section 24): free drivers only, unless the
+# installer recorded the user's consent for proprietary ones - and never an NVIDIA DKMS driver with
+# Secure Boot on.  Never runs inside containers/chroots.
 # Must never run in the live/ISO session either (same guard as lindos-browser-firstboot.service):
-# ConditionKernelCommandLine refuses to start while 'boot=casper' is on the kernel command line
-# (casper is Mint/Ubuntu's live-session bootstrap — present only when booted straight off the
-# ISO, never on an installed system). Without this, a boot-test/live-USB session would run full
-# hardware autodetect every single boot, since it never gets the chance to persist the marker to
-# a real, writable /var/lib.
+# ConditionKernelCommandLine refuses to start while 'boot=casper' (or 'boot=live') is on the kernel
+# command line (casper is Mint/Ubuntu's live-session bootstrap — present only when booted straight
+# off the ISO, never on an installed system). Without this, a boot-test/live-USB session would
+# retry a driver install on every single boot, since it never gets the chance to persist the marker
+# to a real, writable /var/lib.
+# It must not run before the new user has finished Ubiquity's oem-config first-boot wizard either:
+# while that is armed, /lib/systemd/system/oem-config.target exists (oem-config-firstboot deletes it
+# as its very last step, right before it isolates graphical.target).
+# NetworkManager-wait-online is masked on Lindos, so network-online.target is reached before
+# Wi-Fi/DHCP is up: the script waits for NetworkManager itself (wait-for-network, bounded).
 ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
+ConditionPathExists=!/lib/systemd/system/oem-config.target
 ConditionPathExists=!/var/lib/lindos/driver-firstboot.done
 ConditionVirtualization=!container
 Wants=network-online.target
@@ -21,8 +32,9 @@ After=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/libexec/lindos/driver-firstboot.sh
-# Best effort: autodetect must never block or fail the boot.
-TimeoutStartSec=120
+# Best effort: a driver retry must never block or fail the boot (the script itself stops a retry
+# after 15 minutes; this is the outer safety net).
+TimeoutStartSec=1200
 Nice=10
 IOSchedulingClass=idle
 

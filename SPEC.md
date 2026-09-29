@@ -10,10 +10,15 @@ Lindos is a remaster of **Linux Mint XFCE** (Ubuntu LTS base, currently Mint 22.
 "noble") that gives Windows 11 users a familiar, beautiful, dark-by-default desktop; runs Windows
 programs (`.exe`/`.msi`) through an integrated Wine/Proton compatibility layer; ships gaming
 launchers and drivers pre-wired (Steam/Proton, Lutris, Heroic, Prism/Minecraft, Sober/Roblox);
-and is tuned to idle at **~350–500 MB RAM** with no bloatware. At first login a Windows-style
-OOBE ("Out-Of-Box Experience") lets the user pick a **Mode** (Everyday / Gaming / Work / Creator /
-Lite) and a **browser** (Microsoft Edge / Google Chrome / Mozilla Firefox). Both can be changed
-later in **Lindos Settings**.
+and is tuned to idle at **~350–500 MB RAM** with no bloatware. Installing is one step: the
+USB session is only the installer, and the installer does everything heavy while it installs —
+system updates, drivers, Google Chrome, the Wine/Proton layer, the game launchers and the apps
+of every Mode (§17). The first boot of the installed system only asks for the account (Ubiquity's
+oem-config wizard); at the first login a Windows-style OOBE ("Out-Of-Box Experience") lets the
+user pick a **Mode** (Everyday / Gaming / Work / Creator / Lite) and a **browser** (Google Chrome /
+Mozilla Firefox, plus Microsoft Edge when it is installed) and personalise the desktop — it saves
+configuration only and never installs or updates anything (§6). Both choices can be changed later
+in **Lindos Settings**.
 
 ### 0.1 Honesty rules (must be reflected everywhere, incl. UI and docs)
 - "Runs Windows apps natively" means *without a VM*, through Wine / Proton (translation layer,
@@ -28,12 +33,20 @@ later in **Lindos Settings**.
   contain the browser binary itself, and building the ISO on CI counts as redistribution too, so
   neither is ever installed at **build** time. Only their official apt repository + signing
   keyring (freely redistributable pointers, same as the WineHQ/Steam repos) may be pre-staged on
-  the image. Firefox is on the ISO. Chrome is the OOBE/system default: it is downloaded from
-  Google's official apt repository either during OOBE or — if OOBE was skipped or was offline —
-  by `lindos-browser-firstboot.service` on the **installed** system's first boot (never in the
-  live/ISO session, never blocks boot, retries later if offline). Edge/Firefox remain selectable
-  in OOBE/Settings any time. Both Edge and Chrome have a clean offline fallback to Firefox +
-  "install later" notice.
+  the image. Firefox is on the ISO. Chrome is the system default: the **installer** downloads it
+  from Google's official apt repository into the new system while it installs (§17; never in the
+  live session, never at build time). If that was not possible (offline, a timeout, a failure) the
+  step is recorded as *pending* in `/var/lib/lindos/install-state.json`, and
+  `lindos-browser-firstboot.service` retries silently on the **installed** system once it is
+  online (no window, no wizard, never in the live/ISO session, never blocks boot, retries later if
+  still offline); Lindos Settings › Apps shows the same item with an **Install now** button. Edge
+  is never installed automatically; it and Firefox remain selectable in Settings any time. Both
+  Edge and Chrome have a clean offline fallback to Firefox + "install later" notice.
+- The installer is as honest as the rest: it says on its status line what it is downloading; it
+  records a step as `done` only after verifying the result (never on hope), and everything it could
+  not do stays visible as *pending*/*failed* (Settings › Apps, `lindos-config install-state`). It
+  never installs a proprietary GPU driver without consent, and never one that would need a
+  Secure-Boot key enrolment at the next start (§17.5).
 - RAM: idle target is measured as `free -m` "used" after login into XFCE with no apps open. State
   the target as **350–500 MB** and ship the measurement tool (`lindos-tune status`).
 
@@ -51,7 +64,9 @@ Lindos/
 │   ├── build-iso.sh            ← main entry: fetch → unpack → chroot hooks → repack (EFI+BIOS)
 │   ├── mkdeb.sh                ← builds packages/<name> into out/debs/<name>_<ver>_all.deb
 │   ├── chroot/NN-*.sh          ← ordered hooks executed INSIDE the chroot (see §8)
-│   ├── overlay/                ← files copied verbatim onto ISO root (grub.cfg, isolinux, …)
+│   ├── overlay/                ← files copied verbatim onto ISO root (grub.cfg, loopback.cfg, …; the BIOS
+│   │                              isolinux/live.cfg is generated from grub.cfg by lib/boot_menu.py, §17.1)
+│   ├── lib/                    ← build helpers: boot_menu.py, installer_extras.py, verify_oem_pool.py, …
 │   ├── installer/              ← slideshow + GTK skin staged for chroot/78-installer-brand.sh
 │   ├── Dockerfile              ← ubuntu:24.04 + xorriso squashfs-tools … ; `make docker-iso`
 │   ├── test-qemu.sh            ← boot out/lindos-*.iso in QEMU (OVMF UEFI + legacy)
@@ -65,8 +80,10 @@ Lindos/
 │   ├── lindos-gaming/          ← launchers, drivers, gamemode, MangoHud, controllers (§10)
 │   ├── lindos-tune/            ← RAM/perf tuning, zram, services, hardware control (§11)
 │   ├── lindos-transfer/        ← Windows Easy Transfer-style migration + GUI (Addendum W §29)
-│   └── lindos-meta/            ← depends on all of the above (incl. lindos-transfer)
-├── docs/                       ← BUILDING, ARCHITECTURE, COMPATIBILITY, MODES, RAM-BUDGET,
+│   ├── lindos-installer/       ← the installer flow: Ubiquity target-config hook + success command (§17);
+│   │                              on the installation medium only, removed from the installed system
+│   └── lindos-meta/            ← depends on the runtime packages above (incl. lindos-transfer; not lindos-installer)
+├── docs/                       ← BUILDING, INSTALLER, ARCHITECTURE, COMPATIBILITY, MODES, RAM-BUDGET,
 │                                  KEYBOARD-SHORTCUTS, FAQ, HARDWARE-CONTROL, WINDOWS-APPS,
 │                                  WINDOWS-FORMATS, WINGET, TRANSFER, DUALBOOT (Addendum W)
 ├── tests/                      ← run.sh (lint everything), pytest suites, conftest.py (gi stub)
@@ -77,7 +94,8 @@ Lindos/
 Addendum K (kernel + compat-performance, §14), Addendum V (VM/WinApps/Proton-system/drivers/CI,
 §15) and Addendum W (every Windows format/Transfer/Play-anywhere, §16) each add their own packages
 (`lindos-kernel`; `lindos-vm`, `lindos-winapps`; `lindos-transfer`) and docs on top of this base
-layout — see their own specs for the full file lists.
+layout — see their own specs for the full file lists. The installer flow (§17) adds the
+thirteenth package, `lindos-installer`.
 
 ### 1.1 Package format
 Each `packages/<name>/` contains:
@@ -142,11 +160,16 @@ Storage:
     else copy the xml into `~/.config/xfce4/xfconf/xfce-perchannel-xml/`).
   - optional `apply-user.sh` (runs as user after mode switch), `apply-system.sh` (runs as root).
 
-CLI: `lindos-mode list | get | set <id> [--system]` (in lindos-core). `set` = write config →
+CLI: `lindos-mode list | get | set <id> [--system] [--no-install]` (in lindos-core). `set` = write config →
 `lindos.modes.apply_mode()` → user part (panel profile, xfconf, compositor, autostart of
 mangohud/gamemode toggles) + privileged part via helper action `apply-mode` (packages install if
 missing & online, services, sysctl drop-in `/etc/sysctl.d/90-lindos-mode.conf`, governor,
 zram config, ananicy). Must be idempotent and safe offline (skip installs, log warning).
+The Mode's `packages`/`flatpaks` are installed by the **installer** for every Mode at once (§17.6),
+so a Mode switch normally installs nothing; `apply-mode` still installs what is missing when the
+plan says `install: true` (the default for `lindos-mode set` and Settings). `--no-install` /
+`install: false` (what the OOBE always sends) applies configuration only and never runs apt or
+Flatpak.
 
 ## 4. `lindos-core` (Python 3, no GTK dependency)
 
@@ -170,6 +193,7 @@ STATE_DIR       = "~/.local/share/lindos"
 PREFIXES_DIR    = "~/.local/share/lindos/prefixes"
 APPS_DB         = "~/.local/share/lindos/apps.json"
 LOG_DIR         = "~/.local/state/lindos"
+INSTALL_STATE   = "/var/lib/lindos/install-state.json"   # what the installer did / could not do (§4.11)
 ```
 All are overridable via env `LINDOS_ROOT` (prefix for system paths, used by tests) and
 `LINDOS_HOME` (replaces `~`).
@@ -198,7 +222,10 @@ def get_mode(mode_id) -> Mode
 def current_mode() -> str
 def apply_mode(mode_id, *, system=False, dry_run=False, log=print) -> ApplyResult
     # ApplyResult(ok: bool, steps: list[tuple[str,bool,str]])
-def build_system_plan(mode: Mode) -> dict   # JSON-able plan sent to helper 'apply-mode'
+def build_system_plan(mode: Mode, *, set_system_default=False, offline=False,
+                      install=True) -> dict   # JSON-able plan sent to helper 'apply-mode'
+def system_plan(mode_id, *, system=False, offline=False, install=True) -> dict   # same, by id;
+                                            # install=False = configuration only (no apt/Flatpak)
 ```
 
 ### 4.4 Browsers (`lindos/browsers.py`)
@@ -219,22 +246,34 @@ def online() -> bool
 ```
 `install()`/the helper's `install-browser` action both shell out to the single script
 `/usr/libexec/lindos/install-browser.sh <edge|chrome|firefox> [--repo-only] [--dry-run]
-[--no-update]` (SPEC §13) — it owns the repo/key/apt logic for every caller (OOBE, Lindos
-Settings, `lindos-browser install`, `build/chroot/30-lindos-debs.sh` at ISO build time via
-`--repo-only`, and `lindos-browser-firstboot.service` at first boot), so Chrome's key URL and
-repo line exist in exactly one place. `--repo-only` adds the vendor's apt repository + signing
-key without ever running `apt-get install` — used to pre-stage Chrome's repo on the ISO (§8)
-without installing the package there (§0.1: that would be redistribution).
+[--no-update] [--in-installer [--download-only | --no-download]]` (SPEC §13) — it owns the
+repo/key/apt logic for every caller (the Lindos installer hook, Lindos Settings, `lindos-browser
+install`, `build/chroot/30-lindos-debs.sh` at ISO build time via `--repo-only`, and
+`lindos-browser-firstboot.service`'s silent retry), so Chrome's key URL and repo line exist in
+exactly one place. `--repo-only` adds the vendor's apt repository + signing key without ever
+running `apt-get install` — used to pre-stage Chrome's repo on the ISO (§8) without installing the
+package there (§0.1: that would be redistribution). `--in-installer` is the installer's mode
+(root inside `chroot /target`, lists already refreshed by the caller, apt never reads the medium's
+`cdrom:` source); `--download-only` and `--no-download` split it into a kill-safe download phase
+and a dpkg phase (§17.3).
 
-**First-boot install (installed system only):** `/usr/lib/systemd/system/
-lindos-browser-firstboot.service` (oneshot, `ConditionKernelCommandLine=!boot=casper` — refuses
-to run in the live/ISO session — `ConditionPathExists=!/var/lib/lindos/browser-firstboot.done`,
-`After=network-online.target`) runs `/usr/libexec/lindos/browser-firstboot.sh` on first boot of
-the *installed* system: if `/etc/lindos/system.json`'s `browser` is `chrome` (the default), it
-calls `install-browser.sh chrome`; on success it also sets Chrome as the system-wide default
-browser for new users (`/etc/xdg/mimeapps.list`'s `[Default Applications]`, the standard xdg
-fallback — never touches an existing user's own `~/.config/mimeapps.list` choice) and writes the
-marker. Offline or a failed install leaves the marker unwritten so a later boot retries
+**Silent retry (installed system only):** the *installer* installs Chrome (§17.4) and records the
+`browser` step of `/var/lib/lindos/install-state.json` (§4.11). `/usr/lib/systemd/system/
+lindos-browser-firstboot.service` (oneshot, `ConditionKernelCommandLine=!boot=casper` and
+`!boot=live` — refuses to run in the live/ISO session — `ConditionPathExists=!/lib/systemd/system/
+oem-config.target` — not before the account wizard has finished — `ConditionPathExists=!/var/lib/
+lindos/browser-firstboot.done`, `After=network-online.target`) runs
+`/usr/libexec/lindos/browser-firstboot.sh` on the *installed* system and only covers what the
+installer could not do. It reads the state first: `done` / `skipped` → write the marker and exit
+at once (for `done` with `browser: chrome` it also makes sure Chrome is the system-wide default
+for new users, an idempotent edit of `/etc/xdg/mimeapps.list`'s `[Default Applications]`, the
+standard xdg fallback — never touches an existing user's own `~/.config/mimeapps.list` choice);
+`pending` / `failed` / no record → if `/etc/lindos/system.json`'s `browser` is `chrome` it waits a
+bounded time for NetworkManager (`/usr/libexec/lindos/wait-for-network`: Lindos masks
+`NetworkManager-wait-online`, so `network-online.target` comes early), calls
+`install-browser.sh chrome` and records the outcome; if `browser` is anything else (the user chose
+Firefox in Lindos Setup) it records `skipped` and adds nothing. It never shows a window, wizard or
+notification. Offline or a failed install leaves the marker unwritten so a later boot retries
 automatically; every exit path is 0 (never blocks or fails the boot). Enabled by default via
 `90-lindos.preset` (lindos-tune, §11).
 
@@ -258,6 +297,9 @@ automatically; every exit path is 0 (never blocks or fails the boot). Enabled by
   `apply-mode`, `install-browser`, `install-packages`, `install-flatpaks`, `set-governor`,
   `set-services`, `apply-sysctl`, `apply-tune`, `set-zram`, `install-compat`, `install-gaming`,
   `install-drivers`, `set-fan-profile`, `write-system-config`, `enable-earlyoom`, `run-batch`.
+  `apply-mode`'s payload has an optional boolean `install` (default `true`): `false` = apply the
+  configuration only (services, sysctl, zram, governor, …) and never apt/Flatpak-install the
+  Mode's packages — also inside a `run-batch`. The first-boot wizard sends `false`.
 - `run_privileged_batch(steps, log=None, on_step=None, timeout=None) -> BatchResult` sends
   `run-batch` `{"steps": [{"id"?, "action", "payload"?}, …]}` (≤ 32 steps, ≤ 256 KiB, unique ids)
   over stdin. The helper runs the steps in order in that one root process, each through the same
@@ -292,8 +334,46 @@ def choose_runner(info, config) -> str  # "umu" | "wine" | "bottles"  (rules in 
 `snapshot()` → dict(total, used, available, top=[(name,rss_mb),…]) ; `report(fmt="text|json")`.
 
 ### 4.10 CLIs shipped by lindos-core (all `/usr/bin/`, python3, argparse, `--json` where sensible)
-`lindos-mode`, `lindos-browser`, `lindos-config` (`get/set/show`), `lindos-ram` (alias for
-`lindos-tune status` output). Exit codes: 0 ok, 1 error, 2 usage.
+`lindos-mode`, `lindos-browser`, `lindos-config` (`get/set/show`, `install-state [--json]`),
+`lindos-ram` (alias for `lindos-tune status` output). Exit codes: 0 ok, 1 error, 2 usage.
+
+### 4.11 Session, install state and live-session helpers (`lindos/session.py`, `lindos/installstate.py`)
+**Which session is this?** `lindos.session` (stdlib only, importable on any OS) is the single source
+of truth for every component that must behave differently while running from the install medium:
+- `is_live_session() -> bool` — true iff the kernel command line has the word `boot=casper` or
+  `boot=live` (Mint's own `xapp.os.is_live_session` test). The file read is `/proc/cmdline`; tests
+  point the env var `LINDOS_TEST_CMDLINE` at a fake file. Username/hostname are never used
+  (BIOS menu and GRUB have differed in the past).
+- `is_installer_chroot() -> bool` — true iff env `LINDOS_INSTALLER=1`: the caller is a script the
+  installer runs inside `chroot /target`. `/proc/cmdline` still says `boot=casper` in there (proc is
+  the live kernel's), so this explicit flag is the only reliable signal and wins over the command line.
+- `is_oem_temp_user(user=None) -> bool` — the login name is `oem`, the temporary account of
+  Ubiquity's OEM mode (`pwd`/`getpass` imported lazily).
+- Shell twin: `/usr/libexec/lindos/is-live-session` (exit 0 = live). Units use
+  `ConditionKernelCommandLine=!boot=casper` plus `!boot=live`. Companion helper
+  `/usr/libexec/lindos/oem-config-pending` (exit 0 while Ubiquity's first-boot wizard is armed: an
+  `oem-config.target` exists in `/lib/systemd/system`, `/usr/lib/systemd/system` or
+  `/etc/systemd/system`, or the default target points at it) and `/usr/libexec/lindos/wait-for-network
+  [SECONDS]` (bounded `nm-online` wait, default 90 s, for the silent retries).
+
+**What did the installer do?** `lindos.installstate` owns `/var/lib/lindos/install-state.json`
+(`paths.INSTALL_STATE`, honours `LINDOS_ROOT`; written atomically under a best-effort file lock so two
+writers never lose each other's update; kept out of `config.SYSTEM_DEFAULTS`; it must be readable by the
+logged-in user, since Lindos Setup and Settings read it):
+```json
+{"schema": 1, "updated": "<ISO-8601 UTC>", "online": true,
+ "steps": {"<step>": {"status": "done|pending|skipped|failed", "detail": "<short text>", "time": "<ISO-8601 UTC>"}}}
+```
+`online` is `true`, `false` or `null` (unknown). Step ids: `updates drivers browser compat gaming
+mode_extras flatpaks`. `done` and `skipped` are **terminal**; `pending` (wanted, could not: offline,
+timeout, no time left) and `failed` are what the silent retries and Settings › Apps pick up.
+`done` is recorded only after a verified success. API: `load(root=None) -> dict` (tolerant: a missing
+or corrupt file is an empty state), `mark(step, status, detail="", root=None)` (validates ids and
+status), `status(step, root=None) -> str` (`""` if unknown), `pending(root=None) -> list[str]`
+(`pending` or `failed`), `is_terminal(step, root=None) -> bool`. CLI: `python3 -m lindos.installstate
+[--root DIR] show | mark STEP STATUS [DETAIL] | pending | status STEP | online true|false|unknown`
+(the installer passes `--root /target`) and `lindos-config install-state [--json]`. Exit codes: 0 ok,
+1 the file cannot be written, 2 unknown step/status or bad usage.
 
 ## 5. `lindos-desktop` (theme, panel, shortcuts, branding)
 
@@ -335,7 +415,9 @@ Ships:
   `lindos.theme.set_accent`.
 - Wallpapers (§2), Plymouth theme (script-based, logo + progress bar on `#202020`), slick-greeter
   conf, lightdm conf (`greeter-hide-users=false`, `user-background=false`), `/etc/xdg/autostart/`
-  entries: `lindos-setup.desktop` (first-run gate), `lindos-picom.desktop`, `lindos-mode-apply-user`.
+  entries: `lindos-setup.desktop` (first-run gate: exits in the live session and for the temporary `oem`
+  user, §6), `lindos-picom.desktop`, `lindos-mode-apply-user`, `lindos-live-session.desktop` (live USB
+  session only: `live-session-power.sh` keeps the PC awake during a long install, §17.2).
 - Branded `.desktop` shims in `/usr/share/applications/`: `lindos-files.desktop` (Name=File
   Explorer, Exec=thunar), `lindos-settings.desktop` (Name=Settings), `lindos-store.desktop`
   (Name=Lindos Store, Icon=lindos-store, Exec=mintinstall — the base's Software Manager, described as
@@ -354,48 +436,62 @@ Ships:
 
 ## 6. `lindos-setup` (OOBE)
 
+The OOBE is the *personalisation* step of the flow in §17. By the time it runs, the installer has
+already installed the updates, drivers, Chrome, Wine/Proton, launchers and Mode apps, and Ubiquity's
+oem-config wizard has already created the account (name, password, computer name, language,
+keyboard, time zone). The OOBE is therefore **install-free**: it saves choices and applies
+configuration; it never downloads, installs or updates anything.
+
 - Binary `/usr/bin/lindos-setup` → `python3 /usr/lib/lindos-setup/main.py "$@"`.
-- Flags: `--first-run` (exit 0 silently if `SETUP_DONE` exists or not in XFCE), `--reconfigure`,
-  `--dry-run` (no helper calls, print plan), `--page <id>`.
+- Flags: `--first-run` (exit 0 silently if `SETUP_DONE` exists, if not in XFCE, **in the live
+  session** (`lindos.session.is_live_session()`) **or as the temporary `oem` user**
+  (`is_oem_temp_user()`) — the gate is code, the autostart `.desktop` files are unchanged), `--reconfigure`
+  (a hand-started run gets the same refusal in those sessions), `--dry-run` (no helper calls, print
+  plan), `--page <id>`.
 - GTK 3, one `Gtk.Window` fullscreen (maximised if the WM refuses), undecorated, dark `#202020`
   fluent backdrop, Windows-11-OOBE styling via `Gtk.CssProvider` (`ui/oobe.css`, GTK 3 CSS
-  subset only). Fonts follow xsettings. Layout: a slim step indicator on top ("Step n of 7"; not
+  subset only). Fonts follow xsettings. Layout: a slim step indicator on top ("Step n of 6"; not
   shown on `welcome`/`apply`/`done`), each page a centred column of at most 760 px (large
   semibold heading, one short subtitle, one focused question; `welcome`/`apply`/`done` are
   centred "hero" pages), and a bottom bar with a quiet **Back**, a rounded accent **Next**
   (or Accept / Apply / Start using Lindos) and — in `--reconfigure` only — **Cancel**. Escape
   behaves as before (quits only in `--reconfigure`).
-- Pages (ids): `welcome` → `mode` → `browser` → `personalize` → `apps` → `privacy` → `transfer`
-  → `summary` → `apply` → `done`. Wording follows the Windows OOBE: "Let's get you set up",
-  "How will you use this PC?", "Choose your web browser", "Make it yours", "Get the apps you
-  need", "Choose your privacy settings" (button: Accept), "Bring your stuff from Windows",
-  "Ready to set up your PC?", "Just a moment…", "All set" (button: Start using Lindos).
-  - `mode`: 5 cards (icon, name, one-line description, RAM hint), default Everyday.
-  - `browser`: 3 cards (Edge, Chrome, Firefox) with note "Edge/Chrome download from vendor";
-    **Chrome pre-selected by default** when online (`Selections.browser` default, `lindos_setup/
-    plan.py`); Edge/Firefox remain one click away. Edge/Chrome cards disabled with explanation
-    when offline, and the selection automatically falls back to Firefox (pre-selected) in that
-    case — the same fallback applies if Chrome was never installed by the first-boot service
-    (offline at every boot so far): Settings → Apps → Web browsers installs it later.
+- Pages (ids): `welcome` → `mode` → `browser` → `personalize` → `privacy` → `transfer` →
+  `summary` → `apply` → `done`. (The former `apps` page is gone: what it offered is installed by
+  the installer, §17.6, and anything left is in Settings › Apps.) Wording follows the Windows OOBE:
+  "Let's get you set up", "How will you use this PC?", "Choose your web browser", "Make it
+  yours", "Choose your privacy settings" (button: Accept), "Bring your stuff from Windows", "Ready
+  to set up your PC?", "Just a moment…", "All set" (button: Start using Lindos).
+  - `mode`: 5 cards (icon, name, one-line description, RAM hint), default Everyday. When a Mode's
+    extras are still pending in install-state, a short note says so and points to Settings › Apps.
+  - `browser`: cards only for browsers that are actually on this PC (or about to be): Firefox
+    always; Chrome when the installer's `browser` step is `done`, or as "Will be added when you're
+    online" while it is `pending`/`failed`; Edge only if it was installed by hand. **Chrome is
+    pre-selected when it is installed**; while it is pending, Firefox is pre-selected and choosing
+    Chrome stores it as the preferred browser (it becomes the default when the silent retry adds
+    it, §4.4). No downloads happen on this page and there is no "check connection" button.
   - `personalize`: Dark/Light cards (default Dark), accent swatches (8), wallpaper thumbnails,
     taskbar alignment Center/Left cards.
-  - `apps`: checkboxes — "Windows app support (Wine + Proton)" (on), "Steam" (on in gaming),
-    "Roblox (Sober)", "Minecraft (Prism Launcher)", "Heroic (Epic/GOG)", "Lutris", "Bottles",
-    "Office (LibreOffice already installed) — add OnlyOffice", "Creative (GIMP, Krita, Kdenlive)".
-    Pre-checked set depends on chosen mode. This page also carries the §0.1 reality check (Wine
-    and Proton are a translation layer, not Windows; Valorant/Fortnite do not run on any Linux)
-    as an always-visible note plus a "Learn more about Windows apps" disclosure.
   - `privacy`: informational (no telemetry, no ads), toggles: location services off, crash
-    reports off (both default off; nothing to send).
-  - `summary`: review + Back.
-  - `apply`: large spinner + slim progress bar, friendly rotating lines ("Hi", "We're getting
-    things ready for you", "This might take a few minutes — please don't turn off your PC"); the
-    log is hidden behind a "Show details" toggle; builds `Plan` (JSON) → user-side steps directly +
-    ONE helper call per privileged group; robust to offline (mark skipped, tell user how to
-    finish later: `lindos-settings apps`).
-  - `done`: "All set" + "Start using Lindos" (writes `SETUP_DONE`, config `setup_done=true`).
+    reports off (both default off; nothing to send); the only vendor note is that Chrome and Edge
+    have their own privacy policies.
+  - `transfer`: optional "Bring your stuff from Windows" (Addendum W); nothing is copied here.
+  - `summary`: review + Back; says plainly that Apply only saves choices and nothing is downloaded.
+  - `apply`: large spinner + slim progress bar with short rotating lines ("Hi", "We're getting
+    things ready for you", "Saving your choices", "Setting up your desktop"); the log is hidden
+    behind a "Show details" toggle; builds `Plan` (JSON) → user-side steps directly + ONE batched
+    helper run (one `pkexec`, one administrator-password prompt) for the two configuration steps
+    `write-system-config` and `apply-mode` with `install: false`.
+  - `done`: "All set" + "Start using Lindos" (writes `SETUP_DONE`, config `setup_done=true`); a
+    read-only recap of what the installer set up (from install-state), a banner if items are still
+    waiting (Settings › Apps), and the always-visible §0.1 reality check (Wine and Proton are a
+    translation layer, not Windows; Valorant/Fortnite do not run on any Linux) with a "Learn more
+    about Windows apps" disclosure.
 - Pure logic in `lindos_setup/plan.py` (`Plan`, `build_plan(selections) -> Plan`, `Plan.to_json()`,
-  `Plan.user_steps()`, `Plan.system_payloads()`), unit-tested without GTK.
+  `Plan.user_steps()`, `Plan.system_payloads()`), unit-tested without GTK. `build_plan` is the user
+  steps (save config, theme, accent, wallpaper, taskbar alignment, default browser) plus
+  `write-system-config` and `apply-mode` (`install: false`); an old saved selection that still
+  carries `apps` loads, and legacy install steps in an old plan are never run.
 - Autostart: `/etc/xdg/autostart/lindos-setup.desktop` (`Exec=lindos-setup --first-run`,
   `OnlyShowIn=XFCE`, `X-GNOME-Autostart-Delay=2`).
 
@@ -419,8 +515,13 @@ Ships:
   (`xfce4-display-settings`), Sound (`pavucontrol`), Notifications (`xfce4-notifyd-config`),
   Power (`xfce4-power-manager-settings`), Storage (`baobab` if present else `gnome-disks`),
   Default apps (`xfce4-mime-settings`), Bluetooth (`blueman-manager`), Printers
-  (`system-config-printer`); `apps` → Store (`mintinstall`), Installed (`mintinstall`/`synaptic`),
-  Startup (`xfce4-session-settings`), Default apps; `network` → `nm-connection-editor`, VPN,
+  (`system-config-printer`); `apps` → **Left to finish from setup** (shown only when
+  `/var/lib/lindos/install-state.json` has `pending`/`failed` steps: Chrome, drivers, Wine/Proton,
+  game launchers, the Modes' extra apps and Flatpaks, each with an **Install now** button that
+  uses the ordinary helper actions and asks for the administrator password once; System updates
+  are not listed here, the Updates page says what the installer did), Store (`mintinstall`),
+  Installed (`mintinstall`/`synaptic`), Startup (`xfce4-session-settings`), Default apps, Web
+  browsers (Install / Make default); `network` → `nm-connection-editor`, VPN,
   Firewall (`gufw`); `accounts` → `users-admin`/`mintusers` (`cinnamon-settings users` absent →
   `mugshot` for avatar), `update` → `mintupdate`, Drivers (`mintdrivers`), Timeshift, Recovery
   (boot repair link), Kernels (`mintupdate` kernels).
@@ -450,9 +551,13 @@ INCLUDE_WINE=1 INCLUDE_STEAM=1 INCLUDE_FLATPAK_LAUNCHERS=0
 noninteractive`, `LC_ALL=C.UTF-8`, policy-rc.d to block service starts, `dpkg-divert` for
 `initctl`/`ischroot` not needed on systemd but keep policy-rc.d) → copy `out/debs/*.deb` and
 `build/chroot/` into `/tmp/lindos/` inside chroot → run hooks in order → cleanup → `mksquashfs`
-(zstd) → write `casper/filesystem.size`, `filesystem.manifest` (`dpkg-query -W`), remove-list →
-copy overlay (branded `boot/grub/grub.cfg`, `isolinux/*.cfg` if present, `.disk/info`
-"Lindos 1.0 Aurora") → `md5sum.txt` regen → build ISO with
+(zstd) → write `casper/filesystem.size`, `filesystem.manifest` (`dpkg-query -W`), remove-list (the
+base ISO's `filesystem.manifest-remove` is kept and `LIVE_ONLY_PACKAGES` — `lindos-installer` — is
+appended, so the installer removes it from the installed system) →
+copy overlay (`boot/grub/grub.cfg` + `loopback.cfg` with the §17.1 boot entries; the BIOS
+`isolinux/live.cfg` is regenerated from them by `build/lib/boot_menu.py`; `.disk/info`
+"Lindos 1.0 Aurora") → `verify_oem_offline` (fail the build when the medium cannot supply
+oem-config, §17.7) → `md5sum.txt` regen → build ISO with
 `xorriso -indev "$BASE_ISO" -outdev "$OUT" -boot_image any replay -map "$ISO_DIR" / -volid LINDOS`
 (the *replay* trick keeps the original hybrid BIOS+UEFI boot records; document why) →
 `sha256sum`. Every step logged to `out/build.log`; `set -Eeuo pipefail`; traps to unmount chroot
@@ -495,21 +600,24 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
   Chrome's apt repository + signing key (`install-browser.sh chrome --repo-only`, `ADD_CHROME_REPO`
   default on) — same pattern as WineHQ/Steam in `00-repos.sh`, but here because it reuses
   lindos-core's own script instead of duplicating Chrome's repo/key. The `google-chrome-stable`
-  package itself is **never** installed at build time (§0.1) — only downloaded later by
-  `lindos-browser-firstboot.service` or the OOBE.
+  package itself is **never** installed at build time (§0.1) — the installer downloads it into the
+  new system (§17.4). `LINDOS_DEB_ORDER` also installs `lindos-installer` (§17), just before
+  `lindos-meta`.
 - `40-theme.sh` — run `fetch-assets` outputs already staged in `/tmp/lindos/assets` (theme,
   icons, cursors, fonts) → install (`install.sh -n Lindos …`), os-release sed, plymouth default,
   `update-alternatives` for default wallpaper, `glib-compile-schemas`, `fc-cache`,
   `update-icon-caches`, generate `panel.tar.bz2` per mode, `update-initramfs -u` (plymouth).
 - `50-tune.sh` — apply base tune (systemd presets, sysctl, zram, journald, tmpfiles) via
   `lindos-tune apply --system --mode everyday --offline`.
-- `60-compat.sh` — wine-staging (WineHQ) + winetricks + `umu-launcher` (deb from openSUSE OBS
-  or GitHub release pinned) + dxvk/vkd3d optional; MIME defaults; `lindos-compat doctor`.
+- `60-compat.sh` — with `INCLUDE_WINE=1` Ubuntu's `wine` + `winetricks` on the ISO (WineHQ
+  *staging* and `umu-launcher`, a pinned GitHub release, are installed by the installer, §17.6);
+  dxvk/vkd3d optional; MIME defaults; `lindos-compat doctor`.
 - `70-gaming.sh` — steam-launcher (Valve deb), lutris (Ubuntu repo or GitHub deb pinned),
   heroic (GitHub deb pinned), prism launcher (PPA/Flatpak flag), `steam-devices`, `xpadneo`
   (dkms optional), `mesa-vulkan-drivers:i386`, `libgl1-mesa-dri:i386`, `nvidia` NOT preinstalled
-  (mintdrivers/`lindos-drivers` at first boot; ISO ships `nvidia-driver-5xx` in pool? → no,
-  keep ISO small; document), OpenRGB (repo/deb), `antimicrox`, `goverlay`, `piper`, `corectrl`.
+  (the installer's drivers step / `lindos-drivers` install them on demand, with consent — §17.5; the
+  ISO carries no `nvidia-driver-5xx`, keep it small), OpenRGB (repo/deb), `antimicrox`, `goverlay`,
+  `piper`, `corectrl`.
 - `77-mint-sweep.sh` — last pass over what still says "Linux Mint": re-runs lindos-desktop's
   `apply-branding.sh --files-only` (menu/autostart entries, lsb-release/linuxmint-info display fields,
   Firefox start page), verifies Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when
@@ -518,8 +626,16 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
 - `78-installer-brand.sh` — rebrands the Ubiquity live installer (debconf templates, live-desktop
   launcher, welcome artwork, slideshow, `Lindos-Setup` GTK skin); reads `build/installer/`; every step
   guarded and idempotent (`docs/BUILDING.md`, "Installer branding").
+- `79-installer-flow.sh` — wires the installer flow into Ubiquity (§17): asserts Chrome/Edge are not on
+  the image, deploys the hook (`install -m 0755` of `target-config.sh` as
+  `/usr/lib/ubiquity/target-config/50lindos-install`, no `.` in the name), bakes `lindos.seed` into the
+  image's debconf database, logs an audit of what Ubiquity will run. Unlike the branding hook it
+  **dies** when a required piece is missing (an ISO without the hook would silently install the old
+  way). Idempotent; test seam `LINDOS_INSTALLER_ROOT` (`docs/BUILDING.md`, "Installer flow").
 - `80-cleanup.sh` — `apt-get autoremove --purge`, `apt-get clean`, rm `/tmp/lindos`, machine-id
-  reset, `/var/lib/dbus/machine-id`, resolv.conf restore, logs truncated, `/root/.bash_history`.
+  reset, `/var/lib/dbus/machine-id`, resolv.conf restore, logs truncated, `/root/.bash_history`. It
+  **keeps deleting `/var/lib/apt/lists`** on purpose: the base ISO's lists are stale by install time
+  and cost ~100 MB in the squashfs; the installer hook refreshes the new system's lists first (§17.3).
 
 ## 9. `lindos-compat` (Windows apps)
 
@@ -639,7 +755,12 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
 ## 13. Cross-component call map (must agree)
 | Caller | Calls |
 |---|---|
-| lindos-setup apply page | `lindos.config`, `lindos.modes.apply_mode`, `lindos.browsers.install/set_default`, `lindos.theme.*`, helper `install-compat` / `install-gaming` / `install-flatpaks` / `install-packages` |
+| lindos-setup apply page | `lindos.config`, `lindos.modes.apply_mode` (`install=False`), `lindos.browsers.set_default`, `lindos.theme.*`, helper `write-system-config` + `apply-mode` (`install: false`) in one `run-batch`; **never** an `install-*` action (§6) |
+| lindos-setup browser/mode/done pages | `lindos.installstate.load()` (read-only hints), `lindos.browsers.is_installed` |
+| lindos-settings › Apps "Left to finish from setup" | `lindos.installstate.load()`; helper `install-browser` / `install-compat` / `install-gaming` / `install-packages` / `install-flatpaks` / `install-drivers` (the Mode lists come from the `mode.json` files, never from the installer's `extras.json`, which exists on the medium only) |
+| installer hook (`target-config.sh`, §17) | inside `chroot /target`: `install-browser.sh chrome --in-installer`, `install-compat.sh --in-installer`, `install-gaming.sh --in-installer`, `browser-firstboot.sh`, `ubuntu-drivers`, `lindos-drivers install --auto`, `apt-get`, `flatpak`; `python3 -m lindos.installstate --root /target mark …` |
+| installer success command (`finalize.sh`, §17) | `systemctl --root=/target enable/set-default`, `chroot /target passwd -l oem`, `debconf-set-selections` |
+| `lindos-browser-firstboot` / `lindos-driver-firstboot` | `lindos.installstate` (`status`/`mark`), `is-live-session`, `oem-config-pending`, `wait-for-network`, then `install-browser.sh chrome` / `ubuntu-drivers install --free-only` / `lindos-drivers install --auto` |
 | lindos-settings | everything in lindos-core; `lindos-run`, `lindos-proton`, `lindos-drivers`, `lindos-game`, `lindos-tune`, `lindos-compat` via subprocess |
 | lindos-mode set | `lindos.modes.apply_mode` → helper `apply-mode` (payload from `build_system_plan`) + `xfce4-panel-profiles load` + `lindos-compositor` |
 | helper `apply-mode` | `lindos-tune apply --mode <id> --system` |
@@ -684,3 +805,194 @@ installation via `lindos-dualboot` — never a VM route, an emulator or a spoofe
 circumvention of any kind; every format handler states `works`/`partial`/`unsupported` and never
 tries a file anyway; transfer is read-only and never touches secrets; no licence bypass; routes are
 official and region-accurate) are binding, extending §0.1, §14 and §15.
+
+## 17. Addendum I — The installer flow (install once, ask for the account at first boot)
+
+Binding contract for how Lindos is installed and first started. It extends §0.1 (honesty), §4.4
+(browsers), §4.11 (session, install state), §6 (OOBE) and §8 (build); the user-facing explanation is
+[`docs/INSTALLER.md`](docs/INSTALLER.md), the maintainer detail is in `docs/BUILDING.md` ("Installer flow").
+
+1. **Live session** (USB): almost nothing but the installer — no first-run wizard, no package
+   installs, no password prompts, never sleeps or blanks.
+2. **Installer**: everything heavy happens while installing — system updates, drivers and firmware,
+   the default browser (Chrome is *downloaded* from Google's official apt repository; its licence
+   forbids shipping it on the ISO), the Wine/Proton layer and game launchers, the Modes' apps and
+   Flatpaks.
+3. **After install**: remove the USB stick, reboot. The first boot shows only account setup (name,
+   password, computer name, language, keyboard, time zone) and then the personalisation wizard (§6) —
+   it installs and updates nothing.
+
+Mechanism: **Ubiquity in OEM mode** (Linux Mint's fork of Ubiquity, GTK). The installer's own account
+page creates a temporary account `oem`; Ubiquity's `oem-config` wizard creates the real one at the
+first boot of the installed system.
+
+### 17.1 Boot entries
+`build/overlay/boot/grub/grub.cfg` (UEFI and BIOS-GRUB) and `loopback.cfg` (loop-booted ISO, e.g.
+Ventoy) carry the same entries; the BIOS menu `isolinux/live.cfg` is **generated** from the finished
+`grub.cfg` by `build/lib/boot_menu.py` (labels `install`, `install-compat`, `try`, `try-compat`, `check`;
+the base's memtest and local-drive blocks are kept; a `default`/`ontimeout` that named a replaced label
+is retargeted), so the two boot paths cannot drift apart. `default=0`, `timeout=10`.
+
+| # | Title | Kernel words (after `/casper/vmlinuz @PRESEED@`) |
+|---|---|---|
+| 1 | Install Lindos *ver* | `boot=casper only-ubiquity oem-config/enable=true ubiquity/success_command=/usr/libexec/lindos/installer/finalize.sh username=liveuser hostname=lindos iso-scan/filename=${iso_path} quiet splash --` |
+| 2 | Install Lindos *ver* (compatibility mode) | as 1 plus `nomodeset` |
+| 3 | Try Lindos *ver* (live session) | as 1 **without** `only-ubiquity` (so the desktop *Install Lindos* icon follows the same OEM flow) |
+| 4 | Try Lindos *ver* (compatibility mode) | as 3 plus `nomodeset` |
+| 5 | Check the integrity of the medium | as 3 plus `integrity-check` |
+| 6 | Boot from the first hard disk | (plus the base's memtest entries) |
+
+`@PRESEED@` is **empty** on the Mint 22.2 ISO (it has no `preseed/*.seed`); values on the kernel line
+cannot contain spaces. No entry says `username=mint`/`hostname=mint` (`build-iso.sh` dies if one does,
+or if the first entry lost `only-ubiquity oem-config/enable=true`). The former "OEM install (for
+manufacturers)" entry is gone: every entry auto-arms the first-boot wizard.
+`only-ubiquity` starts the installer on its own X server (`ubiquity-dm`, no LightDM, no XFCE session),
+so nothing else runs in it; the *Try* entries boot the LightDM live desktop, where the live-session
+guards of §17.2 apply.
+
+### 17.2 What runs where
+- **Live** (`lindos.session.is_live_session()`): `lindos-setup --first-run` exits 0; `lindos-update-notify`
+  (script, user service and timer) does nothing; `lindos-sensors-detect.service` is not started; the
+  first-boot retry units are not started (`ConditionKernelCommandLine=!boot=casper`/`!boot=live`);
+  `/etc/xdg/autostart/lindos-live-session.desktop` (only when `is-live-session` says so) runs
+  `live-session-power.sh`, which sets xfce4-power-manager, the screensaver and `xset` to never sleep,
+  blank, lock or suspend on lid close; `lindos-live-inhibit.service` holds a logind inhibitor
+  (`sleep:idle:handle-lid-switch:handle-suspend-key:handle-hibernate-key`) for the whole live session
+  and is what covers the `only-ubiquity` boot, where no desktop session exists. Mint's own update
+  tray already gates itself off in live.
+- **Installation**: Ubiquity's pages Language → Keyboard → Wi-Fi (only when needed) → Prepare →
+  Partition → Time zone → a **temporary account** page. Then `plugininstall`: copy, `configure_*`,
+  **the target-config hook** (§17.3), language packs, initramfs, boot loader, extras, `remove_extras`
+  (removes the packages of `filesystem.manifest-remove`, including `lindos-installer`; in OEM mode the
+  ubiquity family itself stays until oem-config's own clean-up at the end of the first-boot wizard),
+  then **`ubiquity/success_command`** (§17.7).
+- **First boot**: `default.target` is `oem-config.target`, so only the `oem-config` wizard starts (its
+  own X server; language, keyboard, Wi-Fi if needed, time zone, real account and computer name;
+  Lindos-worded but Ubiquity-styled). It removes the temporary account and the installer packages
+  (the ubiquity family, oem-config) and isolates `graphical.target`: LightDM → the new user's XFCE session → `lindos-setup --first-run` (§6).
+  The silent retries (§17.9) start only after the wizard
+  (`ConditionPathExists=!/lib/systemd/system/oem-config.target`).
+
+### 17.3 The target-config hook (`lindos-installer`: `target-config.sh` + `lib.sh`)
+Deployed by `79-installer-flow.sh` as **`/usr/lib/ubiquity/target-config/50lindos-install`** — mode
+0755, **no `.` in the name** (Ubiquity skips dotted and non-executable entries; git on Windows loses
+exec bits, so the file is `install -m 0755`-ed with CRLF stripped). Ubiquity runs it once per
+installation in the live environment as root (`log-output -t ubiquity --pass-stdout`), after the
+account and locale exist and before the initramfs and the boot loader. Contract (a hook that hangs or
+breaks dpkg breaks every install):
+- **always exit 0**; **no `set -e`**; `cd /`; every step independently guarded and time-boxed
+  (`timeout -k`); one wall-clock budget for everything (default 2700 s);
+- **stdout is Ubiquity's debconf pipe**: nothing is ever printed to it (debconf's confmodule moves
+  stdout to stderr; without a frontend it is redirected); children get stdin from `/dev/null`; output
+  goes to `/var/log/lindos/installer-hook.log` (live) and `/target/var/log/lindos/installer.log`;
+- progress is **one text line** in the installer window (`db_progress INFO lindos-installer/msg`,
+  template in `/usr/share/lindos/installer/lindos-installer.templates`), no progress bars of its own;
+- it re-runs itself under `systemd-inhibit --what=sleep:idle:handle-lid-switch`;
+- **downloads first** (`apt-get -d`, safe to kill, clamped to the remaining budget), then dpkg runs from
+  the downloaded files (`--no-download`; never killed mid-transaction, only a generous hang guard), then
+  **always a repair pass** (`dpkg --configure -a`, `apt-get -f install`, `dpkg --audit`): Ubiquity's later
+  python-apt steps skip everything, or abort the install, when dpkg is broken;
+- every command enters the new system through `unshare --mount --propagation private` + `chroot /target`
+  with `env -i`, `LINDOS_INSTALLER=1` and `DEBIAN_FRONTEND=noninteractive` (the mounts of `/proc /sys /dev
+  /run` vanish with the process; `policy-rc.d` and `resolv.conf` are restored by the exit trap); apt uses
+  an `APT_CONFIG` that never reads the medium's `cdrom:` source, never cleans lists and waits for the
+  dpkg lock;
+- the **kernel, the boot loader and the Ubiquity/oem-config/casper families** (and everything in
+  `filesystem.manifest-remove`) are `apt-mark hold`-ed, and the Ubiquity family is pinned to the
+  installed version, for the whole hook; both are released again on **every** exit path (trap;
+  `finalize.sh` retries from a list file). Updates are a plain `apt-get upgrade` — **never a
+  `dist-upgrade`** — and a simulated upgrade that would touch a held family upgrades nothing;
+- the target's package lists are refreshed first (`80-cleanup.sh` deleted them on purpose); only lists
+  of network sources count — a failed refresh makes `updates`/`mode_extras` *pending*, never a false
+  *done*;
+- nothing is created when there is no `/target` (the answer that names `finalize.sh` is also read by
+  Ubiquity's OEM first-boot pass on the installed system, where there is nothing to do);
+- switches on the kernel command line: `lindos.install=off` (skip everything: every step `skipped`),
+  `lindos.install_budget=SECONDS` (default 2700), `lindos.proprietary_drivers=1` (§17.5).
+
+### 17.4 Steps and their outcomes
+Steps run in this order; each ends recorded in install-state (§4.11) as `done | pending | skipped |
+failed`. A step whose result was never recorded is `failed`; one the budget did not reach is `pending`.
+
+| Step id | What | Notes |
+|---|---|---|
+| `browser` | Google Chrome from Google's apt repository (`install-browser.sh chrome --in-installer`), then `browser-firstboot.sh` for the system default and the marker | `skipped` when `system.json` names another browser; `done` only when `dpkg-query` shows `google-chrome-stable` installed |
+| `drivers` | firmware (`linux-firmware`, `firmware-sof-signed`, microcodes) + `ubuntu-drivers install --free-only`; a proprietary GPU driver only with consent (§17.5) | writes `/var/lib/lindos/driver-firstboot.done` on a terminal outcome |
+| `updates` | `apt-get upgrade` with the held families excluded (§17.3) | |
+| `compat` | `install-compat.sh --in-installer`: Wine (WineHQ staging), winetricks, umu | |
+| `gaming` | `install-gaming.sh --in-installer`: Steam and Lutris | |
+| `mode_extras` | the union of every Mode's apt packages (§17.6), as a group and, if that fails, one by one | a package no archive carries is noted, not fatal |
+| `flatpaks` | the Flathub remote and the Mode Flatpaks (§17.6) | best effort: Flatpak inside the installer's chroot is unproven; failures stay `pending` |
+
+`online` in the state file records whether the archives answered. Offline, the hook says so on the
+status line, exits early and marks every step `pending` ("offline while installing").
+
+### 17.5 Drivers, consent and Secure Boot
+Free drivers and firmware are always ensured. Proprietary GPU drivers (`lindos-drivers install --auto`)
+are installed **only with the user's consent** — the installer's "third-party software / multimedia
+codecs" checkbox (`ubiquity/use_nonfree`) or `lindos.proprietary_drivers=1` on the kernel command line —
+and **never for a possibly-NVIDIA GPU when Secure Boot is enabled or unknown** (an unsigned DKMS module
+would need an interactive key enrolment at the next start): the step is then recorded `skipped` with
+the reason and the driver stays available in Settings. `/var/lib/lindos/driver-proprietary-consent`
+records the consent. The silent retry (§17.9) never goes beyond what the installer was allowed to do
+(SPEC-VM §24).
+
+### 17.6 The installed set
+The Mode is chosen only after the installation, so the installer installs the **union** of every
+Mode's extras once: `packages/lindos-installer/root/usr/share/lindos/installer/extras.json`, generated
+by `build/lib/installer_extras.py` from every `mode.json` (`packages`, `flatpaks`, `compat_items`) and
+the OOBE `apps.json` defaults (a test keeps it in sync). It holds the apt extras (for example
+`gamemode mangohud lutris libreoffice-* thunderbird gimp krita kdenlive winetricks colord`), the
+Flatpaks `org.prismlauncher.PrismLauncher org.vinegarhq.Sober com.heroicgameslauncher.hgl
+com.usebottles.bottles`, the compat items `wine winetricks umu`, the gaming items `steam lutris` and the
+firmware list. What the Modes call "suggested" (OnlyOffice) is **not** installed. `extras.json` exists on
+the medium only; Settings and the retries read the same lists from the `mode.json` files.
+
+### 17.7 The success command and the base-ISO assumptions
+`ubiquity/success_command` = `/usr/libexec/lindos/installer/finalize.sh` (`lindos.seed`, baked into the
+image's debconf database, **and** on every boot entry's kernel line). Ubiquity runs it synchronously in
+its GTK main loop — the window cannot repaint — so it is a **short (<5 s), always-exit-0**
+finalisation:
+1. verify that oem-config is really in `/target` (else `dpkg -i` the bundled copy from `/lindos/oem-debs`);
+2. arm it: copy `oem-config.service`/`.target` to `/lib/systemd/system`, `systemctl --root=/target
+   enable`, `set-default oem-config.target` — the essentials of `oem-config-prepare` **without** its
+   deletion of the NetworkManager profiles;
+3. strip the stale `autologin-user=oem` lines from `/etc/lightdm/lightdm.conf`;
+4. lock the temporary account (`passwd -l oem`) and write its `setup-done`;
+5. set `user-setup/allow-password-empty` back to `false` in the new system's debconf database (the image
+   bakes it `true` so the temporary account needs no password);
+6. remove the hook copy, the version pin, holds and cache.
+
+If oem-config is **not** there it logs `CRITICAL`, writes `/var/lib/lindos/oem-config-not-armed` and
+leaves the `oem` account open: a machine nobody can log in to is worse.
+
+Assumptions about the base ISO (`build/build-iso.sh` checks what it can; re-check them whenever
+`MINT_VERSION`/`BASE_ISO_URL` change): Ubiquity is Mint's fork (24.04.3+mintNN) whose
+`run_target_config_hooks` behaves as in §17.3; `casper/filesystem.manifest-remove` exists (else
+`lindos-installer` stays on the installed system — the build only warns); the medium's `pool/` carries
+`oem-config` and `oem-config-gtk` of **exactly** the squashfs's ubiquity version, with `.disk/info`,
+`.disk/cd_type` and `dists/` (`build/lib/verify_oem_pool.py`; the build **fails** unless `OEM_DEBS_DIR`
+supplies a matching fallback set or `REQUIRE_OEM_POOL=0`), and `aptdaemon` +
+`python3-aptdaemon.gtk3widgets` are available; the ISO has no `preseed/` directory.
+
+### 17.8 Logs and files
+`/var/log/lindos/installer-hook.log` (live), `/var/log/lindos/installer.log` on the installed system (a
+copy that also carries `finalize.sh`'s lines), `/var/lib/lindos/install-state.json`,
+`/var/lib/lindos/{browser,driver}-firstboot.done`, `/var/lib/lindos/driver-proprietary-consent`,
+`/var/lib/lindos/oem-config-not-armed` (only when arming failed) and Ubiquity's own
+`/var/log/installer/`.
+
+### 17.9 Silent retries and offline installs
+Whatever ends `pending`/`failed` is retried without any UI: `lindos-browser-firstboot.service` (§4.4)
+and `lindos-driver-firstboot.service` run only on the installed system, only after the account wizard,
+after a bounded wait for NetworkManager, and read install-state first. Only `browser` and `drivers`
+have such a retry; every other pending item (`compat`, `gaming`, `mode_extras`, `flatpaks`) is offered
+by **Settings › Apps › Left to finish from setup** with an **Install now** button, and `updates` by the
+normal update tools. Ubiquity's OEM mode does not copy the live session's Wi-Fi/Bluetooth profiles, so
+the first boot starts offline until the account wizard's Wi-Fi page.
+
+### 17.10 Honesty about this flow
+The flow was written against the upstream source of Ubiquity, casper and oem-config and unit-tested
+with fake targets; **no full install has run yet** (QEMU or real hardware).
+`docs/INSTALLER.md` ("Known limitations and what is unverified") is the authoritative list, and the first
+thing a maintainer does with a new ISO is the QEMU install test in `docs/BUILDING.md`.

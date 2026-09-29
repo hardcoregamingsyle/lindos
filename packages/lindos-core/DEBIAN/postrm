@@ -4,6 +4,7 @@ set -e
 
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 USER_TIMER_LINK="/usr/lib/systemd/user/timers.target.wants/lindos-update-notify.timer"
+LIVE_INHIBIT_LINK="/usr/lib/systemd/system/multi-user.target.wants/lindos-live-inhibit.service"
 
 case "$1" in
     remove|upgrade|deconfigure|abort-install|abort-upgrade|disappear|failed-upgrade)
@@ -23,6 +24,7 @@ case "$1" in
         # whenever the package goes away, not just on purge, so a plain removal does not leave
         # a dangling systemd --user enablement symlink behind.
         [ -L "$USER_TIMER_LINK" ] && rm -f "$USER_TIMER_LINK" 2>/dev/null || true
+        [ -L "$LIVE_INHIBIT_LINK" ] && rm -f "$LIVE_INHIBIT_LINK" 2>/dev/null || true
         ;;
 esac
 

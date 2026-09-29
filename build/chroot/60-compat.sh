@@ -6,9 +6,9 @@
 #    INCLUDE_WINE=1 → /usr/libexec/lindos/install-compat.sh --minimal --from-chroot --no-update
 #                     i.e. Ubuntu's own 'wine' (+ wine32:i386), winetricks,
 #                     cabextract, 32-bit GL/Vulkan libs.  WineHQ *staging* and
-#                     umu-launcher are NOT put on the ISO (size); the OOBE /
-#                     lindos-settings install them from the WineHQ repo that
-#                     00-repos.sh configured.
+#                     umu-launcher are NOT put on the ISO (size); the installer
+#                     (or Settings > Apps later) installs them from the WineHQ
+#                     repo that 00-repos.sh configured.
 #    INCLUDE_WINE=0 → skipped (lindos-compat still installed; installs later).
 #    Always          → MIME/desktop database refresh so .exe/.msi open with
 #                     lindos-run, and 'lindos-compat doctor' as a report.
@@ -33,7 +33,7 @@ if [ "${INCLUDE_WINE}" = "1" ]; then
         "${INSTALLER}" --minimal --from-chroot --no-update || rc=$?
         case "${rc}" in
             0) log "install-compat.sh finished" ;;
-            3) warn "install-compat.sh: offline (exit 3) — Wine will be installed at OOBE" ;;
+            3) warn "install-compat.sh: offline (exit 3) — the installer installs Wine when online" ;;
             *) warn "install-compat.sh exited ${rc} — some items failed (see /var/log/lindos/install-compat.log)" ;;
         esac
     else
@@ -103,7 +103,7 @@ fi
 if have wine; then
     log "wine: $(wine --version 2>/dev/null || echo '?')"
 else
-    log "wine not present on the ISO (installed later by OOBE if the user wants Windows apps)"
+    log "wine not present on the ISO (added by the installer, or from Settings > Apps later)"
 fi
 if have lindos-compat; then
     log "lindos-compat doctor:"

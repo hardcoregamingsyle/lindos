@@ -20,6 +20,7 @@ UI.
 | `build .deb packages` | every push / PR | `build/mkdeb.sh --lintian all` → uploads `lindos-debs` artifact |
 | `build Lindos kernel` | **manual** (`build_kernel=true`) or tags | `build/kernel/build-kernel.sh` → `lindos-kernel-debs` artifact |
 | `build ISO` | **manual** (`build_iso=true`) | `build/build-iso.sh` in a privileged container → `lindos-iso` artifact |
+| `install test (QEMU)` | **manual; being added, never run on Actions** | blank-disk QEMU install of the ISO (`build/qa/install_test.py`, checks in `install_checks.py`, serial-console observer `ci-observer.sh`) + a boot of the installed disk — the only real test of the installer flow (see the 2026-09-29 section) |
 
 Trigger the heavy builds:
 ```bash
@@ -585,3 +586,52 @@ by how much they'd matter for a real user):
    `is-system-running=running` confirmation instead of inferring it from the screenshot alone.
 2. `docs/COMPATIBILITY.md` freshness / cosmetic Node20-deprecation warnings from `CONTINUATION.md`
    §4 items 3–6 remain outstanding, unrelated to this session's scope.
+
+## 2026-09-29 — installer flow rewrite: no CI run yet (what the first run will test, and the QEMU install job)
+
+Branch `feature/windows-transfer-updates-boottest`. **No workflow was dispatched for this change.** It was
+written and verified only on the Windows dev host (hermetic pytest, `bash tests/run.sh --quick` with ShellCheck
+0.11.0); nothing below has run on a real Linux runner. This section records what the next CI run will and will
+not exercise, so a failure can be read correctly.
+
+### What the next full run (`build_kernel=true build_iso=true boot_test=true`) exercises
+
+| Job | New/changed thing it will meet | What to expect / how to read a failure |
+|---|---|---|
+| `lint-test` | ShellCheck (real Linux) on the new `packages/lindos-installer/.../{target-config,lib,finalize}.sh`, `build/chroot/79-installer-flow.sh`, `is-live-session`, `oem-config-pending`, `wait-for-network`, `live-session-power.sh`; `desktop-file-validate` on `lindos-live-session.desktop` (its `Exec` is `sh -c "… && exec …; exit 0"`); dash `sh -n`; pytest on Linux for the POSIX-only tests skipped on Windows (`flock` concurrency in `test_installstate.py`, exec-bit and FIFO tests, `:` in path components) | Linux-only failures are the likely class (tests leaking host state, exec bits, `desktop-file-validate` quirks), as on 2026-08-16. |
+| `pytest-windows` | the same suites with the `gi` stub | must stay green: every new module is stdlib-only and importable on Windows (`session.py` imports `pwd`/`getpass` lazily). |
+| `debs` | builds the **13th package**, `lindos-installer`, with lintian; `mkdeb.sh`'s new CRLF strip for `*.templates`/`*.seed` | lintian may object to a package that ships only scripts under `/usr/libexec` and data under `/usr/share/lindos/installer` (no `postinst`), or to the `Depends` line; `dpkg-deb` itself was never run on the Windows host. |
+| `iso` | `30-lindos-debs.sh` installs `lindos-installer` (`LINDOS_DEB_ORDER`); **`79-installer-flow.sh`** (dies on any missing piece); `casper/filesystem.manifest-remove` gets `lindos-installer` appended; the generated **`isolinux/live.cfg`**; the new `only-ubiquity` first-entry / `username=mint` guards; **`verify_oem_offline`** | The most likely first failure is `verify_oem_offline`: with `REQUIRE_OEM_POOL=1` (default) the build stops when the base ISO's `pool/` does not carry `oem-config` + `oem-config-gtk` at exactly the squashfs's Ubiquity version, or lacks `.disk/cd_type`/`dists/`, or `aptdaemon`. Research read the Mint 22.2 ISO's file tree and found `24.04.3+mint18` for both, but nothing here has run the check against the real image. A base ISO without `casper/filesystem.manifest-remove` only warns. `out/hooks/79-installer-flow.log` shows the deploy line, the target-config directory listing and the `ubiquity/success_command` read-back. |
+| `boot-test` | the direct-kernel boot (`boot=casper … lindos.ci_boot_test`, no GRUB/isolinux) with the smoke test's **new `is-live-session` check** (compares the helper with the kernel command line) | Expect it to stay green. The live desktop screenshot should now show a plain XFCE desktop with an *Install Lindos* icon and **no** Lindos Setup window (the first-run gate exits in the live session); `lindos-sensors-detect.service` should no longer run. **This job never sees the installer, the hook, the boot entries or oem-config.** |
+
+### What the existing jobs cannot test — the QEMU install job (being added, never run)
+
+The only real test of the installer flow is a QEMU install (procedure: `docs/BUILDING.md` "Installer flow";
+list of open questions: `docs/INSTALLER.md` "Known limitations"). When this section was written the CI work was
+adding it as `build/qa/install_test.py` with `build/qa/install_checks.py` (read-only assertions on the installed
+disk) and `build/qa/ci-observer.sh` (guest-side serial-console observer); none of it had run on GitHub Actions,
+and this docs pass did not review their final form — read those files and `ci.yml` for what really exists.
+The design it follows, in the style of `boot_test.py`:
+
+1. blank 20 GB qcow2, the built ISO as CD-ROM, direct kernel with `boot=casper automatic-ubiquity noprompt
+   file=/cdrom/preseed/… lindos.ci_install_test` plus a CI-only seed (partman-auto on `/dev/vda`,
+   `ubiquity/poweroff true`, the temporary-account answers, locale/time zone/keyboard) and user-mode networking;
+   never put `automatic-ubiquity` on a consumer entry (its fallback is an unattended install);
+2. after power-off, mount the disk (`qemu-nbd`/`guestmount`) and assert: `install-state.json` steps and
+   `online`, `google-chrome-stable` installed, `browser-firstboot.done`/`driver-firstboot.done`,
+   `readlink …/default.target` = `oem-config.target`, `oem-config.{service,target}` in `/lib/systemd/system`, no
+   `autologin-user=oem` in `lightdm.conf`, no holds and no `00lindos-installer.pref`, `dpkg --audit` empty,
+   `/var/log/lindos/installer.log` ends with `finalize: oem-config is armed`, `lindos-installer` removed;
+3. boot the disk with `automatic-oem-config` and preseeded `passwd/*`, wait for LightDM and
+   `lindos-setup --first-run` for the new user, screenshot it, and assert no apt/dpkg/pkexec/flatpak process runs.
+
+Also worth adding to the existing jobs: `xorriso -indev out/lindos-*.iso -find /pool -name 'oem-config*'` and
+`-find /lindos/oem-debs`, and guest-side smoke checks that the live session has no `lindos-setup`, has the
+*Install Lindos* launcher, and runs no installs (`live-no-oobe`, `live-installer-launcher`, `live-no-installs`).
+Expect **several rounds**, as with the boot test.
+
+Local verification for this change (Windows host, run by the implementing streams): pytest over
+`packages/lindos-installer/tests`, `build/tests`, `tests`, and the lindos-core / -desktop / -tune / -compat /
+-gaming / -setup / -settings suites — 0 failures, only POSIX-only skips — and `bash tests/run.sh --quick` (bash
+-n, sh -n, py_compile, ShellCheck, JSON/XML/`.desktop`, CRLF). The full `bash tests/run.sh` gate was not re-run
+after the last edits.

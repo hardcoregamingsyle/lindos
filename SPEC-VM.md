@@ -121,11 +121,22 @@ a licensed Windows + that app installed in the backend. Honest notes; no license
   and **audio** firmware (`sof-firmware`, `alsa-ucm-conf`, `firmware-sof-signed` where applicable).
 - `lindos-drivers install --auto [--dry-run]` — install the `autodetect` recommendations for GPU +
   Wi-Fi + audio in one pass (root via the existing helper `install-drivers`; offline → exit 3).
-- First-boot: ship `/usr/lib/systemd/system/lindos-driver-firstboot.service` (oneshot, `Condition%`
-  first-run marker) that runs `lindos-drivers autodetect` and, when online + not OEM, offers the
-  install (or writes a notification for the OOBE/Settings to surface). Idempotent; never blocks boot.
+- Installer and first boot (amended by SPEC §17): the **installer** installs the drivers while it installs
+  the system (`target-config.sh`, step `drivers` of `/var/lib/lindos/install-state.json`): firmware and
+  `ubuntu-drivers install --free-only` always; a **proprietary** GPU driver only with the user's consent (the
+  installer's third-party-software checkbox `ubiquity/use_nonfree`, or `lindos.proprietary_drivers=1` on the
+  kernel command line, recorded in `/var/lib/lindos/driver-proprietary-consent`) and **never** for a
+  possibly-NVIDIA GPU when Secure Boot is enabled or unknown (a DKMS module would need a key enrolment,
+  an interactive screen at the next start) — that case is recorded `skipped` and left to Settings.
+  `/usr/lib/systemd/system/lindos-driver-firstboot.service` (oneshot; `ConditionKernelCommandLine=!boot=casper`
+  and `!boot=live`, `ConditionPathExists=!/lib/systemd/system/oem-config.target`, first-run marker) remains
+  only as a **silent** retry on the installed system: it reads install-state, does nothing when the step is
+  `done`/`skipped`, and otherwise retries while online (after a bounded wait for NetworkManager) without any
+  window, wizard or notification, never beyond the installer's consent. It no longer writes an install offer
+  (nothing read it). Idempotent; never blocks boot; always exits 0.
 - Non-free repo automation: enable `multiverse`/`restricted` and `ubuntu-drivers` metadata as needed
-  (document); never auto-install proprietary drivers silently without the first-boot/OOBE consent.
+  (document); never auto-install proprietary drivers silently — the consent above (installer checkbox or
+  kernel word, or an explicit `lindos-drivers install` / Settings action) always applies.
 
 ## 25. CI — real Linux builds on GitHub Actions (extend `.github/workflows/`)
 

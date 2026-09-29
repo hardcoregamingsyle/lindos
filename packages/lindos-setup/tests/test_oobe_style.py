@@ -16,9 +16,7 @@ from typing import Any, List
 import pytest
 
 from lindos_setup import core
-from lindos_setup.plan import (
-    Catalog, RunResult, Selections, StepResult, build_plan, load_accents, load_catalog,
-)
+from lindos_setup.plan import RunResult, Selections, StepResult, build_plan, load_accents
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.normpath(os.path.join(HERE, ".."))
@@ -32,7 +30,6 @@ EXPECTED_WORDING = {
     "mode": ("How will you use this PC?", "Next"),
     "browser": ("Choose your web browser", "Next"),
     "personalize": ("Make it yours", "Next"),
-    "apps": ("Get the apps you need", "Next"),
     "privacy": ("Choose your privacy settings", "Accept"),
     "transfer": ("Bring your stuff from Windows", "Next"),
     "summary": ("Ready to set up your PC?", "Apply"),
@@ -105,12 +102,14 @@ def _ctx(monkeypatch: pytest.MonkeyPatch, **over: Any) -> Any:
     monkeypatch.setattr(core, "browser_installed", lambda bid: False)
     monkeypatch.setattr(core, "transfer_sources",
                         lambda *a, **k: {"available": False, "note": "", "partitions": [], "bundles": []})
-    kw = dict(selections=Selections(), catalog=load_catalog(os.path.join(SHARE, "apps.json")),
+    kw = dict(selections=Selections(),
               accents=load_accents(os.path.join(SHARE, "accents.json")), modes=_modes(),
               browsers={"edge": {"name": "Microsoft Edge"}, "chrome": {"name": "Google Chrome"},
                         "firefox": {"name": "Mozilla Firefox"}},
-              online=True, dry_run=True, first_run=True, wallpapers=[Selections().wallpaper],
-              ram_total_mb=8192, live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {})
+              dry_run=True, first_run=True, wallpapers=[Selections().wallpaper],
+              ram_total_mb=8192, live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {},
+              install_steps={"browser": "done"},
+              browser_states={"edge": "unavailable", "chrome": "installed", "firefox": "installed"})
     kw.update(over)
     return pages.PageContext(**kw)
 
@@ -119,13 +118,14 @@ def _ctx(monkeypatch: pytest.MonkeyPatch, **over: Any) -> Any:
 def test_page_ids_order_and_step_metadata():
     _ensure_gi()
     from lindos_setup import pages
-    assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
+    assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "privacy",
                                 "transfer", "summary", "apply", "done"]
     made = pages.make_pages()
     assert [p.id for p in made] == pages.PAGE_ORDER
+    assert not hasattr(pages, "AppsPage"), "the installer installs the apps; the wizard has no apps page"
     assert {p.id for p in made if p.hero} == {"welcome", "apply", "done"}
     assert {p.id for p in made if p.step_counted} == {
-        "mode", "browser", "personalize", "apps", "privacy", "transfer", "summary"}
+        "mode", "browser", "personalize", "privacy", "transfer", "summary"}
     # the entry point's --page choices must stay in sync with the wizard
     import importlib.util
     spec = importlib.util.spec_from_file_location("lindos_setup_main_style", os.path.join(LIB, "main.py"))
@@ -155,50 +155,78 @@ def test_first_and_last_pages_keep_navigation_rules():
 
 
 # --------------------------------------------------------------------------- honesty (SPEC 0.1)
-def test_apps_page_keeps_the_wine_and_anti_cheat_reality_check(monkeypatch):
+class _Banner(_Rec):
+    """Stand-in for widgets.InfoBanner that remembers its text and visibility."""
+
+    made: List[Any] = []
+
+    def __init__(self, text: str = "", icon_name: str = "", warn: bool = False) -> None:
+        super().__init__()
+        self.text = text
+        self.warn = warn
+        self.visible = True
+        _Banner.made.append(self)
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+
+    def set_visible(self, visible: bool) -> None:
+        self.visible = bool(visible)
+
+    def show_all(self) -> None:
+        self.visible = True
+
+    def hide(self) -> None:
+        self.visible = False
+
+
+def _last_shown(rec: Any) -> Any:
+    """Whether the last show_all()/hide() a recorder saw was a show (None: never touched)."""
+    for call in reversed(rec.calls):
+        if call[0] in ("show_all", "hide"):
+            return call[0] == "show_all"
+    return None
+
+
+def _use_banners(monkeypatch) -> List[Any]:
+    from lindos_setup import pages
+    _Banner.made = []
+    monkeypatch.setattr(pages, "InfoBanner", _Banner)
+    return _Banner.made
+
+
+def test_done_page_keeps_the_wine_and_anti_cheat_reality_check(monkeypatch):
+    """SPEC 0.1: the text that used to sit on the apps page moved here, whole."""
     _need_stub()
     from lindos_setup import pages
-    banners: List[str] = []
+    banners = _use_banners(monkeypatch)
     learn: List[Any] = []
-
-    class Banner(_Rec):
-        def __init__(self, text: str, icon_name: str = "", warn: bool = False) -> None:
-            super().__init__()
-            banners.append(text)
 
     class Learn(_Rec):
         def __init__(self, summary: str, paragraphs: Any) -> None:
             super().__init__()
             learn.append((summary, list(paragraphs)))
 
-    monkeypatch.setattr(pages, "InfoBanner", Banner)
     monkeypatch.setattr(pages, "LearnMore", Learn)
-    page = pages.AppsPage()
-    page.build(_ctx(monkeypatch))
-    text = " ".join(banners)
+    pages.DonePage().build(_ctx(monkeypatch))
+    text = " ".join(b.text for b in banners)
     for must in ("Wine", "Proton", "not a copy of Windows", "Valorant", "Fortnite", "do not run on any Linux"):
         assert must in text, must
     assert len(learn) == 1
     summary, paragraphs = learn[0]
     assert "Learn more" in summary
     joined = " ".join(paragraphs)
-    for must in ("protondb.com", "areweanticheatyet.com", "Sober", "Minecraft"):
+    for must in ("protondb.com", "areweanticheatyet.com", "Sober", "Minecraft", "Adobe"):
         assert must in joined, must
 
 
-def test_apps_page_still_shows_the_reality_check_without_a_catalog(monkeypatch):
+def test_no_page_still_carries_the_wine_text_except_done(monkeypatch):
     _need_stub()
     from lindos_setup import pages
-    banners: List[str] = []
-
-    class Banner(_Rec):
-        def __init__(self, text: str, icon_name: str = "", warn: bool = False) -> None:
-            super().__init__()
-            banners.append(text)
-
-    monkeypatch.setattr(pages, "InfoBanner", Banner)
-    pages.AppsPage().build(_ctx(monkeypatch, catalog=Catalog([])))
-    assert any("Valorant" in b and "Fortnite" in b for b in banners)
+    for cls in (pages.WelcomePage, pages.ModePage, pages.BrowserPage, pages.PrivacyPage, pages.SummaryPage):
+        banners = _use_banners(monkeypatch)
+        cls().build(_ctx(monkeypatch))
+        assert not any("Valorant" in b.text for b in banners), cls.__name__
 
 
 def test_privacy_page_keeps_nothing_is_sent_anywhere(monkeypatch):
@@ -216,21 +244,17 @@ def test_privacy_page_keeps_nothing_is_sent_anywhere(monkeypatch):
     page.build(_ctx(monkeypatch))
     assert "collects nothing" in page.subtitle
     assert any("never sends usage data anywhere" in b for b in banners)
+    # the banner no longer talks about where updates or browsers are downloaded from
+    for text in banners:
+        assert "update" not in text.lower() and "download" not in text.lower() and "repositor" not in text.lower()
 
 
 def test_done_page_keeps_the_anti_cheat_note(monkeypatch):
     _need_stub()
     from lindos_setup import pages
-    banners: List[str] = []
-
-    class Banner(_Rec):
-        def __init__(self, text: str, icon_name: str = "", warn: bool = False) -> None:
-            super().__init__()
-            banners.append(text)
-
-    monkeypatch.setattr(pages, "InfoBanner", Banner)
+    banners = _use_banners(monkeypatch)
     pages.DonePage().build(_ctx(monkeypatch))
-    assert any("Valorant" in b and "Wine" in b for b in banners)
+    assert any("Valorant" in b.text and "Wine" in b.text for b in banners)
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -275,8 +299,27 @@ def test_apply_lines_greet_then_cycle_without_repeating_hi():
     seen = [pages.apply_line(t) for t in range(1, 8)]
     assert "Hi" not in seen
     assert seen[0] == "We're getting things ready for you"
-    assert any("turn off your PC" in line for line in seen)
     assert seen[0] == seen[3]                            # three friendly lines repeat
+
+
+def test_no_text_promises_downloads_installs_or_updates():
+    """The wizard only saves choices now (the installer installed everything): none of its wording
+    may still say it downloads, installs or updates anything."""
+    _ensure_gi()
+    from lindos_setup import pages
+    for line in pages.APPLY_LINES:
+        low = line.lower()
+        assert "download" not in low and "few minutes" not in low and "turn off" not in low, line
+    for page in pages.make_pages():
+        if page.id in ("mode", "summary"):       # the only places that say what does NOT happen
+            assert "nothing is downloaded" in page.subtitle.lower(), page.id
+            continue
+        low = (page.title + " " + page.subtitle).lower()
+        assert "download" not in low and "install" not in low and "update" not in low, page.id
+    src = _read(os.path.join(PY_DIR, "pages.py"))
+    for gone in ("Downloaded from", "Downloads run", "during the Apply step", "needs internet",
+                 "Check connection again", "Some installs are pending", "Get the apps you need"):
+        assert gone not in src, gone
 
 
 def test_parse_batch_line_matches_the_helper_output():
@@ -387,18 +430,18 @@ def _window(monkeypatch, *, allow_quit: bool = False, **ctx_over: Any):
 def test_window_tracks_the_slim_step_indicator(monkeypatch):
     _need_stub()
     _app, _ctx_, win = _window(monkeypatch)
-    assert len(win._counted) == 10
+    assert len(win._counted) == 9
     win.show_page(0, animate=False)
     assert win.steps.position is None
     win.show_page(1, animate=False)
-    assert win.steps.position == (1, 7)
-    win.show_page(5, animate=False)
-    assert win.steps.position == (5, 7)
-    win.show_page(7, animate=False)
-    assert win.steps.position == (7, 7)
-    win.show_page(8, animate=False)                       # apply
+    assert win.steps.position == (1, 6)
+    win.show_page(4, animate=False)                       # privacy
+    assert win.steps.position == (4, 6)
+    win.show_page(6, animate=False)                       # summary
+    assert win.steps.position == (6, 6)
+    win.show_page(7, animate=False)                       # apply
     assert win.steps.position is None
-    win.show_page(9, animate=False)                       # done
+    win.show_page(8, animate=False)                       # done
     assert win.steps.position is None
     assert win.steps.fraction == 0.0
 
@@ -420,14 +463,14 @@ def test_cancel_is_offered_only_when_reconfiguring(monkeypatch):
     _app, _ctx_, win = _window(monkeypatch, allow_quit=True)
     win.cancel_btn = _Rec()
     win.show_page(1, animate=False)
-    win.show_page(8, animate=False)                       # a running install cannot be cancelled by a click
-    win.show_page(9, animate=False)
+    win.show_page(7, animate=False)                       # a running apply cannot be cancelled by a click
+    win.show_page(8, animate=False)
     assert win.cancel_btn.args_of("set_visible") == [True, False, False]
 
     _app, _ctx_, first = _window(monkeypatch, allow_quit=False)
     first.cancel_btn = _Rec()
     first.show_page(1, animate=False)
-    first.show_page(7, animate=False)
+    first.show_page(6, animate=False)
     assert first.cancel_btn.args_of("set_visible") == [False, False]
 
 
@@ -557,9 +600,7 @@ def _apply_page(monkeypatch):
     from lindos_setup import pages
     ctx = _ctx(monkeypatch)
     ctx.window = _Rec()
-    sel = Selections(mode="creator")
-    sel.apps = ctx.catalog.default_ids("creator")
-    ctx.plan = build_plan(sel, ctx.catalog, online=True)
+    ctx.plan = build_plan(Selections(mode="creator"))
     page = pages.ApplyPage()
     page.build(ctx)
     page.title_label, page.subtitle_label, page.step_label = _Rec(), _Rec(), _Rec()
@@ -594,15 +635,15 @@ def test_apply_page_rotates_friendly_lines_until_it_finishes(monkeypatch):
 def test_apply_page_shows_the_step_title_from_batch_lines(monkeypatch):
     _need_stub()
     pages, ctx, page = _apply_page(monkeypatch)
-    step = ctx.plan.get("install-packages")
+    step = ctx.plan.get("apply-mode")
     assert step is not None
-    page._on_batch_line(pages.parse_batch_line("[batch 1/2] install-packages: install-packages"))
+    page._on_batch_line(pages.parse_batch_line("[batch 2/2] apply-mode: apply-mode"))
     assert page.step_label.args_of("set_text") == [step.title]
     before = page.progress_model.value
-    page._on_batch_line(pages.parse_batch_line("[batch 1/2] install-packages: done"))
+    page._on_batch_line(pages.parse_batch_line("[batch 2/2] apply-mode: done"))
     assert page.progress_model.value >= before
     # a line for a step the plan does not know is harmless
-    page._on_batch_line(pages.parse_batch_line("[batch 2/2] mystery: mystery"))
+    page._on_batch_line(pages.parse_batch_line("[batch 3/3] mystery: mystery"))
     assert len(page.step_label.args_of("set_text")) == 1
 
 
@@ -617,9 +658,11 @@ def test_apply_page_finish_states(monkeypatch):
     assert page.progress_model.value == 1.0
 
     pages2, ctx2, page2 = _apply_page(monkeypatch)
-    page2._finished(RunResult([StepResult("install-packages", ok=False, message="offline")]))
+    page2._finished(RunResult([StepResult("apply-mode", ok=False, message="helper failed")]))
     assert page2.title_label.args_of("set_text") == ["Setup finished, with a few things left to do"]
-    assert any("install-packages" in str(t) for t in page2.banner.args_of("set_text"))
+    texts = " ".join(str(t) for t in page2.banner.args_of("set_text"))
+    assert "apply-mode" in texts and "Lindos Settings" in texts
+    assert "install" not in texts.lower() and "download" not in texts.lower()
 
 
 def test_apply_page_is_a_spinner_hero(monkeypatch):
@@ -656,3 +699,270 @@ def test_touched_files_are_lf_only(path):
 def test_n_marker_is_identity():
     from lindos_setup.i18n import N_
     assert N_("Make it yours") == "Make it yours"
+
+
+# --------------------------------------------------------------------------- browser page (install-state driven)
+def _browser_page(monkeypatch, states, **ctx_over):
+    from lindos_setup import pages
+    banners = _use_banners(monkeypatch)
+    ctx = _ctx(monkeypatch, browser_states=states, **ctx_over)
+    page = pages.BrowserPage()
+    page.build(ctx)
+    return pages, ctx, page, banners
+
+
+def test_browser_page_offers_only_browsers_that_are_on_this_pc(monkeypatch):
+    _need_stub()
+    _pages, ctx, page, banners = _browser_page(
+        monkeypatch, {"edge": "unavailable", "chrome": "installed", "firefox": "installed"})
+    assert page.group.order == ["chrome", "firefox"]          # Edge is not offered: it is not installed
+    assert not hasattr(page, "recheck"), "no 'Check connection again': the page needs no network"
+    page.on_enter(ctx)
+    assert not banners[0].visible                                # nothing pending: no notice at all
+    assert page.group.selected == ctx.selections.browser == "chrome"
+    # Edge shows up once it really is installed
+    _pages, _ctx2, page2, _b = _browser_page(
+        monkeypatch, {"edge": "installed", "chrome": "installed", "firefox": "installed"})
+    assert page2.group.order == ["edge", "chrome", "firefox"]
+
+
+def test_browser_page_shows_a_pending_chrome_as_will_be_added_when_online(monkeypatch):
+    _need_stub()
+    pages, ctx, page, banners = _browser_page(
+        monkeypatch, {"edge": "unavailable", "chrome": "pending", "firefox": "installed"},
+        selections=Selections(browser="firefox"))
+    assert page.group.order == ["chrome", "firefox"]
+    assert pages.BROWSER_PENDING_HINT == "Will be added when you're online"
+    page.on_enter(ctx)
+    assert page.group.selected == "firefox"                     # Firefox stays preselected
+    banner = banners[0]
+    assert banner.visible
+    assert "Google Chrome isn't on this PC yet" in banner.text and "Install now" in banner.text
+    assert "Until then Firefox is your browser" in banner.text
+    assert "becomes your default" not in banner.text            # not chosen: no promise about the default
+    # choosing the pending browser stores it as the preference and says what happens next
+    page._changed("chrome")
+    assert ctx.selections.browser == "chrome"
+    assert "Google Chrome becomes your default as soon as it's added" in banner.text
+    page._changed("firefox")
+    assert "becomes your default" not in banner.text
+
+
+def test_browser_page_never_leaves_a_selection_that_is_not_a_card(monkeypatch):
+    _need_stub()
+    # Chrome was left out on purpose ("skipped") but the stored choice still says chrome
+    _pages, ctx, page, _b = _browser_page(
+        monkeypatch, {"edge": "unavailable", "chrome": "unavailable", "firefox": "installed"},
+        selections=Selections(browser="chrome"))
+    assert page.group.order == ["firefox"]
+    page.on_enter(ctx)
+    assert ctx.selections.browser == "firefox" and page.group.selected == "firefox"
+
+
+def test_browser_page_leaving_needs_no_connectivity_probe(monkeypatch):
+    _need_stub()
+    _pages, ctx, page, _b = _browser_page(monkeypatch, {"chrome": "pending", "firefox": "installed"})
+    assert page.on_leave(ctx, True) is True and page.on_leave(ctx, False) is True
+
+
+# --------------------------------------------------------------------------- mode page (config only)
+def test_mode_page_says_plainly_when_the_modes_extras_are_still_missing(monkeypatch):
+    _need_stub()
+    from lindos_setup import pages
+    modes = _modes()
+    modes["work"].packages = ["thunderbird"]
+    modes["work"].flatpaks = []
+    modes["creator"].packages = []
+    modes["creator"].flatpaks = ["com.usebottles.bottles"]
+    for mode in ("everyday", "gaming", "lite"):
+        modes[mode].packages, modes[mode].flatpaks = [], []
+    ctx = _ctx(monkeypatch, modes=modes, install_steps={"mode_extras": "pending", "gaming": "failed"})
+    page = pages.ModePage()
+    page.build(ctx)
+    shown: List[bool] = []
+    page.extras_note = _Rec()
+    page.on_enter(ctx)
+    for mode, expect in (("everyday", False), ("work", True), ("creator", False), ("gaming", True)):
+        page.extras_note = _Rec()
+        page._changed(mode)
+        assert page.extras_note.args_of("set_visible") == [expect], mode
+        shown.append(expect)
+    page.extras_note = _Rec()
+    page._changed("work")
+    note = page.extras_note.args_of("set_text")[0]
+    assert "Lindos Settings › Apps" in note and "Install now" in note
+    assert "download" not in note.lower()
+    assert "nothing is downloaded" in pages.ModePage.subtitle
+    # nothing pending: no note for any Mode
+    ctx2 = _ctx(monkeypatch, modes=modes, install_steps={"mode_extras": "done", "gaming": "done"})
+    page2 = pages.ModePage()
+    page2.build(ctx2)
+    for mode in planmodes():
+        page2.extras_note = _Rec()
+        page2._changed(mode)
+        assert page2.extras_note.args_of("set_visible") == [False], mode
+
+
+def planmodes():
+    from lindos_setup.plan import MODE_IDS
+    return MODE_IDS
+
+
+# --------------------------------------------------------------------------- summary page
+def test_summary_page_builds_an_install_free_plan_and_reports_a_pending_browser(monkeypatch):
+    _need_stub()
+    from lindos_setup import pages
+    banners = _use_banners(monkeypatch)
+    ctx = _ctx(monkeypatch, selections=Selections(browser="chrome"),
+               browser_states={"edge": "unavailable", "chrome": "pending", "firefox": "installed"})
+    page = pages.SummaryPage()
+    page.build(ctx)
+    page.grid = _Rows()
+    page.notes = _Rows()
+    page.steps_label = _Rec()
+    page.on_enter(ctx)
+    assert ctx.plan is not None
+    assert not {"install-browser", "install-packages", "install-flatpaks", "install-compat",
+                "install-gaming"} & set(ctx.plan.actions())
+    assert ctx.plan.get("set-default-browser").payload == {"browser": "chrome", "pending": True}
+    assert any("isn't on this PC yet" in b.text and b.warn for b in banners)
+    text = page.steps_label.args_of("set_text")[0]
+    assert "password" in text and "administrator rights" not in text
+    assert "nothing is downloaded" in page.subtitle and page.next_label == "Apply"
+
+
+# --------------------------------------------------------------------------- done page (read-only recap)
+class _Rows(_Rec):
+    def __init__(self) -> None:
+        super().__init__()
+        self.children: List[Any] = []
+
+    def get_children(self) -> List[Any]:
+        return list(self.children)
+
+    def remove(self, child: Any) -> None:
+        self.children.remove(child)
+
+    def pack_start(self, child: Any, *args: Any) -> None:
+        self.children.append(child)
+
+
+def test_done_page_recaps_what_the_installer_did_from_install_state(monkeypatch):
+    _need_stub()
+    from lindos_setup import pages
+    banners = _use_banners(monkeypatch)
+    ctx = _ctx(monkeypatch, install_steps={"browser": "done", "drivers": "done", "compat": "pending",
+                                           "updates": "pending"})
+    ctx.window = _Rec()
+    page = pages.DonePage()
+    page.build(ctx)
+    monkeypatch.setattr(pages, "label", lambda text, *a, **k: text)     # rows become plain strings
+    page.recap, page.settings_btn = _Rec(), _Rec()
+    page.installed_rows, page.installed_box = _Rows(), _Rec()
+    waiting = [b for b in banners if b.warn][-1]
+    page.waiting_banner = waiting
+    page.on_enter(ctx)
+    rows = page.installed_rows.children
+    assert [r.split("  ", 1)[1].split(" — ")[0] for r in rows] == [
+        "System updates", "Drivers and firmware", "Google Chrome", "Windows app support (Wine + Proton)"]
+    assert rows[2].startswith("✓") and rows[0].startswith("•")
+    assert _last_shown(page.installed_box) is True
+    assert waiting.visible
+    for must in ("System updates", "Windows app support", "Install now", "Update Manager"):
+        assert must in waiting.text, must
+    assert "Some installs are pending" not in " ".join(str(t) for t in page.recap.args_of("set_text"))
+    # re-entering does not duplicate rows
+    page.on_enter(ctx)
+    assert len(page.installed_rows.children) == 4
+
+
+def test_done_page_without_an_install_record_claims_nothing(monkeypatch):
+    _need_stub()
+    from lindos_setup import pages
+    banners = _use_banners(monkeypatch)
+    ctx = _ctx(monkeypatch, install_steps={})
+    ctx.window = _Rec()
+    page = pages.DonePage()
+    page.build(ctx)
+    page.recap, page.settings_btn = _Rec(), _Rec()
+    page.installed_rows, page.installed_box = _Rows(), _Rec()
+    waiting = [b for b in banners if b.warn][-1]
+    page.waiting_banner = waiting
+    page.on_enter(ctx)
+    assert page.installed_rows.children == []
+    assert _last_shown(page.installed_box) is False
+    assert not waiting.visible
+
+
+def test_set_shown_reveals_the_children_of_a_no_show_all_container():
+    """GTK: a widget built with set_no_show_all(True) is skipped by the window's show_all(), children
+    included, so revealing it with set_visible() alone would show an empty box."""
+    _need_stub()
+    from lindos_setup import pages
+    box = _Rec()
+    pages.set_shown(box, True)
+    assert [c[0] for c in box.calls] == ["set_no_show_all", "show_all", "set_no_show_all"]
+    assert [c[1] for c in box.calls if c[0] == "set_no_show_all"] == [False, True]
+    hidden = _Rec()
+    pages.set_shown(hidden, False)
+    assert [c[0] for c in hidden.calls] == ["hide"]
+
+
+def test_composite_widgets_are_only_revealed_through_set_shown():
+    src = _read(os.path.join(PY_DIR, "pages.py"))
+    for name in ("self.banner", "self.waiting_banner", "self.installed_box"):
+        assert name + ".set_visible(" not in src, name
+
+
+def test_done_page_recap_line_names_a_pending_browser_honestly(monkeypatch):
+    _need_stub()
+    from lindos_setup import pages
+    ctx = _ctx(monkeypatch, selections=Selections(browser="chrome"),
+               browser_states={"chrome": "pending", "firefox": "installed"})
+    assert pages.DonePage._browser_recap(ctx) == "Browser: Google Chrome (Firefox until it's added)"
+    ctx.selections.browser = "firefox"
+    assert pages.DonePage._browser_recap(ctx) == "Browser: Mozilla Firefox"
+
+
+# --------------------------------------------------------------------------- start-up context
+def _build_context(monkeypatch, *, first_run=True, installed=(), steps=None):
+    import logging
+    import socket
+    _need_stub()
+    from lindos_setup import app
+
+    def no_network(*a, **k):
+        raise AssertionError("the wizard must not open network connections")
+
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    monkeypatch.setattr(core, "browser_installed", lambda bid: bid in installed)
+    monkeypatch.setattr(core, "install_steps", lambda: dict(steps or {}))
+    ctx = app.build_context(dry_run=True, first_run=first_run, logger=logging.getLogger("t-context"))
+    ctx.live.close()
+    return ctx
+
+
+def test_context_reads_install_state_and_preselects_firefox_while_chrome_is_pending(monkeypatch):
+    ctx = _build_context(monkeypatch, steps={"browser": "pending", "compat": "done"})
+    assert ctx.install_steps == {"browser": "pending", "compat": "done"}
+    assert ctx.browser_states == {"edge": "unavailable", "chrome": "pending", "firefox": "installed"}
+    assert ctx.selections.browser == "firefox"
+    assert not hasattr(ctx, "catalog") and not hasattr(ctx, "online")
+
+
+def test_context_keeps_chrome_selected_once_it_is_installed(monkeypatch):
+    ctx = _build_context(monkeypatch, installed=("chrome",), steps={"browser": "done"})
+    assert ctx.browser_states["chrome"] == "installed" and ctx.selections.browser == "chrome"
+
+
+def test_context_falls_back_to_firefox_when_chrome_was_left_out(monkeypatch):
+    for first_run in (True, False):
+        ctx = _build_context(monkeypatch, first_run=first_run, steps={"browser": "skipped"})
+        assert ctx.browser_states["chrome"] == "unavailable" and ctx.selections.browser == "firefox"
+
+
+def test_reconfigure_keeps_a_stored_preference_for_a_pending_browser(monkeypatch):
+    ctx = _build_context(monkeypatch, first_run=False, steps={"browser": "pending"})
+    assert ctx.selections.browser == "chrome"           # the stored (default) preference survives
+    ctx = _build_context(monkeypatch, first_run=True, steps={"browser": "pending"})
+    assert ctx.selections.browser == "firefox"          # the first run never preselects what is missing

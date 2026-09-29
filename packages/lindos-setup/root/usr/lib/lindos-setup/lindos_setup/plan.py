@@ -24,9 +24,10 @@ Step kinds:
 
 * ``user``   -- runs as the logged-in user (config, theme, wallpaper, ...)
 * ``system`` -- needs privileges; one step == one helper call
-  (``write-system-config``, ``apply-mode``, ``install-browser``,
-  ``install-packages``, ``install-flatpaks``, ``install-compat``,
-  ``install-gaming``).
+  (``write-system-config``, ``apply-mode`` with ``install: false``).
+
+The plan is **install-free**: the Lindos installer already installed the browser, drivers, apps and
+updates (its record is ``/var/lib/lindos/install-state.json``), so the wizard only saves choices.
 """
 from __future__ import annotations
 
@@ -45,8 +46,6 @@ SCHEMA = 1
 # --- Constants mirroring SPEC §2 / §3 / §4 (values must stay identical) ------
 MODE_IDS: List[str] = ["everyday", "gaming", "work", "creator", "lite"]
 BROWSER_IDS: List[str] = ["edge", "chrome", "firefox"]
-DOWNLOAD_BROWSERS: List[str] = ["edge", "chrome"]      # licence: fetched from vendor repos
-OFFLINE_FALLBACK_BROWSER = "firefox"
 THEMES: List[str] = ["dark", "light"]
 TASKBAR_ALIGNMENTS: List[str] = ["center", "left"]
 DEFAULT_ACCENT = "#60CDFF"
@@ -56,7 +55,7 @@ LIGHT_WALLPAPER = WALLPAPER_DIR + "/aurora-light.svg"
 WALLPAPER_NAMES: List[str] = [
     "aurora-dark.svg", "aurora-light.svg", "bloom-blue.svg", "mist-purple.svg", "nightfall.svg",
 ]
-APPS_JSON_REL = "usr/share/lindos/setup/apps.json"
+APPS_JSON_REL = "usr/share/lindos/setup/apps.json"   # reference catalog; the wizard no longer installs from it
 ACCENTS_JSON_REL = "usr/share/lindos/setup/accents.json"
 
 KIND_USER = "user"
@@ -73,19 +72,28 @@ ACT_SET_DEFAULT_BROWSER = "set-default-browser"
 # privileged actions (helper action names from SPEC §4.6, one call each)
 ACT_WRITE_SYSTEM_CONFIG = "write-system-config"
 ACT_APPLY_MODE = "apply-mode"
-ACT_INSTALL_BROWSER = "install-browser"
-ACT_INSTALL_PACKAGES = "install-packages"
-ACT_INSTALL_FLATPAKS = "install-flatpaks"
-ACT_INSTALL_COMPAT = "install-compat"
-ACT_INSTALL_GAMING = "install-gaming"
 
-SYSTEM_ACTION_ORDER: List[str] = [
-    ACT_WRITE_SYSTEM_CONFIG, ACT_APPLY_MODE, ACT_INSTALL_BROWSER, ACT_INSTALL_PACKAGES,
-    ACT_INSTALL_FLATPAKS, ACT_INSTALL_COMPAT, ACT_INSTALL_GAMING,
-]
+SYSTEM_ACTION_ORDER: List[str] = [ACT_WRITE_SYSTEM_CONFIG, ACT_APPLY_MODE]
 
 APP_KINDS = ("apt", "flatpak", "script")
-SCRIPT_ACTIONS = (ACT_INSTALL_COMPAT, ACT_INSTALL_GAMING)
+SCRIPT_ACTIONS = ("install-compat", "install-gaming")   # helper actions the reference catalog may name
+
+# install-state step ids (lindos.installstate.STEPS) with the friendly names the Done page shows
+INSTALL_STEP_ORDER: Tuple[str, ...] = (
+    "updates", "drivers", "browser", "compat", "gaming", "mode_extras", "flatpaks")
+INSTALL_STEP_NAMES: Dict[str, str] = {
+    "updates": "System updates",
+    "drivers": "Drivers and firmware",
+    "browser": "Google Chrome",
+    "compat": "Windows app support (Wine + Proton)",
+    "gaming": "Gaming launchers",
+    "mode_extras": "Apps for the Modes",
+    "flatpaks": "Flatpak apps (Prism, Sober, Heroic, Bottles)",
+}
+# browser states shown on the Browser page (see core.browser_state)
+BROWSER_INSTALLED = "installed"
+BROWSER_PENDING = "pending"          # not on this PC yet; Lindos adds it once it is online
+BROWSER_UNAVAILABLE = "unavailable"  # not installed and nothing is going to install it: not offered
 
 # Selections.transfer["source_type"] (SPEC-WINDOWS §29.3: "partition" | "bundle"; "" = no source
 # chosen / skipped).  Nothing is ever copied during OOBE -- see the `transfer` page and DonePage.
@@ -167,7 +175,6 @@ class Selections:
     accent: str = DEFAULT_ACCENT
     wallpaper: str = DEFAULT_WALLPAPER
     taskbar_alignment: str = "center"
-    apps: List[str] = field(default_factory=list)
     location: bool = False
     crash_reports: bool = False
     # optional OOBE "transfer" page choice (SPEC-WINDOWS §32): never copies anything itself --
@@ -190,8 +197,6 @@ class Selections:
             raise ValueError("unknown taskbar alignment %r" % (self.taskbar_alignment,))
         if not isinstance(self.wallpaper, str) or not self.wallpaper:
             raise ValueError("wallpaper must be a non-empty path")
-        if not isinstance(self.apps, list) or not all(isinstance(a, str) for a in self.apps):
-            raise ValueError("apps must be a list of app ids")
         if not isinstance(self.location, bool) or not isinstance(self.crash_reports, bool):
             raise ValueError("location / crash_reports must be booleans")
         if not isinstance(self.transfer, dict):
@@ -212,19 +217,19 @@ class Selections:
 
     def as_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        d["apps"] = list(self.apps)
         d["transfer"] = dict(self.transfer)
         return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Selections":
-        """Build from a dict, ignoring unknown keys (forward compatible)."""
+        """Build from a dict, ignoring unknown keys (forward compatible).
+
+        Old selection files still carry an ``apps`` list from the time the wizard installed apps;
+        it is ignored like any other unknown key."""
         sel = cls()
         for key in ("mode", "browser", "theme", "accent", "wallpaper", "taskbar_alignment"):
             if key in data and data[key] is not None:
                 setattr(sel, key, str(data[key]))
-        if "apps" in data and data["apps"] is not None:
-            sel.apps = [str(a) for a in data["apps"]]
         for key in ("location", "crash_reports"):
             if key in data and data[key] is not None:
                 setattr(sel, key, bool(data[key]))
@@ -255,7 +260,9 @@ def default_wallpaper_for(theme: str) -> str:
     return LIGHT_WALLPAPER if theme == "light" else DEFAULT_WALLPAPER
 
 
-# --- Apps catalog -------------------------------------------------------------
+# --- Apps catalog (reference data) ---------------------------------------------
+# ``apps.json`` still ships (helper item whitelists are checked against it in tests/), but the wizard
+# no longer offers or installs apps: the installer does that.  Nothing in the OOBE reads these classes.
 @dataclass
 class AppEntry:
     """One optional app from ``apps.json``."""
@@ -506,8 +513,9 @@ class Plan:
 
     @classmethod
     def from_selections(cls, selections: Selections, catalog: Optional[Catalog] = None,
-                        *, online: bool = True) -> "Plan":
-        return build_plan(selections, catalog, online=online)
+                        *, online: bool = True,
+                        browser_states: Optional[Dict[str, str]] = None) -> "Plan":
+        return build_plan(selections, catalog, online=online, browser_states=browser_states)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Plan):
@@ -520,26 +528,21 @@ class Plan:
 
 
 def build_plan(selections: Selections, catalog: Optional[Catalog] = None,
-               *, online: bool = True) -> Plan:
-    """Turn selections into an ordered :class:`Plan`.
+               *, online: bool = True,
+               browser_states: Optional[Dict[str, str]] = None) -> Plan:
+    """Turn selections into an ordered, **install-free** :class:`Plan`.
 
-    * ``online=False`` -> Edge/Chrome fall back to Firefox with a note (they
-      are downloaded from the vendor repositories, never shipped on the ISO).
-    * apps are grouped so every privileged action appears **at most once**.
+    Every step saves configuration; nothing is downloaded or installed (the installer did that).
+    ``catalog`` and ``online`` are accepted only for callers written against the old signature
+    and are ignored.  ``browser_states`` (``{browser id: installed|pending|unavailable}``, see
+    ``core.browser_states``) lets the plan say so when the chosen browser is still *pending*: the
+    choice is stored as the preferred browser and becomes the default once it has been added.
     """
     sel = selections.copy()
     sel.validate()
-    catalog = catalog if catalog is not None else Catalog([])
     notes: List[str] = []
     steps: List[Step] = []
-
-    if not online and sel.browser in DOWNLOAD_BROWSERS:
-        wanted = sel.browser
-        sel.browser = OFFLINE_FALLBACK_BROWSER
-        notes.append(
-            "Offline: %s cannot be downloaded now; Firefox is used instead. "
-            "Install it later from Lindos Settings > Apps > Web browsers (lindos-settings apps) "
-            "or with 'lindos-browser install %s --set-default'." % (wanted, wanted))
+    browser_pending = (browser_states or {}).get(sel.browser) == BROWSER_PENDING
 
     # ---- user side ---------------------------------------------------------
     steps.append(Step(
@@ -567,78 +570,30 @@ def build_plan(selections: Selections, catalog: Optional[Catalog] = None,
         id="set-taskbar-alignment", title="Align taskbar (%s)" % sel.taskbar_alignment,
         kind=KIND_USER, action=ACT_SET_TASKBAR, payload={"alignment": sel.taskbar_alignment}))
 
-    # ---- privileged side (one helper call per group) -----------------------
+    # ---- privileged side (one batched helper run; configuration only) -------
     steps.append(Step(
         id="write-system-config", title="Save system defaults", kind=KIND_SYSTEM,
         action=ACT_WRITE_SYSTEM_CONFIG, payload={"mode": sel.mode, "browser": sel.browser}))
     steps.append(Step(
         id="apply-mode", title="Apply %s mode" % sel.mode.capitalize(), kind=KIND_SYSTEM,
-        action=ACT_APPLY_MODE, payload={"mode": sel.mode, "online": bool(online)}))
-
-    if sel.browser in DOWNLOAD_BROWSERS:
-        steps.append(Step(
-            id="install-browser", title="Download and install %s" % sel.browser.capitalize(),
-            kind=KIND_SYSTEM, action=ACT_INSTALL_BROWSER, payload={"browser": sel.browser}))
-
-    packages: List[str] = []
-    flatpaks: List[str] = []
-    compat_items: List[str] = []
-    gaming_items: List[str] = []
-    seen_apps: List[str] = []
-    for app_id in sel.apps:
-        if app_id in seen_apps:
-            continue
-        seen_apps.append(app_id)
-        entry = catalog.get(app_id)
-        if entry is None:
-            notes.append("Unknown app id %r ignored (not in catalog)." % app_id)
-            log.warning("build_plan: unknown app id %r ignored", app_id)
-            continue
-        if entry.kind == "apt":
-            _extend_unique(packages, entry.packages)
-        elif entry.kind == "flatpak":
-            _extend_unique(flatpaks, entry.flatpaks)
-        elif entry.kind == "script":
-            if entry.action == ACT_INSTALL_COMPAT:
-                _extend_unique(compat_items, entry.items)
-            elif entry.action == ACT_INSTALL_GAMING:
-                _extend_unique(gaming_items, entry.items)
-    sel.apps = seen_apps
-
-    if packages:
-        steps.append(Step(
-            id="install-packages", title="Install packages (%s)" % ", ".join(packages),
-            kind=KIND_SYSTEM, action=ACT_INSTALL_PACKAGES, payload={"packages": packages}))
-    if flatpaks:
-        steps.append(Step(
-            id="install-flatpaks", title="Install Flatpak apps (%s)" % ", ".join(flatpaks),
-            kind=KIND_SYSTEM, action=ACT_INSTALL_FLATPAKS, payload={"flatpaks": flatpaks}))
-    if compat_items:
-        steps.append(Step(
-            id="install-compat", title="Set up Windows app support (Wine + Proton)",
-            kind=KIND_SYSTEM, action=ACT_INSTALL_COMPAT, payload={"items": compat_items}))
-    if gaming_items:
-        steps.append(Step(
-            id="install-gaming", title="Install gaming launchers (%s)" % ", ".join(gaming_items),
-            kind=KIND_SYSTEM, action=ACT_INSTALL_GAMING, payload={"items": gaming_items}))
-
-    if not online and (packages or flatpaks or compat_items or gaming_items):
-        notes.append(
-            "Offline: downloads will be skipped. Finish them later from "
-            "Lindos Settings > Apps (lindos-settings apps).")
+        action=ACT_APPLY_MODE, payload={"mode": sel.mode, "install": False}))
 
     # ---- final user side ---------------------------------------------------
-    steps.append(Step(
-        id="set-default-browser", title="Make %s the default browser" % sel.browser.capitalize(),
-        kind=KIND_USER, action=ACT_SET_DEFAULT_BROWSER, payload={"browser": sel.browser}))
+    if browser_pending:
+        name = INSTALL_STEP_NAMES["browser"] if sel.browser == "chrome" else sel.browser.capitalize()
+        steps.append(Step(
+            id="set-default-browser", title="Use %s as the default once it is added" % name,
+            kind=KIND_USER, action=ACT_SET_DEFAULT_BROWSER,
+            payload={"browser": sel.browser, "pending": True}))
+        notes.append(
+            "%s isn't on this PC yet. It will be added when you're online and then becomes your "
+            "default browser; until then you keep using Firefox." % name)
+    else:
+        steps.append(Step(
+            id="set-default-browser", title="Make %s the default browser" % sel.browser.capitalize(),
+            kind=KIND_USER, action=ACT_SET_DEFAULT_BROWSER, payload={"browser": sel.browser}))
 
     return Plan(steps, sel, notes)
-
-
-def _extend_unique(target: List[str], items: Iterable[str]) -> None:
-    for i in items:
-        if i not in target:
-            target.append(i)
 
 
 # --- Runner -------------------------------------------------------------------
@@ -831,16 +786,14 @@ def make_recording_executors(actions: Iterable[str], record: List[Tuple[str, Dic
     return {a: _make(a) for a in actions}
 
 
-def summarize(selections: Selections, catalog: Optional[Catalog] = None,
-              mode_names: Optional[Dict[str, str]] = None,
+def summarize(selections: Selections, mode_names: Optional[Dict[str, str]] = None,
               browser_names: Optional[Dict[str, str]] = None,
-              accent_names: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
+              accent_names: Optional[Dict[str, str]] = None,
+              browser_states: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
     """Human-readable ``[(label, value), ...]`` rows for the summary page."""
     mode_names = mode_names or {}
     browser_names = browser_names or {}
     accent_names = accent_names or {}
-    catalog = catalog if catalog is not None else Catalog([])
-    apps = catalog.names(selections.apps) if selections.apps else []
     wallpaper = os.path.splitext(os.path.basename(selections.wallpaper))[0].replace("-", " ").title()
     accent_label = accent_names.get(selections.accent.upper(), selections.accent.upper())
     if accent_label != selections.accent.upper():
@@ -850,26 +803,87 @@ def summarize(selections: Selections, catalog: Optional[Catalog] = None,
         transfer_label = "Yes — Transfer tool opens after setup finishes"
     else:
         transfer_label = "Not now"
+    browser_label = browser_names.get(selections.browser, selections.browser.capitalize())
+    if (browser_states or {}).get(selections.browser) == BROWSER_PENDING:
+        browser_label += " — will be added when you're online (Firefox until then)"
     return [
         ("Mode", mode_names.get(selections.mode, selections.mode.capitalize())),
-        ("Browser", browser_names.get(selections.browser, selections.browser.capitalize())),
+        ("Browser", browser_label),
         ("Theme", "Dark" if selections.dark else "Light"),
         ("Accent", accent_label),
         ("Wallpaper", wallpaper),
         ("Taskbar", selections.taskbar_alignment.capitalize()),
-        ("Apps", ", ".join(apps) if apps else "None"),
         ("Bring your files from Windows", transfer_label),
         ("Location services", "On" if selections.location else "Off"),
         ("Crash reports", "On" if selections.crash_reports else "Off"),
     ]
 
 
+# --- what the installer did (read-only recap of install-state.json) ---------------
+# Steps the installer retries silently in the background at start-up (lindos-*-firstboot).
+_BACKGROUND_RETRY = ("browser", "drivers")
+
+_RECAP_DONE = "installed while Lindos was installing"
+_RECAP_DONE_DRIVERS = "set up while Lindos was installing"
+
+
+def install_recap(steps: Optional[Dict[str, str]]) -> List[Tuple[str, str, str]]:
+    """``[(step id, friendly name, sentence), ...]`` for every step the installer recorded.
+
+    *steps* maps a step id to its status (``done``/``pending``/``failed``/``skipped``), see
+    ``core.install_steps``.  Steps without a record are left out - nothing is claimed that the
+    installer did not write down.  ``pending`` and ``failed`` are both phrased as "still waiting":
+    the two steps that have a silent background retry say so, the others point to Settings.
+    """
+    rows: List[Tuple[str, str, str]] = []
+    for step in INSTALL_STEP_ORDER:
+        status = (steps or {}).get(step, "")
+        if not status:
+            continue
+        name = INSTALL_STEP_NAMES[step]
+        if status == "done":
+            text = _RECAP_DONE_DRIVERS if step == "drivers" else _RECAP_DONE
+        elif status == "skipped":
+            text = "left out on purpose"
+        elif step in _BACKGROUND_RETRY:
+            text = "still waiting for an internet connection — Lindos adds it in the background"
+        elif step == "updates":
+            text = "still waiting — install them from the Update Manager when you're online"
+        else:
+            text = "still waiting — install it from Lindos Settings › Apps when you're online"
+        rows.append((step, name, text))
+    return rows
+
+
+def pending_steps(steps: Optional[Dict[str, str]]) -> List[str]:
+    """Recorded steps that are still ``pending`` or ``failed`` (canonical order)."""
+    return [s for s in INSTALL_STEP_ORDER if (steps or {}).get(s) in ("pending", "failed")]
+
+
+# Which install-state steps concern a Mode's own extras (its mode.json packages / Flatpaks / launchers).
+def mode_extras_pending(mode: Any, mode_id: str, steps: Optional[Dict[str, str]]) -> bool:
+    """True when something this Mode brings along is still waiting to be installed.
+
+    *mode* is a ``lindos.modes.Mode`` (or anything with ``packages`` / ``flatpaks``); the Gaming
+    Mode also owns the gaming launchers.  Switching Modes in the wizard is configuration only, so
+    the Mode page tells the user plainly instead of pretending the extras are there.
+    """
+    waiting = set(pending_steps(steps))
+    if getattr(mode, "packages", None) and "mode_extras" in waiting:
+        return True
+    if getattr(mode, "flatpaks", None) and "flatpaks" in waiting:
+        return True
+    return mode_id == "gaming" and "gaming" in waiting
+
+
 __all__ = [
-    "SCHEMA", "MODE_IDS", "BROWSER_IDS", "DOWNLOAD_BROWSERS", "THEMES", "TASKBAR_ALIGNMENTS",
+    "SCHEMA", "MODE_IDS", "BROWSER_IDS", "THEMES", "TASKBAR_ALIGNMENTS",
     "DEFAULT_ACCENT", "DEFAULT_WALLPAPER", "LIGHT_WALLPAPER", "WALLPAPER_DIR", "WALLPAPER_NAMES",
-    "TRANSFER_SOURCE_TYPES",
+    "TRANSFER_SOURCE_TYPES", "INSTALL_STEP_ORDER", "INSTALL_STEP_NAMES",
+    "BROWSER_INSTALLED", "BROWSER_PENDING", "BROWSER_UNAVAILABLE",
     "KIND_USER", "KIND_SYSTEM",
     "Selections", "AppEntry", "Catalog", "load_catalog", "load_accents", "find_data_file",
     "Step", "Plan", "build_plan", "StepResult", "RunResult", "Runner",
     "make_printing_executors", "make_recording_executors", "summarize", "default_wallpaper_for",
+    "install_recap", "pending_steps", "mode_extras_pending",
 ]

@@ -78,7 +78,8 @@ What happens:
 Exit codes 0 / 1 / 2. If Wine or umu is missing, `lindos-run` says so and points to
 `pkexec /usr/libexec/lindos/install-compat.sh` and to Settings → Windows apps → Doctor. The same
 page has a **Windows app support (Wine + Proton) → Install / repair** button that runs the helper
-action `install-compat` (`wine umu`) — use it after an offline first boot.
+action `install-compat` (`wine umu`) — use it after an offline install (it is also listed under Apps ›
+Left to finish from setup).
 
 ### 1.1 Performance environment (games and Proton)
 
@@ -181,11 +182,15 @@ a licence you already own.
 
 ## 4. Installing the compatibility layer
 
-The OOBE ticks **Windows app support (Wine + Proton)** by default; it runs the helper action
-`install-compat` with `{items: [wine, umu]}` → `/usr/libexec/lindos/install-compat.sh wine umu`.
-On the ISO itself (`INCLUDE_WINE=1`) Ubuntu's `wine` + `wine32:i386`, winetricks and cabextract
-are already present; WineHQ *staging* and umu-launcher come from the network at setup time
-(the WineHQ apt source is pre-configured).
+The **installer** installs **Windows app support (Wine + Proton)** for everyone while it installs
+(its `compat` step runs `/usr/libexec/lindos/install-compat.sh --in-installer` inside the new system for `wine`,
+`winetricks` and `umu`); Lindos Setup no longer has an Apps page and installs nothing. If the install was
+offline, the step is *pending* and Settings › Windows apps › **Install / repair** (or Apps › Left to finish from
+setup) runs the helper action `install-compat` with `{items: [wine, umu]}` → `/usr/libexec/lindos/
+install-compat.sh wine umu`. On the ISO itself (`INCLUDE_WINE=1`) Ubuntu's `wine` + `wine32:i386`, winetricks
+and cabextract are already present; WineHQ *staging* and umu-launcher come from the network (the WineHQ apt
+source is pre-configured); how WineHQ staging and Ubuntu's `wine` coexist after an installer run is
+unverified ([INSTALLER.md](INSTALLER.md)).
 
 ```
 install-compat.sh [--minimal] [--from-chroot] [--dry-run] [--no-update] [--list] [items…]

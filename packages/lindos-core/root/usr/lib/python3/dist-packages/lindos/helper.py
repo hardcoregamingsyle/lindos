@@ -13,7 +13,10 @@ Payload shapes (all JSON objects)::
     apply-mode          {"mode": id, "packages": [..], "flatpaks": [..], "services_disable": [..],
                          "services_enable": [..], "sysctl": {k: v}, "governor": g,
                          "zram_percent": n, "compositor": c, "apply_system": path|null,
-                         "set_system_default": bool}     ← lindos.modes.build_system_plan()
+                         "set_system_default": bool, "offline"?: bool,
+                         "install"?: bool}               ← lindos.modes.build_system_plan()
+                        ``install`` (default true): false = configuration only, the mode's apt
+                        packages and Flatpaks are NOT installed (the first-boot wizard sends this)
     install-browser     {"browser": "edge"|"chrome"|"firefox"}
     install-packages    {"packages": ["gimp", ...]}            names ^[a-z0-9.+-]+$
     install-flatpaks    {"flatpaks": ["org.prismlauncher.PrismLauncher", ...]}
@@ -492,6 +495,7 @@ def validate_payload(action: str, payload: Any) -> Dict[str, Any]:
         out["apply_system"] = _apply_system_path(p)
         out["set_system_default"] = _bool(p, "set_system_default", False)
         out["offline"] = _bool(p, "offline", False)
+        out["install"] = _bool(p, "install", True)
         out["schema"] = _int(p, "schema", 1, 99, default=1)
     elif action == "install-browser":
         out["browser"] = _choice(p, "browser", BROWSER_IDS)

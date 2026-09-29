@@ -1,0 +1,42 @@
+#!/bin/bash
+# wait-for-network — wait (bounded) until NetworkManager reports a working connection.
+#
+# Lindos masks NetworkManager-wait-online (it delays boot on machines without a link), so
+# network-online.target is reached the moment NetworkManager has started - before Wi-Fi has
+# associated or DHCP has answered.  The silent first-boot retries (Chrome, drivers) ask this helper
+# to wait a little before they call the machine offline; without it they would fire too early on
+# every boot and never get the chance to succeed.
+#
+# Usage: wait-for-network [SECONDS]      (default: $LINDOS_NETWORK_WAIT, else 90; 0 = do not wait)
+# Exit status:
+#   0  online - or "cannot tell" (no nm-online, NetworkManager not running, waiting disabled): the
+#      caller's own reachability probe decides
+#   1  NetworkManager is running and no connection came up within SECONDS, or one of the offline
+#      test switches (LINDOS_OFFLINE, LINDOS_FORCE_OFFLINE=1) is set
+# Test override: LINDOS_NM_ONLINE=<program> is run instead of nm-online.
+set -Eeuo pipefail
+
+if [ -n "${LINDOS_OFFLINE:-}" ] || [ "${LINDOS_FORCE_OFFLINE:-}" = 1 ]; then
+    exit 1
+fi
+
+limit="${1:-${LINDOS_NETWORK_WAIT:-90}}"
+case "${limit}" in
+    ''|*[!0-9]*) limit=90 ;;
+esac
+if [ "${limit}" -le 0 ]; then
+    exit 0
+fi
+
+nm_online="${LINDOS_NM_ONLINE:-nm-online}"
+if ! command -v "${nm_online}" >/dev/null 2>&1; then
+    exit 0
+fi
+
+rc=0
+"${nm_online}" -q -t "${limit}" >/dev/null 2>&1 || rc=$?
+# nm-online: 0 = online, 1 = still offline after the timeout, 2 = error (e.g. NetworkManager is not running)
+if [ "${rc}" -eq 1 ]; then
+    exit 1
+fi
+exit 0

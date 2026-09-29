@@ -5,13 +5,15 @@ Usage::
 
     lindos-setup [--first-run | --reconfigure] [--dry-run] [--page ID] [--debug]
 
-* ``--first-run``   exit 0 silently when SETUP_DONE exists or the session is
-                    not XFCE (used by the autostart entry).
+* ``--first-run``   exit 0 silently when SETUP_DONE exists, the session is not XFCE,
+                    this is the live (USB) session or the temporary ``oem`` account
+                    (used by the autostart entry).  The wizard never installs anything:
+                    the installer did that; it only saves choices.
 * ``--reconfigure`` run the wizard again (Escape / close allowed).
 * ``--dry-run``     no helper calls, nothing changed; the plan JSON is printed
                     to stdout and every step is only described.
 * ``--page ID``     start on a given page (welcome, mode, browser, personalize,
-                    apps, privacy, transfer, summary, apply, done).
+                    privacy, transfer, summary, apply, done).
 
 Log: ``~/.local/state/lindos/setup.log``.
 """
@@ -30,7 +32,7 @@ if HERE not in sys.path:
 from lindos_setup import __version__  # noqa: E402
 from lindos_setup import core, i18n  # noqa: E402
 
-PAGE_IDS = ["welcome", "mode", "browser", "personalize", "apps", "privacy", "transfer", "summary",
+PAGE_IDS = ["welcome", "mode", "browser", "personalize", "privacy", "transfer", "summary",
            "apply", "done"]
 
 
@@ -40,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Lindos first-boot setup (Out-Of-Box Experience).")
     grp = p.add_mutually_exclusive_group()
     grp.add_argument("--first-run", action="store_true",
-                     help="autostart mode: exit 0 silently if setup was already done or the session is not XFCE")
+                     help="autostart mode: exit 0 silently if setup was already done, the session is not XFCE, "
+                          "or this is the live session / the temporary oem account")
     grp.add_argument("--reconfigure", action="store_true",
                      help="run the wizard again even if setup was completed")
     p.add_argument("--dry-run", action="store_true",
@@ -80,8 +83,25 @@ def setup_logging(debug: bool = False) -> logging.Logger:
     return logger
 
 
+def session_block() -> str:
+    """Why the wizard must not run in this session ("" = it may).
+
+    The live (USB) session shows only the installer, and the temporary ``oem`` account exists only
+    until Ubiquity's oem-config has created the real user - the wizard belongs to that user's
+    first login.  Checked first so nothing else (config, markers) is even looked at."""
+    if core.is_live_session():
+        return "the live (USB) session"
+    if core.is_oem_temp_user():
+        return "the temporary oem account"
+    return ""
+
+
 def first_run_gate(logger: logging.Logger) -> Optional[int]:
     """Return an exit code when the wizard must not run, else None."""
+    blocked = session_block()
+    if blocked:
+        logger.info("first-run: not in %s; exiting", blocked)
+        return 0
     if core.setup_done_exists():
         logger.info("first-run: setup already done (%s); exiting", core.setup_done_path())
         return 0
@@ -102,6 +122,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         code = first_run_gate(logger)
         if code is not None:
             return code
+    elif not args.dry_run and session_block():
+        # a hand-started 'lindos-setup --reconfigure' gets the same answer as the autostart entry
+        logger.info("not starting: %s", session_block())
+        sys.stderr.write("lindos-setup: Lindos Setup is not available in %s.\n" % session_block())
+        return 0
 
     try:
         from lindos_setup.app import run_app

@@ -1,5 +1,8 @@
 [Unit]
 Description=Lindos: re-check for lindos-* component updates every 6 hours (SPEC-UPDATE.md §37)
+# Not in the live USB session (see lindos-update-notify.service).
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
 
 [Timer]
 OnStartupSec=15min

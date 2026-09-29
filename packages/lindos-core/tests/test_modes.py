@@ -126,7 +126,37 @@ def test_plan_offline_flag(modes_dir: Path) -> None:
     assert plan["offline"] is True
 
 
+def test_plan_install_flag_defaults_to_true_and_can_be_turned_off(modes_dir: Path) -> None:
+    mode = modes.get_mode("gaming", str(modes_dir))
+    default = modes.build_system_plan(mode)
+    assert default["install"] is True
+    off = modes.build_system_plan(mode, install=False)
+    assert off["install"] is False
+    # only the flag differs: the plan still describes the whole mode
+    assert {k: v for k, v in off.items() if k != "install"} == {k: v for k, v in default.items() if k != "install"}
+    assert lhelper.validate_payload("apply-mode", off)["install"] is False
+    assert lhelper.validate_payload("apply-mode", default)["install"] is True
+
+
+def test_system_plan_passes_install_through(core_env) -> None:
+    assert modes.system_plan("creator")["install"] is True
+    assert modes.system_plan("creator", install=False)["install"] is False
+    assert modes.system_plan("creator", system=True, offline=True, install=False) ==         modes.build_system_plan(modes.get_mode("creator"), set_system_default=True, offline=True, install=False)
+    with pytest.raises(KeyError):
+        modes.system_plan("turbo", install=False)
+
+
 # --- apply_mode ---------------------------------------------------------------------------
+def test_apply_mode_install_flag_reaches_the_helper_plan(core_env) -> None:
+    def system_step(**kwargs):
+        result = modes.apply_mode("gaming", dry_run=True, log=lambda _m: None, **kwargs)
+        message = next(s[2] for s in result.steps if s[0] == "system")
+        return json.loads(message.split("with plan: ", 1)[1])
+
+    assert system_step()["install"] is True                  # 'lindos-mode set' / Settings keep installing
+    assert system_step(install=False)["install"] is False
+
+
 def test_apply_mode_dry_run(core_env) -> None:
     lines = []
     result = modes.apply_mode("gaming", dry_run=True, log=lines.append)

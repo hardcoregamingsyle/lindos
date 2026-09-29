@@ -12,11 +12,12 @@ import types
 
 import pytest
 
+import json
+
 from lindos_setup import core
-from lindos_setup.plan import Runner, Selections, build_plan, load_catalog
+from lindos_setup.plan import Runner, Selections, build_plan
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-APPS_JSON = os.path.normpath(os.path.join(HERE, "..", "root", "usr", "share", "lindos", "setup", "apps.json"))
 
 
 class _FakeConfig:
@@ -67,8 +68,8 @@ def _install_fake_lindos(monkeypatch, tmp_path, calls, *, helper_ok=True, instal
 
     modes = types.ModuleType("lindos.modes")
 
-    def apply_mode(mode_id, *, system=False, dry_run=False, log=print):
-        calls.append(("apply_mode", mode_id))
+    def apply_mode(mode_id, *, system=False, dry_run=False, log=print, install=True):
+        calls.append(("apply_mode", mode_id, install))
         log("fake apply_mode %s" % mode_id)
         return types.SimpleNamespace(ok=True, steps=[("panel-profile", True, ""), ("helper", True, "ok")])
 
@@ -124,9 +125,7 @@ def _clear_cache():
 def test_real_executors_call_core_apis(monkeypatch, tmp_path):
     calls = []
     _install_fake_lindos(monkeypatch, tmp_path, calls)
-    catalog = load_catalog(APPS_JSON)
-    sel = Selections(mode="gaming", browser="edge", apps=["wine", "steam", "creative", "onlyoffice"])
-    plan = build_plan(sel, catalog, online=True)
+    plan = build_plan(Selections(mode="gaming", browser="edge"))
     logs = []
     result = Runner(plan, core.make_real_executors(), log=logs.append).run()
     assert result.ok, [(r.step_id, r.message) for r in result.results if not r.ok]
@@ -140,38 +139,62 @@ def test_real_executors_call_core_apis(monkeypatch, tmp_path):
     assert ("set_accent", "#60CDFF") in calls
     assert ("set_wallpaper", "/usr/share/backgrounds/lindos/aurora-dark.svg") in calls
     assert ("set_taskbar_alignment", "center") in calls
-    # apply_mode goes through lindos.modes (user + helper part), not the raw helper
-    assert ("apply_mode", "gaming") in calls
+    # apply_mode goes through lindos.modes (user + helper part), and NEVER installs packages here
+    assert ("apply_mode", "gaming", False) in calls
+    assert not any(c[0] == "apply_mode" and c[2] is not False for c in calls)
     assert not any(c[0] == "helper" and c[1] == "apply-mode" for c in calls)
-    # browser install + default via lindos.browsers
-    assert ("install_browser", "edge") in calls and ("set_default", "edge") in calls
-    # exactly one helper call per privileged group
+    # the default browser is set; nothing is ever installed from the wizard
+    assert ("set_default", "edge") in calls
+    assert not any(c[0] == "install_browser" for c in calls)
     helper_actions = [c[1] for c in calls if c[0] == "helper"]
-    assert helper_actions == ["write-system-config", "install-packages", "install-flatpaks",
-                              "install-compat", "install-gaming"]
+    assert helper_actions == ["write-system-config"]
     payloads = {c[1]: c[2] for c in calls if c[0] == "helper"}
     assert payloads["write-system-config"] == {"mode": "gaming", "browser": "edge"}
-    assert payloads["install-packages"] == {"packages": ["gimp", "krita", "kdenlive"]}
-    assert payloads["install-flatpaks"] == {"flatpaks": ["org.onlyoffice.desktopeditors"]}
-    assert payloads["install-compat"] == {"items": ["wine", "umu"]}
-    assert payloads["install-gaming"] == {"items": ["steam"]}
     assert any("fake apply_mode gaming" in line for line in logs)
 
 
 def test_real_executors_report_failures_without_stopping(monkeypatch, tmp_path):
     calls = []
-    _install_fake_lindos(monkeypatch, tmp_path, calls, helper_ok=False, install_ok=False)
-    catalog = load_catalog(APPS_JSON)
-    plan = build_plan(Selections(browser="chrome", apps=["wine"]), catalog, online=True)
+    _install_fake_lindos(monkeypatch, tmp_path, calls, helper_ok=False)
+    plan = build_plan(Selections(browser="chrome"))
     result = Runner(plan, core.make_real_executors(), log=lambda m: None).run()
     assert not result.ok
-    assert "install-browser" in result.failed_ids
-    assert "lindos-settings apps" in result.get("install-browser").message
-    assert "write-system-config" in result.failed_ids and "install-compat" in result.failed_ids
-    # chrome is not installed (fake) -> default browser step fails honestly, others still ran
-    assert "set-default-browser" in result.failed_ids
+    assert result.failed_ids == ["write-system-config"]
+    # chrome is not installed (fake) and nothing recorded says it is gone for good: the choice is
+    # kept as a pending preference, which is NOT a failure
+    default = result.get("set-default-browser")
+    assert default.ok and "not installed yet" in default.message
+    assert ("set_default", "chrome") not in calls, "a pending browser must not touch the personal default"
     assert result.get("apply-mode").ok and result.get("set-theme").ok
-    assert [c[1] for c in calls if c[0] == "helper"] == ["write-system-config", "install-compat"]
+    assert [c[1] for c in calls if c[0] == "helper"] == ["write-system-config"]
+
+
+def test_set_default_browser_outcomes(monkeypatch, tmp_path):
+    calls = []
+    _install_fake_lindos(monkeypatch, tmp_path, calls)
+    execs = core.make_real_executors()
+    step = build_plan(Selections(browser="edge")).get("set-default-browser")
+    assert execs["set-default-browser"](step, lambda m: None) is True      # installed: set as default
+    assert ("set_default", "edge") in calls
+    # not installed and the installer said 'skipped': an honest failure, nothing changed
+    sys.modules["lindos.browsers"].is_installed = lambda bid: False
+    monkeypatch.setattr(core, "install_steps", lambda: {"browser": "skipped"})
+    step = build_plan(Selections(browser="chrome")).get("set-default-browser")
+    ok, msg = execs["set-default-browser"](step, lambda m: None)
+    assert ok is False and "not installed" in msg
+    # the plan said it is pending: success with an explanation, never a failure
+    step = build_plan(Selections(browser="chrome"), browser_states={"chrome": "pending"}).get("set-default-browser")
+    ok, msg = execs["set-default-browser"](step, lambda m: None)
+    assert ok is True and "when it is added" in msg
+    # pending at run time although the plan did not know: same answer
+    monkeypatch.setattr(core, "install_steps", lambda: {"browser": "pending"})
+    step = build_plan(Selections(browser="chrome")).get("set-default-browser")
+    assert core._exec_set_default_browser(step, lambda m: None)[0] is True
+    # it landed between the summary and the apply page: it is simply made the default
+    sys.modules["lindos.browsers"].is_installed = lambda bid: True
+    step = build_plan(Selections(browser="chrome"), browser_states={"chrome": "pending"}).get("set-default-browser")
+    assert execs["set-default-browser"](step, lambda m: None) is True
+    assert ("set_default", "chrome") in calls
 
 
 def test_missing_wallpaper_fails_step_only(monkeypatch, tmp_path):
@@ -193,7 +216,8 @@ def test_core_helpers_with_fake_lindos(monkeypatch, tmp_path):
     modes = core.load_modes()
     assert list(modes) == ["everyday", "gaming", "work", "creator", "lite"]   # SPEC order restored
     assert list(core.browsers_table()) == ["edge", "chrome", "firefox"]
-    assert core.is_online() is True
+    assert not hasattr(core, "is_online"), "the wizard never probes the network"
+    assert core.install_steps() == {}          # the fake lindos has no installstate: no record, no crash
     assert core.ram_total_mb() == 3900
     assert core.list_wallpapers() == ["/usr/share/backgrounds/lindos/aurora-dark.svg"]
     assert core.setup_done_exists() is False
@@ -308,3 +332,70 @@ def test_core_without_lindos_falls_back(monkeypatch, tmp_path):
     result = Runner(plan, core.make_real_executors(), log=lambda m: None).run()
     assert not result.ok and len(result.failed_ids) == len(plan)
     assert "lindos-core" in result.get("write-config").message
+    # no lindos-core also means no install-state: nothing recorded, browsers by their own checks only
+    assert core.install_steps() == {}
+    assert core.browser_state("firefox") == "installed"
+    assert core.browser_state("chrome") == "pending" and core.browser_state("edge") == "unavailable"
+
+
+# --------------------------------------------------------------------------- install-state / browser states
+def _write_install_state(monkeypatch, tmp_path, steps):
+    root = tmp_path / "state-root"
+    target = root / "var" / "lib" / "lindos"
+    target.mkdir(parents=True, exist_ok=True)
+    body = {"schema": 1, "updated": "2026-09-29T10:00:00Z", "online": False,
+            "steps": {sid: {"status": st, "detail": "", "time": "2026-09-29T10:00:00Z"} for sid, st in steps.items()}}
+    (target / "install-state.json").write_text(json.dumps(body), encoding="utf-8")
+    monkeypatch.setenv("LINDOS_ROOT", str(root))
+    core._module_cache.clear()
+
+
+def _need_real_installstate():
+    try:
+        import lindos.installstate  # noqa: F401
+    except ImportError:
+        pytest.skip("lindos-core is not importable")
+
+
+def test_install_steps_reads_the_installers_record(monkeypatch, tmp_path):
+    _need_real_installstate()
+    assert core.install_steps() == {}                      # no file: empty, never an error
+    _write_install_state(monkeypatch, tmp_path, {"browser": "done", "compat": "pending", "drivers": "failed"})
+    assert core.install_steps() == {"browser": "done", "compat": "pending", "drivers": "failed"}
+    (tmp_path / "state-root" / "var" / "lib" / "lindos" / "install-state.json").write_text("{corrupt", encoding="utf-8")
+    assert core.install_steps() == {}
+
+
+@pytest.mark.parametrize("recorded,expected", [
+    ("done", "installed"),        # the installer downloaded Chrome from Google's repository
+    ("pending", "pending"),       # it was offline: the silent retry adds it later
+    ("failed", "pending"),        # the retry still runs
+    ("", "pending"),              # unrecorded is retried too (legacy install, dead installer hook)
+    ("skipped", "unavailable"),   # left out on purpose: not offered
+])
+def test_chrome_state_follows_the_install_state(monkeypatch, recorded, expected):
+    monkeypatch.setattr(core, "browser_installed", lambda bid: False)
+    steps = {"browser": recorded} if recorded else {}
+    assert core.browser_state("chrome", steps) == expected
+
+
+def test_browser_state_rules(monkeypatch):
+    installed = set()
+    monkeypatch.setattr(core, "browser_installed", lambda bid: bid in installed)
+    assert core.browser_state("firefox", {}) == "installed"        # always: it is on the ISO
+    assert core.browser_state("edge", {"browser": "done"}) == "unavailable"   # never installed by Lindos
+    installed.add("edge")
+    assert core.browser_state("edge", {}) == "installed"           # ... unless it is really there
+    installed.add("chrome")
+    assert core.browser_state("chrome", {"browser": "pending"}) == "installed"   # really there wins
+    assert core.browser_states(["edge", "chrome", "firefox"], {}) == {
+        "edge": "installed", "chrome": "installed", "firefox": "installed"}
+
+
+def test_browser_states_reads_install_state_and_the_browsers_table(monkeypatch, tmp_path):
+    _need_real_installstate()
+    monkeypatch.setattr(core, "browser_installed", lambda bid: False)
+    _write_install_state(monkeypatch, tmp_path, {"browser": "pending"})
+    assert core.browser_states() == {"edge": "unavailable", "chrome": "pending", "firefox": "installed"}
+    _write_install_state(monkeypatch, tmp_path, {"browser": "done"})
+    assert core.browser_states()["chrome"] == "installed"

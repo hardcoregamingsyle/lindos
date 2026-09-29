@@ -15,6 +15,9 @@
 # available lindos-* component updates -- a small marker file remembers what was already shown,
 # so the 6-hour timer re-checking the same unchanged state never nags twice.
 #
+# It does nothing in the live USB session (boot=casper): that session only installs Lindos, and
+# an "updates available" toast there would be noise (asked of the shared is-live-session helper).
+#
 # Every external dependency is overridable for testing (LINDOS_UPDATE_BIN, NOTIFY_SEND_BIN,
 # LINDOS_PYTHON, LINDOS_BOOT_ID) -- the same "injectable" spirit as lindos.update's own
 # run=/which=/fetch= parameters, just at the shell layer.
@@ -23,6 +26,14 @@ set -Eeuo pipefail
 LINDOS_UPDATE_BIN="${LINDOS_UPDATE_BIN:-lindos-update}"
 NOTIFY_SEND_BIN="${NOTIFY_SEND_BIN:-notify-send}"
 PY="${LINDOS_PYTHON:-python3}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- live session? -----------------------------------------------------------------------------
+is_live_session() {
+    local helper="${SELF_DIR}/is-live-session"
+    [ -f "${helper}" ] || helper="/usr/libexec/lindos/is-live-session"
+    [ -f "${helper}" ] && bash "${helper}"
+}
 
 # --- where the "already notified this boot" marker lives --------------------------------------
 state_dir() {
@@ -49,6 +60,9 @@ boot_id() {
 }
 
 main() {
+    if is_live_session; then
+        exit 0   # live/installer session: no update toasts
+    fi
     if ! command -v "${LINDOS_UPDATE_BIN}" >/dev/null 2>&1; then
         exit 0   # lindos-core's CLI is not on PATH: nothing to check, never an error
     fi

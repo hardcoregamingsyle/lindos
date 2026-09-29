@@ -337,9 +337,9 @@ def test_context_executors_factory_passes_the_plan_to_make_real_executors(monkey
     from lindos_setup.plan import Selections, build_plan
     seen = {}
     monkeypatch.setattr(app.core, "make_real_executors", lambda plan=None: seen.setdefault("plan", plan) or {})
-    ctx = app.build_context(dry_run=False, first_run=True, logger=logging.getLogger("t-inhibit"), online=True)
+    ctx = app.build_context(dry_run=False, first_run=True, logger=logging.getLogger("t-inhibit"))
     try:
-        plan = build_plan(Selections(), ctx.catalog, online=True)
+        plan = build_plan(Selections())
         ctx.executors_factory(plan)
     finally:
         ctx.live.close()

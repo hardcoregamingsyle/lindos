@@ -59,7 +59,11 @@ vs. discrete GPU — the driver alone moves the figure by 30–80 MB).
   cups-browsed.service NetworkManager-wait-online.service apport.service whoopsie.service
   kerneloops.service brltty.service speech-dispatcher.service ubuntu-report.service
   motd-news.timer apt-daily.timer apt-daily-upgrade.timer`. cups stays socket/path-activated
-  (starts on the first print job); avahi-daemon stays on for printer discovery.
+  (starts on the first print job); avahi-daemon stays on for printer discovery. The two `*-firstboot`
+  units are only **silent retries** of what the installer could not do (they exit at once when
+  `/var/lib/lindos/install-state.json` says the step is done); `lindos-sensors-detect.service` does not start
+  in the live USB session, and `lindos-live-inhibit.service` (live session only) never runs on an installed
+  system, so none of this costs idle RAM there.
 
   *Note:* **Bluetooth stays enabled by default in every mode** (SPEC §8) — laptops need it for
   Bluetooth headphones/mice, and `bluetoothd` is cheap when idle and nothing is paired
@@ -162,20 +166,26 @@ matching driver from Lindos Settings → System → Printers (`system-config-pri
 
 **Multimedia codecs** follow Linux Mint's own approach, unchanged by the Lindos remaster:
 patent-encumbered codecs (MP3, some video codecs) are **not** baked into the ISO. Linux Mint's own
-installer (Ubiquity, `packages/…` untouched — `10-debloat.sh`'s protected list refuses to purge
-`ubiquity`/`ubiquity-frontend-gtk`/`ubiquity-casper`, and `build-iso.sh` keeps the base ISO's own
-`preseed/*.seed` file byte-for-byte) still shows its "Install multimedia codecs" checkbox, which
-installs Mint's `mint-meta-codecs` metapackage during the copy-files stage exactly as it does on
-stock Mint. This was verified structurally (the installer, its preseed and its protected packages
-are all untouched by any Lindos hook); an actual end-to-end install run to watch the checkbox
-fire was not possible in this Windows-only session — see `CONTINUATION.md` item 6 for the standing
-"needs a real Linux/hardware pass" list this falls under.
+installer (Ubiquity; `10-debloat.sh`'s protected list refuses to purge
+`ubiquity`/`ubiquity-frontend-gtk`/`ubiquity-casper`) still shows its "Install multimedia codecs" checkbox,
+which makes Ubiquity install Mint's `mint-meta-codecs` metapackage in its post-copy stage.
 
-**NVIDIA/proprietary GPU drivers** are still never preinstalled on the ISO (SPEC §8, §24): the
-existing `lindos-driver-firstboot.service` (from `lindos-gaming`) now ships enabled by default
-(added to `90-lindos.preset`'s enable list — previously it relied on the ambient systemd preset
-policy applying to a unit with no explicit preset entry, which this pass made explicit and
-tested), so on first boot of the installed system it runs `lindos-drivers autodetect`, and, when
-online and not an OEM image, offers the install (never installs silently — SPEC-VM §24 consent
-gate) through `lindos-drivers install --auto`, which already resolves NVIDIA's package via
-`ubuntu-drivers devices`.
+Two corrections to what this section used to claim. First, the Mint 22.2 ISO has **no `preseed/` directory**,
+so there is no seed file to keep "byte-for-byte" (`@PRESEED@` in the boot menu is empty; the Lindos installer
+flow bakes its own selections into the image's debconf database instead — [BUILDING.md](BUILDING.md), "Installer
+flow"). Second, `80-cleanup.sh` **still deletes `/var/lib/apt/lists`** on purpose (the base ISO's lists are stale
+by install time and cost ~100 MB in the squashfs), and Ubiquity's own language-pack and codec steps look up
+packages in the *new system's* lists and silently skip what they cannot find — so on a Lindos image without the
+installer flow the checkbox would very likely have done nothing. The installer's download step
+(`lindos-installer`) now refreshes the new system's package lists first, which makes those Ubiquity steps
+active again (and means they, too, download from the network). Whether the checkbox now really installs the
+codecs is **unverified**: no install has run end to end (`CONTINUATION.md` §4 and
+[INSTALLER.md](INSTALLER.md#known-limitations-and-what-is-unverified)).
+
+**NVIDIA/proprietary GPU drivers** are still never preinstalled on the ISO (SPEC §8, §24). The installer's
+`drivers` step installs firmware and the free drivers always, and a proprietary GPU driver **only with your
+consent** (the installer's codecs/third-party checkbox or `lindos.proprietary_drivers=1`) and **never when
+Secure Boot is on or unknown** on a PC that may have an NVIDIA GPU (the DKMS module would need a key
+enrolment). What it could not do is retried silently by `lindos-driver-firstboot.service`, never beyond that
+consent (SPEC-VM §24 gate), and offered in Settings › Apps and Settings › Hardware. `lindos-drivers install
+--auto` resolves NVIDIA's package via `ubuntu-drivers devices`. See [DRIVERS.md](DRIVERS.md).

@@ -5,7 +5,8 @@
 #  Runs INSIDE the squashfs chroot as root.  build-iso.sh stages out/debs/*.deb
 #  to /tmp/lindos/debs/.  Order (LINDOS_DEB_ORDER in build/config.env):
 #      lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming
-#      lindos-transfer lindos-setup lindos-settings lindos-meta
+#      lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta
+#  (lindos-installer: the installer scripts, on the medium only; 79-installer-flow.sh wires them into Ubiquity)
 #  (lindos-transfer installs before lindos-setup per SPEC-WINDOWS §33 so the
 #  OOBE's optional "Bring your stuff from Windows" page can call it.)
 #  All debs are handed to ONE 'apt-get install --no-install-recommends ./x.deb …'
@@ -23,7 +24,7 @@ set -Eeuo pipefail
 
 hook_begin "lindos debs"
 
-: "${LINDOS_DEB_ORDER:=lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-meta}"
+: "${LINDOS_DEB_ORDER:=lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta}"
 : "${INSTALL_MODE_PACKAGES:=1}"
 : "${TUNE_MODE:=everyday}"
 
@@ -98,7 +99,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # Optional: packages the default mode lists in its mode.json (usually empty
-# for 'everyday'; the OOBE installs the rest online).  Best effort per package.
+# for 'everyday'; the installer adds every Mode's extras: packages/lindos-installer).  Best effort per package.
 # ---------------------------------------------------------------------------
 MODE_JSON="/usr/share/lindos/modes/${TUNE_MODE}/mode.json"
 if [ "${INSTALL_MODE_PACKAGES}" = "1" ] && [ -f "${MODE_JSON}" ] && have python3; then
@@ -149,8 +150,8 @@ fi
 # (--repo-only: adds the repo/key, never runs 'apt-get install') instead of
 # duplicating Chrome's key URL / repo line a second time.  google-chrome-stable
 # itself is NEVER installed at build time — that would be redistribution; it is
-# downloaded later by lindos-browser-firstboot.service (installed system, first
-# boot) or the OOBE, both of which call this exact same script.
+# downloaded by the installer's target-config hook (packages/lindos-installer) - or, when
+# that could not, silently by lindos-browser-firstboot.service - both call this exact script.
 # ---------------------------------------------------------------------------
 : "${ADD_CHROME_REPO:=1}"
 INSTALL_BROWSER_SH=/usr/libexec/lindos/install-browser.sh
@@ -159,7 +160,7 @@ if [ "${ADD_CHROME_REPO}" = "1" ]; then
         if "${INSTALL_BROWSER_SH}" chrome --repo-only; then
             log "Google Chrome apt repository staged (package not installed — SPEC §0.1)"
         else
-            warn "could not stage Chrome's apt repository (offline?) — the OOBE / lindos-browser-firstboot.service will add it later"
+            warn "could not stage Chrome's apt repository (offline?) — install-browser.sh adds it when the installer runs"
         fi
     else
         warn "${INSTALL_BROWSER_SH} not found (lindos-core missing?) — Chrome repo NOT staged"

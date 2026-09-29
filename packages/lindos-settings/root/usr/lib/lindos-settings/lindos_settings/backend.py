@@ -309,7 +309,7 @@ class Backend:
                         lines.append(f"{bid}: installed, but could not make it the default browser")
                 except Exception as exc:
                     lines.append(f"{bid}: set_default failed: {exc}")
-            if ok:
+            if ok and set_default:
                 self.config_set("browser", bid)
             return HelperResult(ok, "\n".join(lines), "" if ok else "\n".join(lines[-3:]), 0 if ok else 1)
         if not self.which("lindos-browser"):
@@ -327,6 +327,89 @@ class Backend:
         if ok:
             self.config_set("browser", bid)
         return bool(ok)
+
+    # ------------------------------------------------------------------ what the installer could not finish
+    def install_state(self) -> dict[str, Any]:
+        """``/var/lib/lindos/install-state.json`` normalised (lindos.installstate when available,
+        else the file itself); an empty state when there is no record.  Read-only, never raises."""
+        raw = self._call("installstate", "load", default=None)
+        if not isinstance(raw, dict):
+            raw = None
+            try:
+                with open(self.path("INSTALL_STATE", "/var/lib/lindos/install-state.json"), "r", encoding="utf-8") as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError):
+                raw = None
+        return model.normalize_install_state(raw)
+
+    def mode_extras(self) -> tuple[list[str], list[str]]:
+        """The union of every Mode's apt packages and Flatpaks (what the installer tops up)."""
+        packages: list[str] = []
+        flatpaks: list[str] = []
+        for mode in self.load_modes().values():
+            info = self.mode_as_dict(mode)
+            packages.extend(str(p) for p in info.get("packages") or [])
+            flatpaks.extend(str(f) for f in info.get("flatpaks") or [])
+        return list(dict.fromkeys(packages)), list(dict.fromkeys(flatpaks))
+
+    def installed_packages(self, names: Sequence[str]) -> set[str]:
+        """Which of *names* dpkg reports as installed (empty when dpkg-query is unavailable)."""
+        wanted = [str(n) for n in names if n]
+        if not wanted or not self.which("dpkg-query"):
+            return set()
+        r = self.run(["dpkg-query", "-W", "-f=${Package} ${Status}\n", *wanted], timeout=30)
+        found: set[str] = set()
+        for line in (r.out or "").splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[1].strip().endswith("install ok installed"):
+                found.add(parts[0].split(":", 1)[0])
+        return found
+
+    def setup_pending_items(self) -> list[dict[str, Any]]:
+        """What the installer could not finish, minus anything that is really installed by now
+        (:func:`model.pending_setup_items`).  Cheap: probes only run for steps that are pending."""
+        state = self.install_state()
+        waiting = model.setup_pending_steps(state)
+        if not waiting:
+            return []
+        packages, flatpaks = self.mode_extras()
+        have: dict[str, Any] = {}
+        if "browser" in waiting:
+            b = self.mod("browsers")
+            try:
+                have["browser"] = bool(b.is_installed("chrome")) if b is not None else bool(self.which("google-chrome-stable"))
+            except Exception as exc:
+                log.debug("browsers.is_installed failed: %s", exc)
+        if "compat" in waiting:
+            st = self.compat_status()
+            have["compat"] = bool(st.get("wine") and st.get("umu"))
+        if "gaming" in waiting:
+            have["gaming"] = {str(row["launcher"].id) for row in self.launcher_states() if row.get("installed")}
+        if "mode_extras" in waiting:
+            have["packages"] = self.installed_packages(packages)
+        if "flatpaks" in waiting:
+            have["flatpaks"] = self.flatpak_apps()
+        return model.pending_setup_items(state, mode_packages=packages, mode_flatpaks=flatpaks, installed=have)
+
+    def install_setup_item(self, item: dict[str, Any]) -> HelperResult:
+        """Finish one row of :meth:`setup_pending_items` through the existing helper actions."""
+        kind = str(item.get("kind") or "")
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if kind == "browser":
+            bid = str(payload.get("browser") or "chrome")
+            # only become the default when Chrome is what the user asked for during setup
+            return self.install_browser(bid, set_default=self.effective_browser() == bid)
+        if kind == "compat":
+            return self.install_compat([str(i) for i in payload.get("items") or model.SETUP_COMPAT_ITEMS])
+        if kind == "gaming":
+            return self.install_gaming([str(i) for i in payload.get("items") or model.SETUP_GAMING_ITEMS])
+        if kind == "packages":
+            return self.install_packages([str(i) for i in payload.get("packages") or []])
+        if kind == "flatpaks":
+            return self.install_flatpaks([str(i) for i in payload.get("flatpaks") or []])
+        if kind == "drivers":
+            return self.install_drivers("", "")
+        return HelperResult(False, "", f"unknown item {kind!r}", 2)
 
     # ------------------------------------------------------------------ processes
     @staticmethod
@@ -468,6 +551,10 @@ class Backend:
 
     def install_packages(self, packages: Sequence[str]) -> HelperResult:
         return self.run_privileged("install-packages", {"packages": [str(p) for p in packages]})
+
+    def install_flatpaks(self, ids: Sequence[str]) -> HelperResult:
+        self._flatpak_cache = None
+        return self.run_privileged("install-flatpaks", {"flatpaks": [str(i) for i in ids]})
 
     # ------------------------------------------------------------------ theme
     def _theme(self, fn: str, *args: Any) -> Optional[bool]:
@@ -1007,7 +1094,7 @@ class Backend:
 
     def install_compat(self, items: Sequence[str] = ("wine", "umu")) -> HelperResult:
         """Windows app support: helper `install-compat` → /usr/libexec/lindos/install-compat.sh <items>
-        (lindos-compat).  Default items = what the OOBE installs (Wine + Proton via umu)."""
+        (lindos-compat).  Default items = Wine + Proton via umu, what the installer sets up."""
         return self.run_privileged("install-compat", {"items": [str(i) for i in items]})
 
     def compat_status(self) -> dict[str, bool]:

@@ -1,17 +1,29 @@
 [Unit]
-Description=Lindos: install Google Chrome from Google's official apt repository (installed system only)
+Description=Lindos: silent retry of the Google Chrome install (installed system only)
 Documentation=man:lindos-browser(1)
-# Google's licence forbids redistributing Chrome inside the ISO (SPEC §0.1), so it is never on
-# the live/build image: this oneshot downloads it from Google on the INSTALLED system's first
-# boot, via the same install-browser.sh helper the OOBE and 'lindos-browser install chrome' use.
+# Google's licence forbids redistributing Chrome inside the ISO (SPEC §0.1), so it is never on the
+# live/build image.  The INSTALLER downloads it from Google's official apt repository while
+# installing (its result is recorded in /var/lib/lindos/install-state.json, step 'browser'); this
+# oneshot is only the SILENT background retry for when that did not work (offline install, a
+# timeout, a failure).  browser-firstboot.sh reads install-state first: 'done'/'skipped' -> it
+# writes the marker and exits at once; 'pending'/'failed'/unknown -> it retries through the same
+# install-browser.sh helper the OOBE and 'lindos-browser install chrome' use.  It never shows a
+# window or a wizard.
 # It must never run in the live/ISO session: ConditionKernelCommandLine refuses to start while
-# 'boot=casper' is on the kernel command line (casper is Mint/Ubuntu's live-session bootstrap —
-# present only when booted straight off the ISO, never on an installed system).
+# 'boot=casper' (or 'boot=live') is on the kernel command line (casper is Mint/Ubuntu's
+# live-session bootstrap — present only when booted straight off the ISO, never on an installed
+# system).  It must not run before the new user has finished Ubiquity's oem-config first-boot
+# wizard either: while that is armed, /lib/systemd/system/oem-config.target exists (oem-config-
+# firstboot deletes it as its very last step, right before it isolates graphical.target).
 # Guarded by a marker file so it only ever runs to completion once; when offline (or the vendor
 # repository is briefly unreachable) it exits WITHOUT writing the marker, so systemd retries it
-# again on the next boot once network-online.target is reached. Firefox stays the offline
-# fallback (already on the ISO); the user can still pick Edge/Firefox any time in Lindos Settings.
+# again on the next boot. NetworkManager-wait-online is masked on Lindos, so network-online.target
+# is reached before Wi-Fi/DHCP is up: the script waits for NetworkManager itself (wait-for-network,
+# bounded) before it calls the machine offline. Firefox stays the offline fallback (already on the
+# ISO); the user can still pick Edge/Firefox any time in Lindos Settings.
 ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
+ConditionPathExists=!/lib/systemd/system/oem-config.target
 ConditionPathExists=!/var/lib/lindos/browser-firstboot.done
 ConditionVirtualization=!container
 Wants=network-online.target

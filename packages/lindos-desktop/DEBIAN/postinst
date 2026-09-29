@@ -13,6 +13,7 @@ case "${1:-}" in
                  /usr/libexec/lindos/apply-branding.sh \
                  /usr/libexec/lindos/build-panel-profiles.sh \
                  /usr/libexec/lindos/first-login-panel.sh \
+                 /usr/libexec/lindos/live-session-power.sh \
                  /usr/libexec/lindos/panel-profile-pack.py \
                  /usr/libexec/lindos/plymouth-gen-assets.py \
                  /usr/libexec/lindos/rebrand-base.py; do

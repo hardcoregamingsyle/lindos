@@ -4,13 +4,15 @@ One fullscreen, undecorated ``Gtk.Window`` (falls back to maximised when the
 window manager refuses fullscreen) with a dark fluent backdrop, like the Windows 11
 out-of-box experience: a slim step indicator on top, the page stack as a centred
 column of at most 760 px, and a Back / Next bar (Cancel too in ``--reconfigure``).
+
+Nothing here installs software: the installer did that, the account was created by oem-config, and
+the wizard only saves choices (see ``plan.build_plan``).
 """
 from __future__ import annotations
 
 import logging
 import os
 import sys
-import threading
 from typing import Any, Dict, List, Optional
 
 import gi
@@ -22,7 +24,7 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 from . import core, inhibit  # noqa: E402
 from .i18n import _  # noqa: E402
 from .pages import PAGE_ORDER, Page, PageContext, make_pages  # noqa: E402
-from .plan import Plan, Selections, load_accents, load_catalog, make_printing_executors  # noqa: E402
+from .plan import BROWSER_INSTALLED, BROWSER_UNAVAILABLE, Plan, Selections, load_accents, make_printing_executors  # noqa: E402
 from .widgets import (  # noqa: E402
     Card, StepIndicator, Swatch, WallpaperThumb, add_class, column_width, hbox, load_css_file, screen_width,
     step_position, vbox,
@@ -261,7 +263,7 @@ class SetupWindow(Gtk.Window):
         swatches, thumbnails, check boxes and switches are changed with the
         mouse or Space, so Enter on them still advances.  Only text widgets
         and explicit action buttons (Back, Cancel, "Open Lindos Settings", "Check
-        connection again", "Show details") keep the key; so does a "Learn more" expander.
+        again", "Show details") keep the key; so does a "Learn more" expander.
         """
         focus = self.get_focus()
         if focus is None or focus is self.next_btn:
@@ -304,20 +306,15 @@ def _gtk_init_ok() -> bool:
     return bool(res)
 
 
-def build_context(*, dry_run: bool, first_run: bool, logger: logging.Logger,
-                  online: Optional[bool] = None) -> PageContext:
-    """Collect everything the pages need (guarded core calls).
-
-    ``online=None`` (the default) leaves the connectivity result *unknown*;
-    :func:`start_online_probe` fills it in from a background thread so the
-    window appears immediately even when the probe has to time out offline.
-    """
-    catalog = load_catalog()
+def build_context(*, dry_run: bool, first_run: bool, logger: logging.Logger) -> PageContext:
+    """Collect everything the pages need (guarded core calls; nothing touches the network)."""
     accents = load_accents()
     modes = core.load_modes()
     browsers = core.browsers_table()
     wallpapers = core.list_wallpapers()
     ram_total = core.ram_total_mb()
+    install_steps = core.install_steps()                       # what the installer recorded
+    browser_states = core.browser_states(list(browsers), install_steps)
     selections = Selections()
     # reconfigure: start from the current user config where possible
     config = core.core_module("config")
@@ -341,9 +338,14 @@ def build_context(*, dry_run: bool, first_run: bool, logger: logging.Logger,
                 selections = Selections()
         except Exception as exc:
             logger.debug("Config.load failed: %s", exc)
-    if online is not None and not online and selections.browser in ("edge", "chrome"):
+    # Preselect a browser that is really on this PC.  On the first run that means Firefox while
+    # Chrome is still pending (the user may still pick Chrome: it becomes the default when it is
+    # added); when reconfiguring, a stored preference for a pending browser is kept.
+    state = browser_states.get(selections.browser)
+    if state == BROWSER_INSTALLED:
+        pass
+    elif first_run or state is None or state == BROWSER_UNAVAILABLE:
         selections.browser = "firefox"
-    selections.apps = catalog.default_ids(selections.mode)
     live = core.LiveApplier(dry_run=dry_run, threaded=True)
 
     def executors_factory(plan: Plan) -> Dict[str, Any]:
@@ -351,30 +353,12 @@ def build_context(*, dry_run: bool, first_run: bool, logger: logging.Logger,
             return make_printing_executors(plan)   # lines go through the runner log
         return core.make_real_executors(plan)   # every privileged step shares ONE helper run/prompt
 
-    logger.info("context: online=%s ram=%s modes=%s browsers=%s wallpapers=%d apps=%d dry_run=%s first_run=%s",
-                "unknown" if online is None else online, ram_total, list(modes), list(browsers),
-                len(wallpapers), len(catalog), dry_run, first_run)
-    return PageContext(selections=selections, catalog=catalog, accents=accents, modes=modes,
-                       browsers=browsers, online=bool(online), online_known=online is not None,
+    logger.info("context: ram=%s modes=%s browsers=%s install_steps=%s wallpapers=%d dry_run=%s first_run=%s",
+                ram_total, list(modes), browser_states, install_steps, len(wallpapers), dry_run, first_run)
+    return PageContext(selections=selections, accents=accents, modes=modes, browsers=browsers,
                        dry_run=dry_run, first_run=first_run, wallpapers=wallpapers,
                        ram_total_mb=ram_total, live=live, executors_factory=executors_factory,
-                       logger=logger)
-
-
-def start_online_probe(ctx: PageContext) -> None:
-    """Run ``core.is_online()`` off the UI thread; result lands via ``ctx.set_online``."""
-    if ctx.online_known:
-        return
-
-    def worker() -> None:
-        try:
-            online = core.is_online()
-        except Exception as exc:  # pragma: no cover - defensive
-            log.warning("connectivity probe failed: %s", exc)
-            online = False
-        GLib.idle_add(ctx.set_online, online)
-
-    threading.Thread(target=worker, name="lindos-setup-online-probe", daemon=True).start()
+                       logger=logger, install_steps=install_steps, browser_states=browser_states)
 
 
 def run_app(*, dry_run: bool = False, reconfigure: bool = False, page: Optional[str] = None,
@@ -395,7 +379,7 @@ def run_app(*, dry_run: bool = False, reconfigure: bool = False, page: Optional[
         logger.warning("oobe.css missing or invalid at %s; using theme defaults", CSS_PATH)
 
     ctx = build_context(dry_run=dry_run, first_run=not reconfigure, logger=logger)
-    # a long download must not blank/lock the screen or suspend the PC (and so ask for a password again)
+    # the screen must not blank or lock (and so ask for a password) while someone reads the pages
     inhibitor: Optional[inhibit.IdleInhibitor] = None
     if dry_run:
         logger.info("dry-run: not taking screensaver/power inhibits")
@@ -405,7 +389,6 @@ def run_app(*, dry_run: bool = False, reconfigure: bool = False, page: Optional[
     win = SetupWindow(ctx, make_pages(), start_page=page or "welcome", allow_quit=reconfigure,
                       inhibitor=inhibitor)
     win.present_wizard()
-    start_online_probe(ctx)
     try:
         Gtk.main()
     finally:
@@ -415,4 +398,4 @@ def run_app(*, dry_run: bool = False, reconfigure: bool = False, page: Optional[
     return win.exit_code
 
 
-__all__ = ["SetupWindow", "build_context", "start_online_probe", "run_app", "CSS_PATH", "UI_DIR"]
+__all__ = ["SetupWindow", "build_context", "run_app", "CSS_PATH", "UI_DIR"]

@@ -1,8 +1,8 @@
 """Keep the screen on, unlocked and the PC awake while the wizard runs (best effort).
 
-A first-boot setup can spend many minutes downloading Wine, a browser and apps.  With the stock
-power settings (blank/sleep after 10 minutes, light-locker enabled) the screen would blank and
-*lock* half way through and ask for yet another password, or the machine would suspend mid-install.
+A first-boot setup can sit on one page for a while.  With the stock power settings (blank/sleep
+after 10 minutes, light-locker enabled) the screen would blank and *lock* half way through and ask
+for yet another password, or the machine would suspend mid-setup.
 While the wizard is open we therefore take D-Bus inhibits on the session bus, whichever of these
 the running session offers:
 

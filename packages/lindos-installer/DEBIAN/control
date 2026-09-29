@@ -1,0 +1,22 @@
+Package: lindos-installer
+Version: 1.0.0
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Depends: lindos-core (>= 1.0.0), python3 (>= 3.10), curl | wget, util-linux, coreutils
+Homepage: https://lindos.dev
+Description: Lindos installer flow - the heavy work runs while installing
+ Lindos installs with Ubiquity in OEM mode: the live session shows nothing but the
+ installer, the installer does everything heavy (system updates, drivers, Google
+ Chrome, Wine and the game launchers, Flatpak apps) and the first boot only asks for
+ an account name, a password and a few personal choices.
+ .
+ This package holds the two scripts Ubiquity runs: target-config.sh, the target-config
+ hook that does the downloading and installing into the new system (time-boxed,
+ always exits 0, leaves dpkg clean, records what it did in
+ /var/lib/lindos/install-state.json), and finalize.sh, the short success_command
+ that arms Ubiquity's oem-config first-boot wizard. extras.json is the union of
+ every Mode's extra packages. Nothing here runs on an installed system: the
+ package is on the installation medium only and is removed from the new system
+ by the installer.

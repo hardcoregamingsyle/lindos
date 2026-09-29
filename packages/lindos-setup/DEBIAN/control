@@ -9,16 +9,19 @@ Recommends: lindos-compat, lindos-gaming, lindos-transfer, librsvg2-common
 Suggests: lindos-settings, lindos-desktop
 Homepage: https://lindos.dev
 Description: Lindos first-boot setup (Out-Of-Box Experience)
- A Windows-11-style first-run wizard for Lindos. At first login it lets the
- user pick a Mode (Everyday, Gaming, Work, Creator, Lite), a web browser
- (Firefox is on the ISO; Microsoft Edge and Google Chrome are downloaded from
- the vendors' official repositories because their licences forbid
- redistribution), a dark or light theme, accent colour, wallpaper, taskbar
- alignment, optional apps (Windows app support through Wine/Proton, Steam,
- Roblox via Sober, Minecraft via Prism, Heroic, Lutris, Bottles, OnlyOffice,
- creative apps), an optional step to bring documents, bookmarks and more from
- a Windows drive or transfer folder (nothing is copied until the Transfer
- tool is opened), and privacy preferences, then applies everything through
- lindos-core with a single privileged helper call per group.
+ A Windows-11-style first-run wizard for Lindos. At the new user's first login
+ it lets them pick a Mode (Everyday, Gaming, Work, Creator, Lite), a default
+ web browser (only browsers that are already installed are offered; Google
+ Chrome is downloaded by the installer, or in the background later if the
+ installer was offline), a dark or light theme, accent colour, wallpaper,
+ taskbar alignment, an optional step to bring documents, bookmarks and more
+ from a Windows drive or transfer folder (nothing is copied until the Transfer
+ tool is opened), and privacy preferences, then saves everything through
+ lindos-core with one batched privileged helper call.
+ .
+ The wizard installs nothing and downloads nothing: system updates, drivers,
+ the browser, apps and Flatpaks are handled by the installer (its record is
+ /var/lib/lindos/install-state.json), and it never runs in the live (USB)
+ session or as the temporary oem account.
  .
  Run "lindos-setup --reconfigure" to go through the wizard again.

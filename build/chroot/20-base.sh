@@ -200,7 +200,7 @@ if [ "${ADD_FLATHUB}" = "1" ] && have flatpak; then
         log "flatpak remote-add flathub"
         flatpak remote-add --system --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo \
-            || warn "flatpak remote-add flathub failed (offline?) — added later at OOBE"
+            || warn "flatpak remote-add flathub failed (offline?) — the installer adds it when online"
     fi
 fi
 

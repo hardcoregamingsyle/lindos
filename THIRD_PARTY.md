@@ -44,18 +44,18 @@ keys, or Lindos downloads them on the user's machine on request.
 
 | Component | Where it comes from | When | Licence (upstream) |
 |---|---|---|---|
-| Wine (Ubuntu `wine`, WineHQ `winehq-staging`) | Ubuntu noble archive (on the ISO when `INCLUDE_WINE=1`); WineHQ apt repo `dl.winehq.org` (key + `.sources` added by `build/chroot/00-repos.sh`, package installed by `install-compat.sh` at OOBE / on demand) | ISO / OOBE | LGPL-2.1+ |
+| Wine (Ubuntu `wine`, WineHQ `winehq-staging`) | Ubuntu noble archive (on the ISO when `INCLUDE_WINE=1`); WineHQ apt repo `dl.winehq.org` (key + `.sources` added by `build/chroot/00-repos.sh`, package installed by `install-compat.sh` — by the installer while installing, or on demand) | ISO / installer | LGPL-2.1+ |
 | winetricks, DXVK, VKD3D-Proton | Ubuntu archive / winetricks | on demand | LGPL-2.1+ / zlib / LGPL-2.1 |
-| umu-launcher | GitHub release `Open-Wine-Components/umu-launcher` (pinned 1.4.4, SHA-256 verified) | `lindos-compat install-umu` / `install-compat.sh umu` | GPL-3.0 |
+| umu-launcher | GitHub release `Open-Wine-Components/umu-launcher` (pinned 1.4.4, SHA-256 verified) | by the installer (`install-compat.sh umu`), or `lindos-compat install-umu` | GPL-3.0 |
 | GE-Proton | GitHub releases `GloriousEggroll/proton-ge-custom` (SHA-512 verified) | `lindos-proton update` | BSD-3-Clause + component licences |
 | Steam | Valve apt repo `repo.steampowered.com` (key + list added by `00-repos.sh` / `install-gaming.sh`) | ISO when `INCLUDE_STEAM=1`, else on demand | proprietary (Steam Subscriber Agreement) |
 | Lutris | Ubuntu archive (`lutris`) or Flathub | ISO when `INCLUDE_STEAM=1`, else on demand | GPL-3.0 |
-| Heroic Games Launcher | GitHub release `Heroic-Games-Launcher/HeroicGamesLauncher` (.deb, pinned `HEROIC_VERSION`) or Flathub | on demand | GPL-3.0 |
-| Prism Launcher, Sober, Vinegar, mcpelauncher, Bottles, OnlyOffice | Flathub (`org.prismlauncher.PrismLauncher`, `org.vinegarhq.Sober`, `org.vinegarhq.Vinegar`, `io.mrarm.mcpelauncher`, `com.usebottles.bottles`, `org.onlyoffice.desktopeditors`) | on demand (or ISO with `INCLUDE_FLATPAK_LAUNCHERS=1`) | Prism GPL-3.0 · Sober proprietary freeware (closed source, not affiliated with Roblox) · Vinegar GPL-3.0 · mcpelauncher GPL-3.0 · Bottles GPL-3.0 · OnlyOffice AGPL-3.0 |
-| Microsoft Edge | `packages.microsoft.com/repos/edge` (key `microsoft.asc`) | OOBE / `lindos-browser install edge` | proprietary — **never on the ISO** |
-| Google Chrome | `dl.google.com/linux/chrome/deb` (key `linux_signing_key.pub`) | OOBE / `lindos-browser install chrome` | proprietary — **never on the ISO** |
+| Heroic Games Launcher | GitHub release `Heroic-Games-Launcher/HeroicGamesLauncher` (.deb, pinned `HEROIC_VERSION`) or Flathub | installer (Flatpak, best effort) / on demand | GPL-3.0 |
+| Prism Launcher, Sober, Vinegar, mcpelauncher, Bottles, OnlyOffice | Flathub (`org.prismlauncher.PrismLauncher`, `org.vinegarhq.Sober`, `org.vinegarhq.Vinegar`, `io.mrarm.mcpelauncher`, `com.usebottles.bottles`, `org.onlyoffice.desktopeditors`) | installer (Prism, Sober, Heroic, Bottles; best effort) / on demand (or ISO with `INCLUDE_FLATPAK_LAUNCHERS=1`) | Prism GPL-3.0 · Sober proprietary freeware (closed source, not affiliated with Roblox) · Vinegar GPL-3.0 · mcpelauncher GPL-3.0 · Bottles GPL-3.0 · OnlyOffice AGPL-3.0 |
+| Microsoft Edge | `packages.microsoft.com/repos/edge` (key `microsoft.asc`) | on demand (`lindos-browser install edge`, Settings › Apps) — never installed automatically | proprietary — **never on the ISO** |
+| Google Chrome | `dl.google.com/linux/chrome/deb` (key `linux_signing_key.pub`) | downloaded by the installer while installing (silent retry on the installed system if that was offline) / `lindos-browser install chrome` | proprietary — **never on the ISO** |
 | Mozilla Firefox | Linux Mint's `firefox` .deb (Mozilla apt repo only with `ADD_MOZILLA_REPO=1`) | on the ISO | MPL-2.0 |
-| NVIDIA driver | Ubuntu archive via `ubuntu-drivers` (`lindos-drivers install --nvidia-open` / `--nvidia-proprietary`) | on demand, never preinstalled | NVIDIA licence / MIT+GPL (open modules) |
+| NVIDIA driver | Ubuntu archive via `ubuntu-drivers` (`lindos-drivers install --nvidia-open` / `--nvidia-proprietary`) | installer only with your consent and never with Secure Boot on, or on demand; never preinstalled | NVIDIA licence / MIT+GPL (open modules) |
 | Kisak fresh Mesa PPA | Launchpad `ppa:kisak/kisak-mesa` | only with `KISAK_MESA=1` | MIT (Mesa) |
 | nbfc-linux | GitHub release `nbfc-linux/nbfc-linux` (pinned 0.5.3 .deb) | `/usr/libexec/lindos/install-nbfc.sh` on explicit request | GPL-3.0 |
 | xpadneo | GitHub `atar-axis/xpadneo` (dkms, pinned v0.9.6) | `lindos-drivers xpadneo install` | GPL-3.0 |

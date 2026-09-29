@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lindos Live Session
+Comment=Live USB session only: keeps the PC awake and the screen on so a long installation is never interrupted (does nothing on an installed system)
+Exec=sh -c "/usr/libexec/lindos/is-live-session && exec /usr/libexec/lindos/live-session-power.sh; exit 0"
+TryExec=/usr/libexec/lindos/live-session-power.sh
+Icon=lindos-logo
+Terminal=false
+NoDisplay=true
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-Phase=Initialization
+StartupNotify=false
+X-Lindos-Component=desktop

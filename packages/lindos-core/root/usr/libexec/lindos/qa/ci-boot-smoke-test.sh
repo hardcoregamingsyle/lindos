@@ -132,6 +132,20 @@ sys.exit(1 if bad else 0)
     RC=1
 }
 
+check_live_session_helper() {
+    # is-live-session must agree with the kernel command line: exit 0 when it has boot=casper or
+    # boot=live (the live USB boot boot_test.py always does), exit 1 otherwise (an installed disk),
+    # so this stays a valid check for both kinds of boot.
+    local want=1
+    if grep -qwE 'boot=(casper|live)' /proc/cmdline 2>/dev/null; then
+        want=0
+    fi
+    /usr/libexec/lindos/is-live-session
+    local got=$?
+    echo "LINDOS_INFO live_session_helper_rc=${got} expected=${want}"
+    [ "${got}" -eq "${want}" ]
+}
+
 start_desktop_watch() {
     # Prints LINDOS_DESKTOP_READY once the live desktop is actually up (systemctl
     # is-system-running reports running/degraded AND a real X/lightdm session process exists),
@@ -265,6 +279,34 @@ WATCH_EOF
     disown 2>/dev/null || true
 }
 
+start_live_watch() {
+    # Judges the LIVE session once the desktop is up - ci-live-checks.sh prints the LINDOS_CHECK live-* lines (no
+    # first-run wizard, the 'Install Lindos' launcher on the desktop, panel/desktop running, no sleep, nothing
+    # installing) and LINDOS_LIVE_CHECKS_DONE, which build/qa/boot_test.py waits for before its screenshot. The live
+    # session is almost nothing but the installer now, so these lines - not the sight of a wizard - are what say
+    # "this desktop works".
+    #
+    # Detached for the same reason as start_desktop_watch(): it waits for the desktop, which cannot come up while THIS
+    # unit is still active. systemd-run gives it a unit of its own; only if that fails is it started as a setsid'd
+    # background process (never both: unlike the readiness watcher it prints verdicts, not one sentinel).
+    local checks="/usr/libexec/lindos/qa/ci-live-checks.sh" sdr_out sdr_rc
+    if [ ! -f "${checks}" ]; then
+        echo "LINDOS_INFO live_watch_launch=missing ${checks}"
+        return 0
+    fi
+    if command -v systemd-run >/dev/null 2>&1; then
+        sdr_out="$(systemd-run --no-block --unit=lindos-live-watch --collect /bin/bash "${checks}" 2>&1)"
+        sdr_rc=$?
+        echo "LINDOS_INFO live_watch_launch=systemd-run rc=${sdr_rc} out=${sdr_out:-<empty>}"
+        if [ "${sdr_rc}" -eq 0 ]; then
+            return 0
+        fi
+    fi
+    setsid /bin/bash "${checks}" </dev/null >/dev/console 2>&1 &
+    disown 2>/dev/null || true
+    echo "LINDOS_INFO live_watch_launch=setsid"
+}
+
 echo "LINDOS_INFO uname=$(uname -r)"
 if [ -r /etc/lindos-release ]; then
     echo "LINDOS_INFO release=$(cat /etc/lindos-release)"
@@ -276,8 +318,11 @@ if [ -r /etc/os-release ]; then
 fi
 
 start_desktop_watch
+start_live_watch
 
-check python-import python3 -c "import lindos, lindos.paths, lindos.modes, lindos.config, lindos.hardware, lindos.ram, lindos.theme, lindos.compat, lindos.browsers"
+check python-import python3 -c "import lindos, lindos.paths, lindos.modes, lindos.config, lindos.hardware, lindos.ram, lindos.theme, lindos.compat, lindos.browsers, lindos.session, lindos.installstate"
+check is-live-session check_live_session_helper
+check lindos-config-install-state /usr/bin/lindos-config install-state --json
 check lindos-mode /usr/bin/lindos-mode list --json
 check lindos-config /usr/bin/lindos-config show --json
 check lindos-ram /usr/bin/lindos-ram --json

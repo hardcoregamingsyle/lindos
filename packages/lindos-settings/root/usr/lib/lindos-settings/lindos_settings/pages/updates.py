@@ -1,7 +1,9 @@
 """Updates page (SPEC-UPDATE §37): two honestly-separate channels.
 
 "Operating system & apps" is a single button that opens the system's Update Manager
-(``mintupdate``) -- unchanged, already works, never touched here. "Lindos components" lists
+(``mintupdate``) -- unchanged, already works, never touched here; only its one-line description
+says what the installer did (it installs the available updates while installing Lindos, and this
+PC's install-state.json says when that could not happen because it was offline). "Lindos components" lists
 every ``lindos-*`` package's installed/available version from ``lindos-update check --json``,
 with a "Check now" (privileged ``apt-get-update`` refresh + re-check) and an "Update now" button
 that only appears once there is something to install; when no apt repo is configured yet, a
@@ -101,9 +103,13 @@ class UpdatesPage(PageBase):
             self.toast("Could not start Update Manager")
 
     # ------------------------------------------------------------------ Lindos components
+    def _install_state_done(self, state: Any, exc: Optional[BaseException]) -> None:
+        self.os_card.set_subtitle(model.os_updates_subtitle(None if exc else state))
+
     def refresh(self) -> None:
         self.components_card.set_subtitle("Checking…")
         self.kernel_card.set_subtitle("Checking…")
+        run_async(self.backend.install_state, self._install_state_done, name="install-state")
         run_async(self.backend.update_check, self._check_done, name="update-check")
         run_async(self.backend.update_kernel_status, self._kernel_done, name="update-kernel-status")
         run_async(self.backend.secureboot_status, self._secureboot_done, name="secureboot-status")

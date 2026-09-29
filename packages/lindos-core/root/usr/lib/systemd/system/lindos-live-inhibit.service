@@ -1,0 +1,23 @@
+[Unit]
+Description=Lindos: keep the live USB session awake so a long installation is never interrupted
+Documentation=man:systemd-inhibit(1)
+# LIVE SESSION ONLY.  Booted from the install medium (kernel command line 'boot=casper' or
+# 'boot=live') the machine does little but run the installer, which can take a long time while it
+# downloads updates, drivers and Chrome.  A closed laptop lid, the sleep key or an idle timeout
+# must not suspend it half-way.  This unit holds a systemd-logind 'block' inhibitor for the whole
+# live session - on its own, because the 'Install Lindos' boot entries start the installer WITHOUT
+# any desktop session (only-ubiquity), where no xfce4-power-manager setting can help (the desktop
+# session has its own live-only settings: lindos-live-session.desktop in lindos-desktop).
+# It does not run on an installed system (ConditionKernelCommandLine is positive here) or in a
+# container.  Shutting down or rebooting is not affected, only suspend/hibernate and the lid.
+ConditionKernelCommandLine=|boot=casper
+ConditionKernelCommandLine=|boot=live
+ConditionVirtualization=!container
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle:handle-lid-switch:handle-suspend-key:handle-hibernate-key --who=Lindos --why="Live session: do not interrupt the installation" --mode=block /usr/bin/sleep infinity
+Nice=19
+
+[Install]
+WantedBy=multi-user.target

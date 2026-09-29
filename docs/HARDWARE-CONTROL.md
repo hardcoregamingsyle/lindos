@@ -87,7 +87,7 @@ nbfc-linux is **not** on the ISO; install it on request with
 `nbfc config -r` (recommend a model config), `nbfc config -a "<name>"`, `nbfc start`,
 `lindos-tune fan set balanced`. Desktop PCs: run `pwmconfig` once to create `/etc/fancontrol`.
 
-`lm-sensors` autodetection (`sensors-detect --auto`) runs **once at first boot** through
+`lm-sensors` autodetection (`sensors-detect --auto`) runs **once on the installed system's first boot** (never in the live USB session) through
 `lindos-sensors-detect.service` → `/usr/libexec/lindos/sensors-detect-once.sh` (never inside the
 ISO chroot, never twice, marker `/var/lib/lindos-tune/sensors-detect.done`).
 

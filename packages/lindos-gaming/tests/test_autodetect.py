@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import pytest
 
@@ -20,6 +23,10 @@ drivers = load_bin("lindos-drivers")
 WIFI_JSON = ROOT / "usr" / "share" / "lindos" / "drivers" / "wifi.json"
 SERVICE = ROOT / "usr" / "lib" / "systemd" / "system" / "lindos-driver-firstboot.service"
 FIRSTBOOT = ROOT / "usr" / "libexec" / "lindos" / "driver-firstboot.sh"
+CORE_ROOT = ROOT.parent.parent / "lindos-core" / "root"
+CORE_LIBEXEC = CORE_ROOT / "usr" / "libexec" / "lindos"
+CORE_PYLIB = CORE_ROOT / "usr" / "lib" / "python3" / "dist-packages"
+BASH = shutil.which("bash")
 
 LSPCI_ALL = """\
 00:02.0 VGA compatible controller [0300]: Intel Corporation Alder Lake-P GT2 [Iris Xe Graphics] [8086:46a6] (rev 0c)
@@ -272,7 +279,9 @@ def test_firstboot_service_unit():
     # Never on a live/ISO boot (same guard as lindos-browser-firstboot.service): a boot-test or
     # live-USB session would otherwise run full hardware autodetect on every single boot, since
     # it can never persist the done-marker to a real, writable /var/lib.
-    assert "ConditionKernelCommandLine=!boot=casper" in unit
+    assert "ConditionKernelCommandLine=!boot=casper" in unit and "ConditionKernelCommandLine=!boot=live" in unit
+    # not before the new user has finished Ubiquity's oem-config first-boot wizard
+    assert "ConditionPathExists=!/lib/systemd/system/oem-config.target" in unit
     assert "ConditionPathExists=!/var/lib/lindos/driver-firstboot.done" in unit
     assert "ConditionVirtualization=!container" in unit
     assert "Type=oneshot" in unit
@@ -287,10 +296,336 @@ def test_firstboot_script_shape():
     assert "set -Eeuo pipefail" in text
     assert "/var/lib/lindos/driver-firstboot.done" in text
     assert "lindos-drivers autodetect --json" in text
-    assert "lindos-drivers install --auto" in text
-    # never installs by itself
-    for forbidden in ("apt-get install", "apt install"):
+    # the silent retry: free-only by default, the full auto install only with the installer's consent
+    assert "ubuntu-drivers install --free-only" in text
+    assert "lindos-drivers install --auto" in text and "driver-proprietary-consent" in text
+    # goes through the existing tools, never calls apt itself
+    for forbidden in ("apt-get install", "apt install", "apt-get -y"):
         assert forbidden not in text, forbidden
-    # honours OEM / online gating
-    assert "is_oem" in text and "online" in text
+    # install-state first; the shared helpers instead of private copies; online gating
+    assert "lindos.installstate" in text and "status drivers" in text and "mark drivers" in text
+    assert "is-live-session" in text and "oem-config-pending" in text and "/proc/cmdline" not in text
+    assert "online" in text
+    # the "install offer" nobody consumed is gone
+    assert "driver-install-offer" not in text and "write_offer" not in text
     assert "\r\n" not in text
+
+
+# --------------------------------------------------------------------------- first-boot behaviour (hermetic)
+NVIDIA_AUTODETECT = json.dumps({"gpus": [], "gpu_vendors": ["nvidia"], "wifi": {"devices": [], "recommended": []},
+                                "audio": {"devices": [], "recommended": []},
+                                "recommended": {"gpu": ["nvidia"], "wifi": [], "audio": []}})
+INTEL_AUTODETECT = json.dumps({"gpus": [], "gpu_vendors": ["intel"], "wifi": {"devices": [], "recommended": []},
+                               "audio": {"devices": [], "recommended": []},
+                               "recommended": {"gpu": ["intel"], "wifi": [], "audio": []}})
+INSTALLED_CMDLINE = "BOOT_IMAGE=/boot/vmlinuz-6.14.0-lindos root=UUID=1234 ro quiet splash"
+
+
+def _msys(value: str) -> str:
+    if len(value) >= 2 and value[1] == ":" and value[0].isalpha():
+        return "/" + value[0].lower() + value[2:].replace("\\", "/")
+    return value
+
+
+def _fake(directory: Path, name: str, body: str) -> None:
+    path = directory / name
+    path.write_text("#!/bin/bash\n" + body, encoding="utf-8", newline="\n")
+    os.chmod(path, 0o755)
+
+
+class Firstboot:
+    """A scratch LINDOS_ROOT with the shared lindos-core helpers and fake system tools."""
+
+    def __init__(self, tmp: Path) -> None:
+        self.tmp = tmp
+        self.root = tmp / "root"
+        libexec = self.root / "usr" / "libexec" / "lindos"
+        libexec.mkdir(parents=True)
+        for name in ("is-live-session", "oem-config-pending", "wait-for-network"):
+            shutil.copy(CORE_LIBEXEC / name, libexec / name)
+        self.state_dir = self.root / "var" / "lib" / "lindos"
+        self.bin = tmp / "fakebin"
+        self.bin.mkdir()
+        self.log = tmp / "calls.log"
+        _fake(self.bin, "id", '[ "$1" = "-u" ] && echo 0 || echo root\n')
+        _fake(self.bin, "nm-online", "exit 0\n")
+        _fake(self.bin, "lindos-drivers",
+              'printf "lindos-drivers %s\\n" "$*" >> "$FAKE_LOG"\n'
+              'case "$1" in\n'
+              '  autodetect) [ -n "${FAKE_AUTODETECT_FAIL:-}" ] && exit 1; out="${FAKE_AUTODETECT:-}"; '
+              '[ -n "${out}" ] || out="{}"; printf "%s\\n" "${out}"; exit 0 ;;\n'
+              '  *) exit "${FAKE_DRIVERS_RC:-0}" ;;\n'
+              "esac\n")
+        _fake(self.bin, "ubuntu-drivers",
+              'printf "ubuntu-drivers %s\\n" "$*" >> "$FAKE_LOG"\nexit "${FAKE_UBUNTU_RC:-0}"\n')
+        _fake(self.bin, "mokutil", 'printf "%s\\n" "${FAKE_SB_STATE:-SecureBoot disabled}"\n')
+        # the host's timeout could be Windows' timeout.exe: a fake that runs the command (or pretends it timed out)
+        _fake(self.bin, "timeout",
+              '[ -n "${FAKE_TIMEOUT_RC:-}" ] && exit "${FAKE_TIMEOUT_RC}"\n'
+              '[ "$1" = "-k" ] && shift 2\nshift\nexec "$@"\n')
+
+    def write_state(self, **steps: str) -> Path:
+        path = self.state_dir / "install-state.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"schema": 1, "updated": "t", "online": True, "steps": {
+            name: {"status": status, "detail": "", "time": "t"} for name, status in steps.items()}}), encoding="utf-8")
+        return path
+
+    def state(self) -> dict:
+        return json.loads((self.state_dir / "install-state.json").read_text(encoding="utf-8"))
+
+    def calls(self) -> List[str]:
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+    def run(self, *args: str, cmdline: str = INSTALLED_CMDLINE, offline: bool = False,
+            extra: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+        assert BASH is not None
+        cmdline_file = self.tmp / "cmdline"
+        cmdline_file.write_text(cmdline, encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = str(self.bin) + os.pathsep + env.get("PATH", "")
+        env.update({"LINDOS_ROOT": str(self.root), "LINDOS_TEST_CMDLINE": _msys(str(cmdline_file)),
+                    "LINDOS_TEST_IN_CHROOT": "0", "LINDOS_PYTHON": sys.executable,
+                    "PYTHONPATH": str(CORE_PYLIB) + os.pathsep + env.get("PYTHONPATH", ""),
+                    "FAKE_LOG": _msys(str(self.log))})
+        env.pop("LINDOS_OFFLINE", None)
+        if offline:
+            env["LINDOS_OFFLINE"] = "1"
+        if extra:
+            env.update(extra)
+        return subprocess.run([BASH, str(FIRSTBOOT), *args], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120, env=env)
+
+    @property
+    def marker(self) -> Path:
+        return self.state_dir / "driver-firstboot.done"
+
+
+needs_bash = pytest.mark.skipif(BASH is None, reason="bash not available")
+
+
+@needs_bash
+def test_firstboot_script_syntax():
+    assert subprocess.run([BASH, "-n", str(FIRSTBOOT)], capture_output=True).returncode == 0
+
+
+@needs_bash
+def test_firstboot_never_runs_in_the_live_session(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    for cmdline in ("BOOT_IMAGE=/casper/vmlinuz boot=casper quiet splash", "boot=live quiet"):
+        proc = fb.run(cmdline=cmdline)
+        assert proc.returncode == 0 and "refusing to run" in proc.stderr
+    assert fb.calls() == [] and not fb.marker.exists()
+    assert fb.state()["steps"]["drivers"]["status"] == "pending"
+
+
+@needs_bash
+def test_firstboot_waits_for_the_oem_config_wizard(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    unit = fb.root / "lib" / "systemd" / "system" / "oem-config.target"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Unit]\n", encoding="utf-8")
+    proc = fb.run()
+    assert proc.returncode == 0 and "oem-config first-boot wizard is still pending" in proc.stderr
+    assert fb.calls() == [] and not fb.marker.exists()
+    unit.unlink()                                                  # the wizard finished
+    assert fb.run().returncode == 0 and any(c.startswith("ubuntu-drivers") for c in fb.calls())
+
+
+@needs_bash
+def test_firstboot_without_the_shared_helper_assumes_live(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    (fb.root / "usr" / "libexec" / "lindos" / "is-live-session").unlink()
+    proc = fb.run()
+    assert proc.returncode == 0 and "refusing to run" in proc.stderr and fb.calls() == []
+
+
+@needs_bash
+@pytest.mark.parametrize("recorded", ["done", "skipped"])
+def test_firstboot_terminal_install_state_exits_at_once(tmp_path, recorded):
+    fb = Firstboot(tmp_path)
+    state_file = fb.write_state(drivers=recorded)
+    before = state_file.read_text(encoding="utf-8")
+    proc = fb.run()
+    assert proc.returncode == 0, proc.stderr
+    assert f"drivers={recorded}" in proc.stderr
+    assert fb.marker.exists()
+    assert fb.calls() == [], "nothing may be detected or installed when the installer handled the step"
+    assert state_file.read_text(encoding="utf-8") == before
+    assert not (fb.state_dir / "driver-install-offer.json").exists()
+
+
+@needs_bash
+def test_firstboot_waits_for_networkmanager_before_it_says_offline(tmp_path):
+    """NetworkManager-wait-online is masked on Lindos, so the unit starts before Wi-Fi/DHCP is up: the script
+    asks the shared wait-for-network helper (bounded) and only then decides."""
+    fb = Firstboot(tmp_path)
+    _fake(fb.bin, "nm-online",
+          'printf "nm-online %s\\n" "$*" >> "$FAKE_LOG"\nexit "${FAKE_NM_RC:-0}"\n')
+    proc = fb.run(extra={"FAKE_NM_RC": "1"})                       # still offline when the wait is over
+    assert proc.returncode == 0, proc.stderr
+    assert "offline" in proc.stderr
+    assert fb.calls() == ["nm-online -q -t 90"], "the bounded wait, then nothing: no detection, no install"
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == "pending" and "offline" in entry["detail"] and not fb.marker.exists()
+    proc = fb.run(extra={"FAKE_NM_RC": "0"})                       # the connection came up during the wait
+    assert proc.returncode == 0, proc.stderr
+    assert fb.calls()[1] == "nm-online -q -t 90" and any(c.startswith("ubuntu-drivers") for c in fb.calls())
+
+
+@needs_bash
+def test_firstboot_without_the_wait_helper_probes_by_itself(tmp_path):
+    fb = Firstboot(tmp_path)
+    (fb.root / "usr" / "libexec" / "lindos" / "wait-for-network").unlink()
+    proc = fb.run()
+    assert proc.returncode == 0, proc.stderr
+    assert any(c.startswith("ubuntu-drivers") for c in fb.calls())
+
+
+@needs_bash
+def test_firstboot_offline_records_pending_and_retries_later(tmp_path):
+    fb = Firstboot(tmp_path)
+    proc = fb.run(offline=True)
+    assert proc.returncode == 0, proc.stderr
+    # nm-online is a fake that says "online"; LINDOS_OFFLINE=1 beats every probe
+    assert "offline" in proc.stderr and fb.calls() == []
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == "pending" and "offline" in entry["detail"]
+    assert not fb.marker.exists()
+    # an already recorded 'failed' is not overwritten by an offline boot
+    fb.write_state(drivers="failed")
+    fb.run(offline=True)
+    assert fb.state()["steps"]["drivers"]["status"] == "failed"
+
+
+@needs_bash
+def test_firstboot_default_retry_is_free_only_and_records_done(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending", browser="done")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT})
+    assert proc.returncode == 0, proc.stderr
+    calls = fb.calls()
+    assert "ubuntu-drivers install --free-only" in calls
+    assert not any(c.startswith("lindos-drivers install") for c in calls), calls       # no proprietary path
+    state = fb.state()
+    assert state["steps"]["drivers"]["status"] == "done" and "free drivers only" in state["steps"]["drivers"]["detail"]
+    assert state["steps"]["browser"]["status"] == "done"                                # other steps untouched
+    assert fb.marker.exists()
+    assert (fb.state_dir / "driver-recommendations.json").is_file()                       # diagnostic record
+    assert not (fb.state_dir / "driver-install-offer.json").exists()                      # no offer file any more
+    assert (fb.state_dir / "driver-firstboot.attempts").read_text(encoding="utf-8").strip() == "1"
+
+
+@needs_bash
+def test_firstboot_unknown_state_is_retried_like_pending(tmp_path):
+    fb = Firstboot(tmp_path)                       # no install-state.json at all (legacy install)
+    assert fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT}).returncode == 0
+    assert "ubuntu-drivers install --free-only" in fb.calls()
+    assert fb.state()["steps"]["drivers"]["status"] == "done"
+
+
+@needs_bash
+def test_firstboot_consent_allows_the_full_auto_install(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    fb.state_dir.mkdir(parents=True, exist_ok=True)
+    (fb.state_dir / "driver-proprietary-consent").write_text("", encoding="utf-8")
+    proc = fb.run(extra={"FAKE_AUTODETECT": NVIDIA_AUTODETECT, "FAKE_SB_STATE": "SecureBoot disabled"})
+    assert proc.returncode == 0, proc.stderr
+    assert "lindos-drivers install --auto" in fb.calls()
+    assert not any(c.startswith("ubuntu-drivers") for c in fb.calls())
+    assert fb.state()["steps"]["drivers"]["status"] == "done" and fb.marker.exists()
+
+
+@needs_bash
+def test_firstboot_never_installs_an_nvidia_dkms_driver_under_secure_boot(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    (fb.state_dir / "driver-proprietary-consent").write_text("", encoding="utf-8")
+    proc = fb.run(extra={"FAKE_AUTODETECT": NVIDIA_AUTODETECT, "FAKE_SB_STATE": "SecureBoot enabled"})
+    assert proc.returncode == 0, proc.stderr
+    calls = fb.calls()
+    assert "ubuntu-drivers install --free-only" in calls
+    assert not any(c.startswith("lindos-drivers install") for c in calls), calls
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == "skipped" and "Secure Boot" in entry["detail"]
+    assert fb.marker.exists()
+
+
+@needs_bash
+def test_firstboot_secure_boot_with_unknown_hardware_is_treated_like_nvidia(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    (fb.state_dir / "driver-proprietary-consent").write_text("", encoding="utf-8")
+    proc = fb.run(extra={"FAKE_AUTODETECT_FAIL": "1", "FAKE_SB_STATE": "SecureBoot enabled"})
+    assert proc.returncode == 0, proc.stderr
+    assert not any(c.startswith("lindos-drivers install") for c in fb.calls())
+    assert fb.state()["steps"]["drivers"]["status"] == "skipped"
+
+
+@needs_bash
+def test_firstboot_secure_boot_with_intel_gpu_and_consent_still_installs(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="failed")
+    (fb.state_dir / "driver-proprietary-consent").write_text("", encoding="utf-8")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, "FAKE_SB_STATE": "SecureBoot enabled"})
+    assert proc.returncode == 0, proc.stderr
+    assert "lindos-drivers install --auto" in fb.calls()
+    assert fb.state()["steps"]["drivers"]["status"] == "done"
+
+
+@needs_bash
+@pytest.mark.parametrize("rc_env, status, detail", [
+    ({"FAKE_UBUNTU_RC": "3"}, "pending", "offline"),
+    ({"FAKE_UBUNTU_RC": "1"}, "failed", "exit 1"),
+    ({"FAKE_TIMEOUT_RC": "124"}, "failed", "timed out"),
+])
+def test_firstboot_retry_outcomes_are_recorded_and_left_for_a_later_boot(tmp_path, rc_env, status, detail):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT, **rc_env})
+    assert proc.returncode == 0, proc.stderr
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == status and detail in entry["detail"]
+    assert not fb.marker.exists()                       # a later boot retries
+
+
+@needs_bash
+def test_firstboot_gives_up_after_three_attempts(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="failed")
+    (fb.state_dir / "driver-firstboot.attempts").write_text("3\n", encoding="utf-8")
+    proc = fb.run()
+    assert proc.returncode == 0 and "giving up" in proc.stderr
+    assert fb.calls() == [] and fb.marker.exists()
+    assert fb.state()["steps"]["drivers"]["status"] == "failed"      # Settings can still offer 'Install now'
+    # --force ignores both the marker and the cap
+    forced = fb.run("--force", extra={"FAKE_AUTODETECT": INTEL_AUTODETECT})
+    assert forced.returncode == 0 and "ubuntu-drivers install --free-only" in fb.calls()
+
+
+@needs_bash
+def test_firstboot_missing_ubuntu_drivers_is_a_recorded_skip(tmp_path):
+    fb = Firstboot(tmp_path)
+    (fb.bin / "ubuntu-drivers").unlink()
+    fb.write_state(drivers="pending")
+    proc = fb.run(extra={"FAKE_AUTODETECT": INTEL_AUTODETECT})
+    assert proc.returncode == 0
+    entry = fb.state()["steps"]["drivers"]
+    assert entry["status"] == "skipped" and "ubuntu-drivers" in entry["detail"]
+
+
+@needs_bash
+def test_firstboot_marker_and_chroot_guards(tmp_path):
+    fb = Firstboot(tmp_path)
+    fb.write_state(drivers="pending")
+    fb.state_dir.mkdir(parents=True, exist_ok=True)
+    fb.marker.write_text("", encoding="utf-8")
+    proc = fb.run()
+    assert proc.returncode == 0 and "already done" in proc.stderr and fb.calls() == []
+    fb.marker.unlink()
+    chroot = fb.run(extra={"LINDOS_TEST_IN_CHROOT": "1"})
+    assert chroot.returncode == 0 and "chroot" in chroot.stderr and fb.calls() == []

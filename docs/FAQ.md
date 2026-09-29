@@ -73,7 +73,8 @@ before buying; statuses change with publisher updates.
 
 ### Roblox?
 Yes, through **Sober** — a community runtime for the official Android build — with your normal
-account (`lindos-game install sober`, or tick it in the wizard). The Windows Roblox client
+account (the installer adds Sober when it is online; otherwise `lindos-game install sober` or Lindos
+Settings › Gaming). The Windows Roblox client
 blocks Wine and does not run. Roblox Studio runs through **Vinegar** (partial). Sober and
 Vinegar are not affiliated with Roblox Corporation.
 
@@ -89,12 +90,60 @@ Click-to-Run are **broken** — the recipes refuse to pretend and point to Kdenl
 Resolve, FreeCAD / LibreCAD, LibreOffice / OnlyOffice. Office 2016 (32-bit offline installer,
 product key) works. Notepad++, 7-Zip, WinRAR, foobar2000 work; Paint.NET 4.2.16 partial.
 
+### How does installing Lindos work?
+Boot the USB stick and choose **Install Lindos**. The installer does everything heavy while it installs
+(system updates, drivers, Google Chrome, Wine/Proton, the game launchers, the apps of every Mode); when it
+says so, remove the stick and reboot; the first boot only asks for your account; then **Lindos Setup** asks
+for a Mode, a browser and a few personal choices. The whole story: [INSTALLER.md](INSTALLER.md). Please note
+that this flow is new and has not yet been run end to end on real hardware (same document, "Known
+limitations").
+
+### Where is my account created?
+At the **first boot** of the installed system, not in the installer and not in Lindos Setup. Ubiquity's
+*oem-config* account wizard asks for language, keyboard, time zone, your name, user name, password and the
+computer name, then removes the temporary account the installer used. Lindos Setup starts afterwards, on
+your first login, and only asks about Modes, browser and looks.
+
+### Why does the installer ask for a temporary account (and a password)?
+Lindos uses Ubiquity's *OEM mode* so that the installer can do its downloads first and the real account is
+created at the first boot. Ubiquity always shows a page for the temporary account (named `oem`) and cannot be
+told to skip it: leave the password empty and press Continue. The account is locked when the installation
+ends and deleted at the first boot. Its wording ("OEM mode, for manufacturers only") is Ubiquity's own.
+
+### Why did the installer download things? Does it need internet?
+Some software cannot be on the disc: Google's Chrome licence forbids it, and Wine's newest builds, Steam,
+the Flatpak apps (Prism, Sober, Heroic, Bottles) and system updates are far too large or change too often.
+So the installer downloads them into your new system while it installs, once, from the vendors' own sources,
+and says on its status line what it is doing. It needs an internet connection for that, but not to
+*install*: see the next question. Nothing is sent about you (no telemetry).
+
+### I installed offline. What is "pending"?
+The install still completes; the installer records every download step it could not do as *pending* (or
+*failed*, or *skipped* when it left something out on purpose, such as a proprietary driver without your
+consent). See what is left with `lindos-config install-state`, or in **Lindos Settings › Apps › Left to
+finish from setup**, where every item has an **Install now** button. Chrome and the drivers are also retried
+**silently in the background** the first time the installed system is online (after the account wizard; no
+window, no notification); everything else waits for you to press the button. Ubiquity's OEM mode does not copy
+the live session's Wi-Fi profile, so connect on the account wizard's Wi-Fi page.
+
+### Why does setup look different from the installer?
+There are three programs, not one. The installer and the first-boot account screen are both Ubiquity (the same
+code Linux Mint installs with; the account screen runs on its own before any desktop exists, where Lindos'
+styling does not reach). **Lindos Setup** — the Mode, browser and looks wizard — is Lindos' own full-screen
+program that runs inside your desktop after you have logged in for the first time. So the account screen looks
+like the installer and not like Lindos Setup. Making the account screen look like Lindos is not done yet.
+
+### Why does Lindos Setup still ask for my password?
+When you press Apply it saves system-wide defaults for the Mode you chose, which needs administrator
+rights; it asks **once** (one prompt for the whole batch). It installs and downloads nothing.
+
 ### Where is Edge / Chrome? Why only Firefox on the disc?
 Microsoft's and Google's licences forbid redistributing Edge/Chrome inside an ISO. Firefox
-(Mint's build) is on the disc; the wizard installs Edge or Chrome from the vendors' official apt
-repositories when you are online. Offline it falls back to Firefox and tells you how to add
-them later: Lindos Settings › Apps › Web browsers, or `lindos-browser install edge --set-default`
-(or `chrome`).
+(Mint's build) is on the disc; the **installer** downloads Google Chrome from Google's official apt
+repository while installing (Chrome is the default). Edge is never installed for you: add it in Lindos Settings ›
+Apps › Web browsers, or with `lindos-browser install edge --set-default`. If the install was offline, Firefox
+is your browser until Chrome is added (silently, the first time you are online, or with **Install now** in
+Settings › Apps); `lindos-browser install chrome --set-default` does it from a terminal.
 
 ### How much RAM does it use?
 Target **350–500 MB** idle (Lite ≈ 300–380 MB), measured as `free -m` "used" after login with
@@ -120,20 +169,25 @@ screenshot region. Full list: [KEYBOARD-SHORTCUTS.md](KEYBOARD-SHORTCUTS.md).
 No telemetry, no ads, no crash uploads: `apport`, `whoopsie`, `kerneloops`, `ubuntu-report`
 are disabled, and the config key `telemetry` (written by the wizard's *crash reports* toggle,
 default off) has no consumer — nothing in Lindos sends anything anywhere. The only network
-traffic Lindos itself starts is what you ask for (updates, installs, GE-Proton downloads).
+traffic Lindos itself starts is downloading what it installs (the installer's downloads while
+installing, and what you later ask for: updates, installs, GE-Proton downloads).
 
 ### Which NVIDIA driver do I get?
-None on the disc (size, proprietary). After install: Lindos Settings → Hardware → Install
-drivers, or `lindos-drivers install --nvidia-open` (Turing and newer) / `--nvidia-proprietary`,
-which follows `ubuntu-drivers`' recommendation and sets `nvidia-drm.modeset=1`. Mint's Driver
-Manager is also there.
+None on the disc (size, proprietary). The installer installs the free drivers and firmware always. It installs
+an NVIDIA driver only if you consented (the installer's *Install multimedia codecs* checkbox, or the kernel
+word `lindos.proprietary_drivers=1`) — and **not** while Secure Boot is on (or cannot be detected): a driver
+built on your PC would need a key enrolment at the next start; the step is then shown as *skipped*. Otherwise,
+or later: Lindos Settings → Hardware → Install drivers, or `lindos-drivers install --nvidia-open` (Turing and
+newer) / `--nvidia-proprietary`, which follows `ubuntu-drivers`' recommendation and sets
+`nvidia-drm.modeset=1`. Mint's Driver Manager is also there. Details: [DRIVERS.md](DRIVERS.md).
 
 ### Is Wine on the disc?
 Ubuntu's `wine` + `wine32`, winetricks and cabextract are on the ISO (`INCLUDE_WINE=1`); WineHQ
-staging and umu-launcher (Proton-GE for games) are downloaded during setup or later
-(`pkexec /usr/libexec/lindos/install-compat.sh`, `lindos-compat doctor` tells you what is
-missing). Steam and Lutris are on the ISO too (`INCLUDE_STEAM=1`); Heroic, Prism, Sober,
-Bottles are installed on demand.
+staging and umu-launcher (Proton-GE for games) are downloaded by the installer while it installs, or
+later if that was offline (Lindos Settings › Apps › Left to finish from setup, `pkexec
+/usr/libexec/lindos/install-compat.sh`; `lindos-compat doctor` tells you what is missing). Steam
+and Lutris are on the ISO too (`INCLUDE_STEAM=1`); Heroic, Prism, Sober and Bottles are Flatpaks the
+installer adds (best effort) or you install on demand.
 
 ### Something broke — how do I report it?
 `lindos-tune report -o report.md` produces a Markdown bug report (RAM, zram, top processes,

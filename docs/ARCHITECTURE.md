@@ -1,6 +1,6 @@
 # Lindos architecture
 
-Lindos is twelve Debian packages on top of Linux Mint 22.x XFCE, plus a build pipeline. The
+Lindos is thirteen Debian packages on top of Linux Mint 22.x XFCE, plus a build pipeline. The
 authoritative definitions of every name, path, format and API live in [`SPEC.md`](../SPEC.md),
 [`SPEC-KERNEL.md`](../SPEC-KERNEL.md) (Addendum K — the kernel and compat-performance layer),
 [`SPEC-VM.md`](../SPEC-VM.md) (Addendum V — virtualization, WinApps, system Proton, drivers, CI)
@@ -23,25 +23,30 @@ lindos-meta ─┬─ lindos-core      python3 module `lindos` + polkit helper +
 lindos-vm        honest KVM/VFIO Windows VM (no spoofing) + optional GPU passthrough — lindos-vm CLI
 lindos-winapps   seamless Windows apps (Adobe/Office) over RDP against a user-supplied Windows
 lindos-transfer  Windows Easy Transfer-style migration (read-only) — lindos-transfer / -transfer-gui
+lindos-installer the installer flow: Ubiquity target-config hook + success command (installation medium only)
 ```
 
 `lindos-vm` and `lindos-winapps` (Addendum V) are **standalone** packages, not pulled in by
 `lindos-meta`: they are opt-in, need a user-supplied licensed Windows, and are documented in
 [VM.md](VM.md) and [WINAPPS.md](WINAPPS.md). `lindos-transfer` (Addendum W) *is* pulled in by
 `lindos-meta` (it needs no VM and no licensed Windows) and is documented in
-[TRANSFER.md](TRANSFER.md).
+[TRANSFER.md](TRANSFER.md). `lindos-installer` (SPEC §17) is **not** pulled in by `lindos-meta`: it is
+installed into the ISO's squashfs by `build/chroot/30-lindos-debs.sh`, listed in
+`casper/filesystem.manifest-remove` (so the installer removes it from the installed system), and does
+nothing on a running system. See §10 below and [INSTALLER.md](INSTALLER.md).
 
 | Package | Depends (essentials) | Ships (highlights) |
 |---|---|---|
-| **lindos-core** | `python3 (>= 3.10)`, `policykit-1 \| polkitd`, `pkexec`, `xdg-utils`, `ca-certificates`, `curl \| wget`, `gpg` (Recommends `xfconf flatpak procps systemd lindos-tune efibootmgr mokutil`) | `/usr/lib/python3/dist-packages/lindos/{paths,config,modes,browsers,hardware,helper,theme,compat,ram,dualboot}.py`; `/usr/libexec/lindos/lindos-helper`, `install-browser.sh`; `/usr/share/polkit-1/actions/org.lindos.helper.policy`; `/usr/share/lindos/modes/<id>/{mode.json,apply-user.sh}`; `/etc/lindos/system.json` (conffile); `/usr/bin/lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot` (SPEC-WINDOWS §30.3: one-shot restart into an existing Windows install via UEFI `BootNext` or GRUB `grub-reboot`) |
-| **lindos-desktop** | `xfce4-panel xfce4-whiskermenu-plugin xfwm4 xfconf xfce4-settings xfce4-notifyd picom xfce4-panel-profiles xfce4-clipman-plugin xfce4-screenshooter xfce4-taskmanager lightdm slick-greeter plymouth fontconfig lindos-core python3` (Recommends `xfce4-docklike-plugin` — not packaged for Ubuntu 24.04 noble as of this writing, only 25.10+/Debian trixie+; the panel leaves that slot empty without it, so it's not a hard Depends — and `policykit-1-gnome | mate-polkit | lxpolkit`, a graphical polkit agent for the password dialog) | `/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/*.xml` (panel, xfwm4, xsettings, shortcuts, desktop, thunar, notifyd, power-manager, session, keyboards), `/etc/xdg/xfce4/panel/{whiskermenu-1,docklike-2}.rc`, `/etc/xdg/picom-lindos.conf`, `/etc/xdg/gtk-3.0/settings.ini`, `/etc/xdg/autostart/{lindos-setup,lindos-picom,lindos-mode-apply-user,lindos-polkit-agent}.desktop`, `/etc/fonts/conf.d/60-lindos-ui.conf`, `/etc/lightdm/slick-greeter.conf` + `lightdm.conf.d/50-lindos.conf`, `/etc/lindos-release`, `/usr/bin/lindos-compositor`, `/usr/libexec/lindos/{apply-branding,build-panel-profiles,first-login-panel,polkit-agent-start}.sh`, `panel-profile-pack.py`, `plymouth-gen-assets.py`, branded `.desktop` shims (`lindos-files`, `lindos-settings`, `lindos-store`, `lindos-terminal`), wallpapers, `lindos-logo.svg`, `lindos-start` / `lindos-settings` icons, `/usr/share/lindos/gtk-3.0/lindos.css`, `/usr/share/lindos/os-release.d/lindos.conf`, per-mode `/usr/share/lindos/modes/<id>/panel/`, plymouth theme `lindos`, xfce4-notifyd theme `Lindos` |
-| **lindos-setup** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xdg-utils` | `/usr/bin/lindos-setup` → `/usr/lib/lindos-setup/main.py`, `lindos_setup/{plan,core,inhibit,pages,app,widgets,i18n}.py`, `ui/oobe.css`, `/usr/share/lindos/setup/{apps.json,accents.json}`, menu entry `lindos-setup.desktop` (`--reconfigure`) |
+| **lindos-core** | `python3 (>= 3.10)`, `policykit-1 \| polkitd`, `pkexec`, `xdg-utils`, `ca-certificates`, `curl \| wget`, `gpg` (Recommends `xfconf flatpak procps systemd lindos-tune efibootmgr mokutil`) | `/usr/lib/python3/dist-packages/lindos/{paths,config,modes,browsers,hardware,helper,theme,compat,ram,dualboot,session,installstate}.py` (`session`: is this the live USB session / the installer chroot / the temporary `oem` account; `installstate`: `/var/lib/lindos/install-state.json`, SPEC §4.11); `/usr/libexec/lindos/lindos-helper`, `install-browser.sh`, `browser-firstboot.sh` (the silent Chrome retry) + `lindos-browser-firstboot.service`, `is-live-session`, `oem-config-pending`, `wait-for-network`, `lindos-live-inhibit.service` (live session only); `/usr/share/polkit-1/actions/org.lindos.helper.policy`; `/usr/share/lindos/modes/<id>/{mode.json,apply-user.sh}`; `/etc/lindos/system.json` (conffile); `/usr/bin/lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot` (`lindos-config install-state [--json]` prints the installer's record; `lindos-dualboot` = SPEC-WINDOWS §30.3: one-shot restart into an existing Windows install via UEFI `BootNext` or GRUB `grub-reboot`) |
+| **lindos-desktop** | `xfce4-panel xfce4-whiskermenu-plugin xfwm4 xfconf xfce4-settings xfce4-notifyd picom xfce4-panel-profiles xfce4-clipman-plugin xfce4-screenshooter xfce4-taskmanager lightdm slick-greeter plymouth fontconfig lindos-core python3` (Recommends `xfce4-docklike-plugin` — not packaged for Ubuntu 24.04 noble as of this writing, only 25.10+/Debian trixie+; the panel leaves that slot empty without it, so it's not a hard Depends — and `policykit-1-gnome | mate-polkit | lxpolkit`, a graphical polkit agent for the password dialog) | `/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/*.xml` (panel, xfwm4, xsettings, shortcuts, desktop, thunar, notifyd, power-manager, session, keyboards), `/etc/xdg/xfce4/panel/{whiskermenu-1,docklike-2}.rc`, `/etc/xdg/picom-lindos.conf`, `/etc/xdg/gtk-3.0/settings.ini`, `/etc/xdg/autostart/{lindos-setup,lindos-picom,lindos-mode-apply-user,lindos-polkit-agent,lindos-live-session}.desktop` (`lindos-live-session` acts in the live USB session only: `live-session-power.sh` = never sleep/blank/lock), `/etc/fonts/conf.d/60-lindos-ui.conf`, `/etc/lightdm/slick-greeter.conf` + `lightdm.conf.d/50-lindos.conf`, `/etc/lindos-release`, `/usr/bin/lindos-compositor`, `/usr/libexec/lindos/{apply-branding,build-panel-profiles,first-login-panel,polkit-agent-start}.sh`, `panel-profile-pack.py`, `plymouth-gen-assets.py`, branded `.desktop` shims (`lindos-files`, `lindos-settings`, `lindos-store`, `lindos-terminal`), wallpapers, `lindos-logo.svg`, `lindos-start` / `lindos-settings` icons, `/usr/share/lindos/gtk-3.0/lindos.css`, `/usr/share/lindos/os-release.d/lindos.conf`, per-mode `/usr/share/lindos/modes/<id>/panel/`, plymouth theme `lindos`, xfce4-notifyd theme `Lindos` |
+| **lindos-setup** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xdg-utils` | `/usr/bin/lindos-setup` → `/usr/lib/lindos-setup/main.py`, `lindos_setup/{plan,core,inhibit,pages,app,widgets,i18n}.py`, `ui/oobe.css`, `/usr/share/lindos/setup/{apps.json,accents.json}` (`apps.json` has no page any more; `build/lib/installer_extras.py` reads it at build time to derive the installer's extras), menu entry `lindos-setup.desktop` (`--reconfigure`). Install-free: pages welcome, mode, browser, personalize, privacy, transfer, summary, apply, done; gated off in the live session and for the temporary `oem` user |
 | **lindos-settings** | `python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 lindos-core xfce4-settings xfconf xdg-utils` | `/usr/bin/lindos-settings` → `/usr/lib/lindos-settings/main.py`, `lindos_settings/{model,backend,widgets,sidebar,app,power_menu}.py` + `pages/*.py`, `ui/settings.css`, `/usr/share/lindos/settings/pages.json`, `lindos-power-menu.desktop` (NoDisplay) |
 | **lindos-compat** | `python3 (>= 3.10) lindos-core cabextract winbind xdg-utils desktop-file-utils shared-mime-info` (Recommends `winehq-staging \| wine-staging \| wine`, `winetricks`, `umu-launcher`, `icoutils`, `zenity`, `gamemode`, `mangohud`, Vulkan libs, `fonts-liberation`, `libnotify-bin`, `dosbox-x`, `python3-yaml`, `python3-hivex`, `udisks2`; Suggests `powershell`) | `/usr/bin/lindos-run`, `/usr/bin/lindos-compat`, `/usr/lib/lindos-compat/lindos_compat/*.py` (incl. SPEC-WINDOWS §28 `formats.py`/`dos.py`/`diskimage.py`/`binfmt.py`/`msix.py`/`winget.py`/`wingetyaml.py`), `/usr/libexec/lindos/{install-compat.sh,lindos-binfmt}`, `/usr/lib/binfmt.d/lindos-pe.conf`, `/usr/share/lindos/recipes/*.json` (15), `lindos-run.desktop`, `lindos-open-image.desktop`, `lindos-exe.svg`, `mimeapps-lindos.list`, `thunar-uca-lindos.xml`, `mime/packages/lindos-windows.xml` |
 | **lindos-gaming** | `lindos-core gamemode mangohud steam-devices python3 curl \| wget flatpak udev procps` (Recommends launchers, `antimicrox goverlay piper corectrl openrgb`, Vulkan, `ubuntu-drivers-common`, …) | `/usr/bin/lindos-proton lindos-drivers lindos-game lindos-mangohud` (`lindos-game` also has `route`/`play`/`shortcut`/`cloud install`, SPEC-WINDOWS §30.2), `/usr/libexec/lindos/{install-gaming,gamemode-start,gamemode-end,install-xpadneo,install-xone}.sh`, `/etc/gamemode.ini`, `/etc/xdg/MangoHud/MangoHud.conf`, `/etc/udev/rules.d/60-lindos-controllers.rules`, `/etc/sysctl.d/80-lindos-gaming.conf`, `lindos-roblox.desktop`, `lindos-roblox-studio.desktop`, `lindos-minecraft.desktop`, `/usr/share/lindos/compat-matrix.json` (incl. `cloud_providers`/per-title `routes`), `/usr/share/lindos/gaming/launchers.json` |
 | **lindos-tune** | `python3 (>= 3.10) lindos-core systemd procps util-linux zram-tools \| systemd-zram-generator earlyoom lm-sensors` (Recommends `power-profiles-daemon ananicy-cpp fancontrol hdparm pciutils kmod scx-scheds`) | `/usr/bin/lindos-tune` → `/usr/lib/lindos-tune/lindos_tune/*.py` (incl. `sched.py`), `/usr/lib/systemd/system-preset/90-lindos.preset`, `lindos-sensors-detect.service`, `/usr/libexec/lindos/{install-nbfc,sensors-detect-once}.sh`, `/usr/share/lindos/tune/{services-whitelist.txt,autostart-hide.list,ram-budget.json,earlyoom.default}`, `/etc/sysctl.d/70-lindos-base.conf`, `/etc/systemd/journald.conf.d/lindos.conf`, `/etc/tmpfiles.d/lindos.conf`, `/etc/lindos/tune.d/<mode>.conf` (incl. `sched= thp= mglru=`), `/etc/ananicy.d/lindos/*` |
 | **lindos-kernel** | `python3, lindos-core` (Recommends `scx-scheds`; Suggests `lindos-tune`) | `/usr/bin/lindos-kernel` → `/usr/lib/lindos-kernel/lindos_kernel/{kconfig,features,grub,manifest,build}.py`, `/etc/default/grub.d/50-lindos.cfg` (conservative cmdline drop-in), `/usr/share/lindos/kernel/{manifest.json,lindos.config}`. The compiled kernel `.deb`s are build artifacts from `build/kernel/build-kernel.sh` (Linux host only) — **not** shipped in the package. See [KERNEL.md](KERNEL.md). |
 | **lindos-transfer** | `python3 (>= 3.10) lindos-core` (Recommends `udisks2 ntfs-3g rsync zenity network-manager gir1.2-gtk-3.0 fontconfig xdg-user-dirs`; Suggests `dislocker cryptsetup-bin libldm python3-yaml python3-hivex firefox lindos-compat lindos-gaming`) | `/usr/bin/lindos-transfer lindos-transfer-gui` → `/usr/lib/lindos-transfer/lindos_transfer/*.py` (sources, mounts, regf/winreg, profiles, plan, copyengine, browsers/bookmarks, fonts, wallpaper, wifi, steam/vdf, apps, report, gui, cli), `/usr/share/lindos/transfer/{app-map.json,windows/LindosTransfer.{ps1,cmd},windows/README.txt}`, `lindos-transfer.desktop`. Windows volumes are mounted **read-only only**; a unit-tested `SECRETS_DENYLIST` refuses SAM/SECURITY, DPAPI/Credential-Manager/Vault, hiberfil/pagefile/swapfile (beyond a 4 KiB header check) and browser password/cookie stores |
+| **lindos-installer** | `lindos-core (>= 1.0.0)`, `python3 (>= 3.10)`, `curl \| wget`, `util-linux`, `coreutils` | `/usr/libexec/lindos/installer/{target-config.sh,lib.sh,finalize.sh}`, `/usr/share/lindos/installer/{extras.json,lindos.seed,lindos-installer.templates}`. `build/chroot/79-installer-flow.sh` copies `target-config.sh` to `/usr/lib/ubiquity/target-config/50lindos-install`. Installation medium only: not in `lindos-meta`, removed from the installed system by the installer (`filesystem.manifest-remove`) |
 | **lindos-meta** | the seven core packages plus `lindos-transfer`, all at `= 1.0.0`; **Recommends** `lindos-kernel` (stock kernel stays as fallback) | nothing else |
 | **lindos-vm** | `python3, lindos-core` (Recommends `qemu-system-x86 \| qemu-kvm`, `libvirt-daemon-system`, `libvirt-clients`, `ovmf`, `virt-manager`, `virtiofsd`; Suggests `looking-glass-client`) | `/usr/bin/lindos-vm` → `/usr/lib/lindos-vm/lindos_vm/{caps,plan,domain,passthrough}.py`, `/usr/share/lindos/vm/{win.xml.template,vfio.conf.template}` (honest, no spoof knobs), `/etc/libvirt/hooks/qemu` (single-GPU passthrough, conffile). `postinst` adds the user to `libvirt`/`kvm` **if present** (`getent`), never fails |
 | **lindos-winapps** | `python3, lindos-core, freerdp3-x11 \| freerdp2-x11` (Recommends `lindos-vm \| libvirt-daemon-system`; Suggests `podman`) | `/usr/bin/lindos-winapps` → `lindos_winapps/{backend,apps,rdp}.py`, `/usr/share/lindos/winapps/apps.json` (catalog), `/usr/share/applications/lindos-winapps.desktop`. Config `~/.config/lindos/winapps/winapps.conf`; **never** stores the RDP password |
@@ -53,13 +58,15 @@ Every package: `Version: 1.0.0`, `Architecture: all`, `Maintainer: Lindos Team <
 
 | Constant | Path | Notes |
 |---|---|---|
-| `SYSTEM_CONF_DIR` / `SYSTEM_CONF` | `/etc/lindos` / `/etc/lindos/system.json` | `{"mode":"everyday","browser":"firefox","oem":false}` (conffile of lindos-core) |
+| `SYSTEM_CONF_DIR` / `SYSTEM_CONF` | `/etc/lindos` / `/etc/lindos/system.json` | `{"mode":"everyday","browser":"chrome","oem":false}` (conffile of lindos-core; Chrome is what the installer downloads, Firefox the fallback) |
+| `INSTALL_STATE` | `/var/lib/lindos/install-state.json` | what the installer did and could not do (`lindos.installstate`, SPEC §4.11); read by Lindos Setup, Settings and the silent first-boot retries; `lindos-config install-state` prints it |
 | `SHARE_DIR` / `MODES_DIR` / `RECIPES_DIR` | `/usr/share/lindos` / `…/modes` / `…/recipes` | |
 | `LIBEXEC_DIR` / `HELPER` | `/usr/libexec/lindos` / `…/lindos-helper` | |
 | `USER_CONF_DIR` / `USER_CONF` / `SETUP_DONE` | `~/.config/lindos` / `…/config.json` / `…/setup-done` | |
 | `STATE_DIR` / `PREFIXES_DIR` / `APPS_DB` | `~/.local/share/lindos` / `…/prefixes` / `…/apps.json` | Wine prefixes ("C:\ drives") and the Windows-apps database |
 | `LOG_DIR` | `~/.local/state/lindos` | `setup.log`, `settings.log`, `run-<slug>.log`, `gamemode.log`, `first-login-panel.log` |
 | helper log | `/var/log/lindos/helper.log` (+ `install-compat.log`, `install-gaming.log`, `tune.log`) | |
+| installer logs | `/var/log/lindos/installer-hook.log` (live environment, while installing), `/var/log/lindos/installer.log` (installed system), `browser-firstboot.log`, `driver-firstboot.log` | see §8 |
 
 `LINDOS_ROOT` prefixes every system path and `LINDOS_HOME` replaces `~` — this is how the whole
 test suite runs on Windows/macOS against sandboxes. `lindos-config paths` prints the effective
@@ -70,12 +77,12 @@ values.
 User config `~/.config/lindos/config.json`, atomic writes, defaults:
 
 ```json
-{"mode": "everyday", "browser": "firefox", "theme": "dark", "accent": "#60CDFF",
+{"mode": "everyday", "browser": "chrome", "theme": "dark", "accent": "#60CDFF",
  "wallpaper": "/usr/share/backgrounds/lindos/aurora-dark.svg", "setup_done": false,
  "gamemode_auto": true, "mangohud": false, "telemetry": false, "schema": 1}
 ```
 
-System defaults `/etc/lindos/system.json`: `{"mode": "everyday", "browser": "firefox", "oem": false}`.
+System defaults `/etc/lindos/system.json`: `{"mode": "everyday", "browser": "chrome", "oem": false}`.
 `effective_mode()` / `effective_browser()` = user override, else system, else default. CLI:
 `lindos-config show [--system|--effective] | get <key> [--system] | set <key> <value> [--system]
 | unset <key> | paths | reset --yes` (`--json` everywhere; `set --system` goes through the helper
@@ -102,7 +109,7 @@ authentication failed, 124 timeout. `LINDOS_HELPER_DRYRUN=1` prints what would r
 
 | Action | Payload | What runs as root |
 |---|---|---|
-| `apply-mode` | `{mode, packages[], flatpaks[], services_disable[], services_enable[], sysctl{}, governor, zram_percent, compositor, apply_system, set_system_default, offline, schema}` (from `lindos.modes.build_system_plan`) | apt / flatpak installs (skipped offline) → `lindos-tune apply --mode <id> --system [--offline]` (fallback without lindos-tune: systemctl, sysctl drop-in, governor, zram) → mode `apply-system.sh` → `/etc/lindos/system.json` |
+| `apply-mode` | `{mode, packages[], flatpaks[], services_disable[], services_enable[], sysctl{}, governor, zram_percent, compositor, apply_system, set_system_default, offline, install?, schema}` (from `lindos.modes.build_system_plan`; `install` defaults to `true`, `false` = configuration only) | apt / flatpak installs (skipped offline, and skipped when `install` is `false` — what Lindos Setup sends) → `lindos-tune apply --mode <id> --system [--offline]` (fallback without lindos-tune: systemctl, sysctl drop-in, governor, zram) → mode `apply-system.sh` → `/etc/lindos/system.json` |
 | `install-browser` | `{browser: edge\|chrome\|firefox}` | `/usr/libexec/lindos/install-browser.sh <id>` (vendor keyring + list + `apt-get install`; firefox = Mint's .deb) |
 | `install-packages` | `{packages[]}` | `apt-get install -y -q` |
 | `install-flatpaks` | `{flatpaks[]}` | `flatpak install -y flathub …` |
@@ -149,8 +156,9 @@ missing component are recorded as *skipped*. Details: [MODES.md](MODES.md).
   unless `--force`; turns xfwm4's own compositor off while picom runs).
   `lindos-compositor start [--force] | stop [--keep-xfwm|--no-xfwm] | status | toggle | restart`;
   `status` exits 0 running / 3 stopped. GameMode's start/end scripts call `stop`/`start`.
-* Autostart: `lindos-setup.desktop` (`lindos-setup --first-run`, gate on `~/.config/lindos/
-  setup-done`), `lindos-picom.desktop`, `lindos-mode-apply-user.desktop`
+* Autostart: `lindos-setup.desktop` (`lindos-setup --first-run`; the gate — code, not the `.desktop` file
+  — exits in the live session, for the temporary `oem` user and when `~/.config/lindos/
+  setup-done` exists), `lindos-live-session.desktop` (live USB session only), `lindos-picom.desktop`, `lindos-mode-apply-user.desktop`
   (`/usr/libexec/lindos/first-login-panel.sh`, seeds the per-mode panel files once),
   `lindos-polkit-agent.desktop` (`/usr/libexec/lindos/polkit-agent-start.sh`: starts an installed
   graphical polkit agent unless one already runs; adds no permissions).
@@ -169,7 +177,12 @@ missing component are recorded as *skipped*. Details: [MODES.md](MODES.md).
 
 | Caller | Calls |
 |---|---|
-| `lindos-setup` apply page | `lindos.config`, `lindos.modes.apply_mode`, `lindos.browsers.install/set_default`, `lindos.theme.*`; helper `write-system-config`, `apply-mode`, `install-browser`, `install-packages`, `install-flatpaks`, `install-compat`, `install-gaming` — one step each, at most once per plan |
+| `lindos-setup` apply page | `lindos.config`, `lindos.modes.apply_mode` (`install=False`), `lindos.browsers.set_default`, `lindos.theme.*`; helper `write-system-config` and `apply-mode` (`install: false`) in one `run-batch` — never an `install-*` action |
+| `lindos-setup` browser / mode / done pages | `lindos.installstate.load()` (read-only hints), `lindos.browsers.is_installed` |
+| `lindos-settings` Apps › "Left to finish from setup" | `lindos.installstate.load()`; helper `install-browser` / `install-compat` / `install-gaming` / `install-packages` / `install-flatpaks` / `install-drivers` (the lists come from the `mode.json` files) |
+| installer hook `target-config.sh` (medium only) | inside `chroot /target`: `install-browser.sh chrome --in-installer`, `install-compat.sh --in-installer`, `install-gaming.sh --in-installer`, `browser-firstboot.sh`, `ubuntu-drivers`, `lindos-drivers install --auto`, `apt-get`, `flatpak`; `python3 -m lindos.installstate --root /target mark …` |
+| installer `finalize.sh` (medium only) | `systemctl --root=/target enable`/`set-default`, `chroot /target passwd -l oem`, `debconf-set-selections` |
+| `lindos-browser-firstboot` / `lindos-driver-firstboot` (silent retries) | `lindos.installstate status`/`mark`, `is-live-session`, `oem-config-pending`, `wait-for-network`, then `install-browser.sh chrome` / `ubuntu-drivers install --free-only` / `lindos-drivers install --auto` |
 | `lindos-settings` | everything in `lindos.*`; `lindos-run`, `lindos-proton`, `lindos-drivers`, `lindos-game`, `lindos-tune`, `lindos-compat`, `lindos-mode`, `lindos-compositor`, `lindos-mangohud`, `xfconf-query`, `xrandr` via subprocess; helper `install-packages`, `install-gaming`, `install-drivers`, `set-fan-profile`, `set-governor`, `set-services` |
 | `lindos-mode set` | `lindos.modes.apply_mode` → helper `apply-mode` + `xfce4-panel-profiles load` (or xml copy) + `lindos-compositor` + `apply-user.sh` |
 | helper `apply-mode` / `apply-tune` | `lindos-tune apply --mode <id> --system [--offline]` |
@@ -204,8 +217,10 @@ missing component are recorded as *skipped*. Details: [MODES.md](MODES.md).
 
 ## 8. Where things are logged
 
-`~/.local/state/lindos/*.log` (per user), `/var/log/lindos/*.log` (helper, installers, tune),
-`out/build.log` + `out/hooks/*.log` (build). `lindos-tune report` produces a Markdown bug report
+`~/.local/state/lindos/*.log` (per user), `/var/log/lindos/*.log` (helper, install scripts, tune, the
+installer hook: `installer-hook.log` in the live environment and `installer.log` on the installed system,
+and the silent retries' `browser-firstboot.log` / `driver-firstboot.log`), Ubiquity's own
+`/var/log/installer/`, `out/build.log` + `out/hooks/*.log` (build). `lindos-tune report` produces a Markdown bug report
 (RAM, zram, top RSS, units, kernel, mode, GPU, config).
 
 ## 9. Testing
@@ -214,3 +229,26 @@ missing component are recorded as *skipped*. Details: [MODES.md](MODES.md).
 `packages/*/tests` and `build/tests`, all runnable on Windows/macOS thanks to `LINDOS_ROOT` /
 `LINDOS_HOME` sandboxes, `LINDOS_HELPER_DRYRUN=1`, `LINDOS_FORCE_OFFLINE=1`, injected runners and
 the `gi` stub in `tests/lindos_testsupport.py`. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## 10. Installer flow and install state (at a glance)
+
+```
+USB boot ─▶ "Install Lindos" (only-ubiquity, OEM mode)          "Try Lindos" = live desktop + Install icon
+              │  the live session runs nothing else: no lindos-setup, no updater, never sleeps
+              ▼
+     Ubiquity copies the system ─▶ target-config hook 50lindos-install  (lindos-installer/target-config.sh)
+              │                       browser · drivers · updates · compat · gaming · mode_extras · flatpaks
+              │                       each step ─▶ /target/var/lib/lindos/install-state.json  (done|pending|skipped|failed)
+              ▼
+     boot loader ─▶ success_command finalize.sh (arms oem-config, locks the temporary account)
+reboot ─▶ oem-config.target: Ubiquity's account wizard ─▶ LightDM ─▶ lindos-setup --first-run (config only)
+                                                              ├─ silent retries: browser-firstboot / driver-firstboot
+                                                              └─ Settings › Apps › "Left to finish from setup"
+```
+
+Who reads `install-state.json`: Lindos Setup (read-only hints on the browser, mode and done pages),
+Lindos Settings (pending items and the Updates page's OS-updates line), the two silent first-boot
+retries and `lindos-config install-state`. Who never installs anything at first boot: Lindos Setup
+(`build_plan` has no install steps and `apply-mode` is sent with `install: false`). The contract is
+[SPEC.md §17](../SPEC.md); user documentation [INSTALLER.md](INSTALLER.md); hook contract and testing
+[BUILDING.md](BUILDING.md) ("Installer flow").

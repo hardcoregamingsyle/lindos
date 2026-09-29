@@ -10,6 +10,8 @@
                                                           through the polkit helper (mode/browser/oem)
   lindos-config unset <key>                               remove a user override (defaults apply)
   lindos-config paths [--json]                            every SPEC path, resolved
+  lindos-config install-state [--json]                    what the installer did / could not do
+                                                          (/var/lib/lindos/install-state.json)
   lindos-config reset [--yes]                             back to defaults (keeps setup_done)
 
 Exit codes: 0 ok · 1 error / key unset · 2 usage.
@@ -32,6 +34,7 @@ try:
     from lindos import __version__ as LINDOS_VERSION
     from lindos import config as lconfig
     from lindos import helper as lhelper
+    from lindos import installstate as linstate
     from lindos import paths as lpaths
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write(f"lindos-config: the 'lindos' python package is missing ({exc}); install lindos-core\n")
@@ -173,6 +176,28 @@ def cmd_paths(ns: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_install_state(ns: argparse.Namespace) -> int:
+    state = linstate.load()
+    if ns.json:
+        _emit(state)
+        return EXIT_OK
+    path = linstate.state_path()
+    exists = os.path.isfile(path)
+    online = {True: "yes", False: "no", None: "unknown"}[state["online"]]
+    print(f"# {path}" + (f"  (updated {state['updated']}, online: {online})" if exists
+                         else "  (not written: the installer has recorded nothing)"))
+    width = max(len(step) for step in linstate.STEPS)
+    for step in linstate.STEPS:
+        entry = state["steps"].get(step)
+        if entry:
+            print(f"{step.ljust(width)}  {entry['status']:<8}  {entry['detail']}".rstrip())
+        else:
+            print(f"{step.ljust(width)}  -")
+    todo = linstate.pending()
+    print("pending: " + (", ".join(todo) if todo else "nothing"))
+    return EXIT_OK
+
+
 def cmd_reset(ns: argparse.Namespace) -> int:
     cfg = lconfig.Config.load()
     if not ns.yes:
@@ -216,6 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("paths", help="print every Lindos path (LINDOS_ROOT/LINDOS_HOME aware)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_paths)
+    p = sub.add_parser("install-state", help="what the installer did and what is still pending")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_install_state)
     p = sub.add_parser("reset", help="reset the user config to defaults")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_reset)

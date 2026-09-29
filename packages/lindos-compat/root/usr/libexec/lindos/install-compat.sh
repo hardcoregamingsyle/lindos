@@ -4,7 +4,8 @@
 # Called by the lindos helper action 'install-compat' ({"items": [...]}) and by
 # build/chroot/60-compat.sh.  Runs as root; never call sudo here.
 #
-# Usage: install-compat.sh [--minimal] [--from-chroot] [--dry-run] [--no-update] [--list] [item...]
+# Usage: install-compat.sh [--minimal] [--from-chroot] [--dry-run] [--no-update] [--list]
+#                          [--in-installer [--download-only | --no-download]] [item...]
 #   items: all wine wine-staging umu umu-launcher winetricks bottles dxvk vkd3d fonts dependencies proton
 #          (default: all = wine winetricks dependencies fonts umu)
 #   wine / wine-staging  WineHQ repository for Ubuntu noble -> winehq-staging
@@ -22,6 +23,14 @@
 #                  no umu — used by build/chroot/60-compat.sh when INCLUDE_WINE=1
 #   --from-chroot  no Flatpak, no per-user steps
 #   --no-update    do not run 'apt-get update' (the caller just did)
+#   --in-installer root inside 'chroot /target' for the Lindos installer (the Ubiquity target-config
+#                  hook): apt items yes; Flatpak (Bottles) and per-user steps (Proton-GE) no - the
+#                  caller handles Flatpak; the caller already refreshed the apt lists; apt never
+#                  reads the 'deb cdrom:' source.  Without a phase flag: download, then install.
+#   --download-only  (with --in-installer) everything that needs the network and is not a dpkg run:
+#                  keys, repository files, the umu download, 'apt-get -d install' - kill-safe
+#   --no-download    (with --in-installer) dpkg runs from the files --download-only fetched; no
+#                  network at all, and the installer never kills it mid-transaction
 #
 # Idempotent: every step checks before acting.  Offline-aware: exits 3 with a message
 # when the network is unreachable and something needs downloading.
@@ -37,6 +46,11 @@ DRY_RUN=0
 NO_UPDATE=0
 APT_UPDATED=0
 NEED_UPDATE=0
+IN_INSTALLER=0
+DOWNLOAD_ONLY=0
+NO_DOWNLOAD=0
+# --in-installer: never read the 'deb cdrom:' source, never clean the medium's lists, fail fast
+APT_EXTRA=()
 
 WINEHQ_KEY_URL="https://dl.winehq.org/wine-builds/winehq.key"
 WINEHQ_KEYRING="/etc/apt/keyrings/winehq-archive.key"
@@ -71,7 +85,7 @@ die() {
 }
 
 usage() {
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -134,6 +148,8 @@ check_online() {
 }
 
 require_online() {
+    # the --no-download phase never touches the network
+    [ "${NO_DOWNLOAD}" = 1 ] && return 0
     if ! check_online; then
         log "No internet connection: cannot download $1."
         log "Connect to the internet and run again (Lindos Settings > Windows apps > Install)."
@@ -142,9 +158,10 @@ require_online() {
 }
 
 apt_update() {
+    [ "${NO_DOWNLOAD}" = 1 ] && return 0
     if [ "${NO_UPDATE}" = 1 ] && [ "${NEED_UPDATE}" = 0 ]; then return 0; fi
     if [ "${APT_UPDATED}" = 1 ] && [ "${NEED_UPDATE}" = 0 ]; then return 0; fi
-    run apt-get update -qq || log "apt-get update reported errors (continuing with cached lists)"
+    run apt-get update -qq "${APT_EXTRA[@]}" || log "apt-get update reported errors (continuing with cached lists)"
     APT_UPDATED=1
     NEED_UPDATE=0
 }
@@ -158,6 +175,22 @@ apt_install() {
     done
     if [ "${#pkgs[@]}" = 0 ]; then
         log "already installed: $*"
+        return 0
+    fi
+    if [ "${IN_INSTALLER}" = 1 ]; then
+        # two phases: a download (kill-safe) and a dpkg run from the downloaded files
+        if [ "${NO_DOWNLOAD}" = 0 ]; then
+            require_online "packages: ${pkgs[*]}"
+            apt_update
+            run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -d "${APT_EXTRA[@]}" \
+                -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+                "${recommends}" "${pkgs[@]}" || return 1
+        fi
+        if [ "${DOWNLOAD_ONLY}" = 0 ]; then
+            run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-download "${APT_EXTRA[@]}" \
+                -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+                "${recommends}" "${pkgs[@]}" || return 1
+        fi
         return 0
     fi
     require_online "packages: ${pkgs[*]}"
@@ -204,6 +237,11 @@ add_winehq_repo() {
     local codename sources
     codename="$(ubuntu_codename)"
     sources="/etc/apt/sources.list.d/winehq-${codename}.sources"
+    if [ "${NO_DOWNLOAD}" = 1 ]; then
+        # no network in this phase: the key and the repository file must already be there
+        [ -s "${WINEHQ_KEYRING}" ] && [ -s "${sources}" ]
+        return
+    fi
     run mkdir -p /etc/apt/keyrings
     if [ ! -s "${WINEHQ_KEYRING}" ]; then
         require_online "the WineHQ signing key"
@@ -302,6 +340,11 @@ install_umu() {
         log "umu-run already installed: $(command -v umu-run)"
         return 0
     fi
+    if [ "${NO_DOWNLOAD}" = 1 ]; then
+        # 'lindos-compat install-umu' downloads a pinned release: it belongs to the download phase
+        log "umu-launcher was not fetched by the download phase"
+        return 1
+    fi
     require_online "umu-launcher"
     if ! have lindos-compat; then
         log "lindos-compat is not on PATH - cannot install umu-launcher (is lindos-compat installed?)"
@@ -318,7 +361,7 @@ install_umu() {
 
 install_bottles() {
     if [ "${FROM_CHROOT}" = 1 ]; then
-        log "Bottles (Flatpak) is skipped inside the chroot - OOBE installs it at first boot"
+        log "Bottles (Flatpak) is skipped inside the chroot - the caller handles Flatpak (the installer, or Settings > Apps later)"
         SKIPPED_ITEMS+=("bottles")
         return 0
     fi
@@ -356,7 +399,7 @@ calling_user() {
 install_proton() {
     local user home
     if [ "${FROM_CHROOT}" = 1 ]; then
-        log "Proton-GE download skipped inside the chroot (per-user, done at first boot / lindos-proton update)"
+        log "Proton-GE download skipped inside the chroot (per-user: lindos-proton update as your user)"
         SKIPPED_ITEMS+=("proton")
         return 0
     fi
@@ -404,6 +447,9 @@ main() {
         case "${arg}" in
             --minimal)      MINIMAL=1 ;;
             --from-chroot)  FROM_CHROOT=1 ;;
+            --in-installer) IN_INSTALLER=1 ;;
+            --download-only) DOWNLOAD_ONLY=1 ;;
+            --no-download)  NO_DOWNLOAD=1 ;;
             --dry-run)      DRY_RUN=1 ;;
             --no-update)    NO_UPDATE=1 ;;
             --list)         printf '%s\n' "${KNOWN_ITEMS[@]}"; exit 0 ;;
@@ -418,6 +464,20 @@ main() {
         esac
     done
 
+    if { [ "${DOWNLOAD_ONLY}" = 1 ] || [ "${NO_DOWNLOAD}" = 1 ]; } && [ "${IN_INSTALLER}" = 0 ]; then
+        die "--download-only and --no-download need --in-installer" 2
+    fi
+    if [ "${DOWNLOAD_ONLY}" = 1 ] && [ "${NO_DOWNLOAD}" = 1 ]; then
+        die "--download-only and --no-download exclude each other" 2
+    fi
+    if [ "${IN_INSTALLER}" = 1 ]; then
+        # same restrictions as the ISO build chroot (no Flatpak, no per-user steps) ...
+        FROM_CHROOT=1
+        # ... and the installer has already refreshed the lists (a repository added here still is)
+        NO_UPDATE=1
+        APT_EXTRA=(-o "Dir::Etc::SourceList=/dev/null" -o "APT::Get::List-Cleanup=0"
+                   -o "Acquire::Retries=2" -o "Acquire::http::Timeout=20" -o "Acquire::https::Timeout=20")
+    fi
     if [ "$(id -u)" != 0 ] && [ "${DRY_RUN}" = 0 ]; then
         die "must run as root (use: pkexec $0 ...)" 2
     fi
@@ -434,7 +494,7 @@ main() {
         items=(wine)
     fi
 
-    log "starting (items: ${items[*]}; minimal=${MINIMAL} chroot=${FROM_CHROOT} dry-run=${DRY_RUN})"
+    log "starting (items: ${items[*]}; minimal=${MINIMAL} chroot=${FROM_CHROOT} dry-run=${DRY_RUN} in-installer=${IN_INSTALLER} download-only=${DOWNLOAD_ONLY} no-download=${NO_DOWNLOAD})"
     for it in "${items[@]}"; do
         do_item "${it}"
     done

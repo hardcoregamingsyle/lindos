@@ -513,14 +513,19 @@ def write_system_json(ctx: Ctx, fields: Dict[str, Any]) -> bool:
 def act_apply_mode(ctx: Ctx, p: Dict[str, Any]) -> int:
     """Privileged part of a mode switch (payload = ``lindos.modes.build_system_plan``)."""
     mode_id = p["mode"]
+    install = bool(p.get("install", True))
     offline = bool(p.get("offline")) or not ctx.online()
-    ctx.say(f"apply-mode {mode_id}" + (" (offline: package installs skipped)" if offline else ""))
+    ctx.say(f"apply-mode {mode_id}" + (" (install disabled: configuration only)" if not install
+                                        else " (offline: package installs skipped)" if offline else ""))
     failures: List[str] = []
 
-    if not apt_install(ctx, p.get("packages", []), offline=offline):
-        failures.append("packages")
-    if not flatpak_install(ctx, p.get("flatpaks", []), offline=offline):
-        failures.append("flatpaks")
+    # install=False (the first-boot wizard): the installer already installed everything, so this
+    # never touches apt or flatpak - it only applies the mode's configuration.
+    if install:
+        if not apt_install(ctx, p.get("packages", []), offline=offline):
+            failures.append("packages")
+        if not flatpak_install(ctx, p.get("flatpaks", []), offline=offline):
+            failures.append("flatpaks")
 
     # dry-run pretends lindos-tune is present unless LINDOS_HELPER_NO_TUNE=1 (tests exercise the fallback)
     have_tune = bool(ctx.which("lindos-tune")) or (ctx.dry_run and ctx.env.get("LINDOS_HELPER_NO_TUNE") != "1")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -35,7 +36,7 @@ def test_defaults_match_spec():
     assert sel.accent == DEFAULT_ACCENT == "#60CDFF"
     assert sel.wallpaper == DEFAULT_WALLPAPER == "/usr/share/backgrounds/lindos/aurora-dark.svg"
     assert sel.taskbar_alignment == "center"
-    assert sel.apps == []
+    assert not hasattr(sel, "apps"), "the wizard no longer offers or installs apps"
     assert sel.location is False and sel.crash_reports is False
     sel.validate()
 
@@ -59,12 +60,19 @@ def test_validate_rejects_bad_values(field, value):
 
 
 def test_selections_roundtrip_and_unknown_keys():
-    sel = Selections(mode="gaming", browser="edge", apps=["wine", "steam"], location=True)
+    sel = Selections(mode="gaming", browser="edge", location=True)
     d = sel.as_dict()
     d["future_key"] = 42
     back = Selections.from_dict(d)
     assert back == sel
-    assert back.apps is not sel.apps  # copied
+    assert "apps" not in d
+
+
+def test_old_selection_files_with_apps_still_load():
+    old = {"mode": "creator", "browser": "chrome", "apps": ["wine", "steam"], "theme": "light"}
+    sel = Selections.from_dict(old)
+    assert sel.mode == "creator" and sel.theme == "light"
+    assert not hasattr(sel, "apps") and "apps" not in sel.as_dict()
 
 
 def test_transfer_selection_defaults_validate_and_roundtrip():
@@ -182,112 +190,69 @@ def test_accents_json():
 
 
 # --------------------------------------------------------------------------- build_plan
+INSTALL_ACTIONS = {"install-browser", "install-packages", "install-flatpaks", "install-compat",
+                   "install-gaming", "install-drivers"}
+
+
 @pytest.mark.parametrize("mode", MODE_IDS)
-def test_build_plan_each_mode(mode, catalog: Catalog):
-    sel = Selections(mode=mode, apps=catalog.default_ids(mode))
-    plan = build_plan(sel, catalog)
+def test_build_plan_each_mode_is_install_free(mode):
+    plan = build_plan(Selections(mode=mode))
     ids = [s.id for s in plan.steps]
     assert ids[0] == "write-config"
     assert ids[-1] == "set-default-browser"
-    assert plan.get("apply-mode").payload["mode"] == mode
+    assert plan.get("apply-mode").payload == {"mode": mode, "install": False}
     assert plan.get("write-system-config").payload == {"mode": mode, "browser": "chrome"}
     assert plan.get("write-config").payload["mode"] == mode
-    # kinds valid, ids unique
     assert all(s.kind in ("user", "system") for s in plan.steps)
     assert len(ids) == len(set(ids))
-    # every privileged action appears at most once
-    sys_actions = [a for a, _p in plan.system_payloads()]
-    assert len(sys_actions) == len(set(sys_actions))
-    # wine is default everywhere -> exactly one install-compat
-    assert sys_actions.count("install-compat") == 1
-    assert plan.get("install-compat").payload["items"] == ["wine", "umu"]
-    if mode == "gaming":
-        assert "install-gaming" in sys_actions
-        assert "steam" in plan.get("install-gaming").payload["items"]
-    if mode == "creator":
-        assert plan.get("install-packages").payload["packages"] == ["gimp", "krita", "kdenlive"]
-    if mode == "work":
-        assert plan.get("install-flatpaks").payload["flatpaks"] == ["org.onlyoffice.desktopeditors"]
-    if mode in ("everyday", "lite"):
-        assert "install-gaming" not in sys_actions
-        assert "install-packages" not in sys_actions
-        assert "install-flatpaks" not in sys_actions
-    # chrome is the default and we're online: downloaded from Google's apt repo
-    assert "install-browser" in sys_actions
-    assert plan.get("install-browser").payload == {"browser": "chrome"}
-    # user/system split
+    # nothing to install or download: the installer did all of that
+    assert not INSTALL_ACTIONS & set(plan.actions())
+    assert [a for a, _p in plan.system_payloads()] == ["write-system-config", "apply-mode"]
     assert {s.action for s in plan.user_steps()} == {
         "write-config", "set-theme", "set-accent", "set-wallpaper", "set-taskbar-alignment",
         "set-default-browser"}
-    assert all(s.kind == "system" for s in plan.system_steps())
-    # ordering: user steps, then system, then final default-browser
+    # ordering: user steps, then the one privileged batch, then the final default-browser step
     kinds = [s.kind for s in plan.steps]
     first_sys = kinds.index("system")
     assert all(k == "user" for k in kinds[:first_sys])
     assert kinds[-1] == "user" and all(k == "system" for k in kinds[first_sys:-1])
-
-
-def test_apps_grouping_one_call_per_action(catalog: Catalog):
-    sel = Selections(mode="gaming",
-                     apps=["wine", "steam", "sober", "prism", "heroic", "lutris", "bottles",
-                           "onlyoffice", "creative", "steam"])  # duplicate on purpose
-    plan = build_plan(sel, catalog)
-    payloads = dict(plan.system_payloads())
-    assert set(payloads) == {"write-system-config", "apply-mode", "install-browser", "install-packages",
-                             "install-flatpaks", "install-compat", "install-gaming"}
-    assert payloads["install-browser"] == {"browser": "chrome"}
-    assert payloads["install-gaming"]["items"] == ["steam", "sober", "prism", "heroic", "lutris", "bottles"]
-    assert payloads["install-compat"]["items"] == ["wine", "umu"]
-    assert payloads["install-packages"]["packages"] == ["gimp", "krita", "kdenlive"]
-    assert payloads["install-flatpaks"]["flatpaks"] == ["org.onlyoffice.desktopeditors"]
-    assert plan.selections.apps.count("steam") == 1  # de-duplicated
-    # system_payloads order follows SPEC grouping order
-    order = [a for a, _p in plan.system_payloads()]
-    assert order == ["write-system-config", "apply-mode", "install-browser", "install-packages",
-                     "install-flatpaks", "install-compat", "install-gaming"]
-
-
-def test_no_apps_no_install_steps():
-    # default browser (chrome) is downloaded from Google's apt repo when online (the default)
-    plan = build_plan(Selections(apps=[]))
-    assert [a for a, _p in plan.system_payloads()] == ["write-system-config", "apply-mode", "install-browser"]
-    # firefox: nothing to download, so no install-browser step
-    plan = build_plan(Selections(apps=[], browser="firefox"))
-    assert [a for a, _p in plan.system_payloads()] == ["write-system-config", "apply-mode"]
-
-
-def test_unknown_app_id_is_ignored_with_note(catalog: Catalog):
-    plan = build_plan(Selections(apps=["wine", "does-not-exist"]), catalog)
-    assert "install-compat" in plan.actions()
-    assert any("does-not-exist" in n for n in plan.notes)
-
-
-def test_browser_edge_online_adds_install_step():
-    plan = build_plan(Selections(browser="edge"), online=True)
-    step = plan.get("install-browser")
-    assert step is not None and step.kind == "system" and step.payload == {"browser": "edge"}
-    assert plan.get("set-default-browser").payload == {"browser": "edge"}
-    assert plan.get("write-config").payload["browser"] == "edge"
     assert plan.notes == []
 
 
-def test_offline_browser_fallback_to_firefox():
-    for wanted in ("edge", "chrome"):
-        plan = build_plan(Selections(browser=wanted), online=False)
-        assert plan.selections.browser == "firefox"
-        assert plan.get("install-browser") is None
-        assert plan.get("set-default-browser").payload == {"browser": "firefox"}
-        assert plan.get("write-config").payload["browser"] == "firefox"
-        assert plan.get("write-system-config").payload["browser"] == "firefox"
-        assert any(wanted in n and "lindos-settings apps" in n for n in plan.notes)
-    # firefox offline: no note, no fallback needed
-    plan = build_plan(Selections(browser="firefox"), online=False)
+@pytest.mark.parametrize("browser", BROWSER_IDS)
+def test_no_browser_choice_ever_adds_a_download_step(browser):
+    plan = build_plan(Selections(browser=browser))
+    assert "install-browser" not in plan.actions()
+    assert plan.get("set-default-browser").payload == {"browser": browser}
+    assert plan.get("write-config").payload["browser"] == browser
     assert plan.notes == []
-    # offline with downloads pending -> note about finishing later
+
+
+def test_legacy_arguments_are_ignored():
+    """tests/test_integration.py still passes a catalog and online=; they change nothing."""
     cat = load_catalog(APPS_JSON)
-    plan = build_plan(Selections(apps=["wine"]), cat, online=False)
-    assert any("Offline" in n for n in plan.notes)
-    assert plan.get("apply-mode").payload["online"] is False
+    assert build_plan(Selections(), cat, online=False) == build_plan(Selections())
+    assert Plan.from_selections(Selections(), cat, online=False) == build_plan(Selections())
+
+
+def test_pending_browser_is_stored_as_the_preference_without_failing():
+    states = {"edge": "unavailable", "chrome": "pending", "firefox": "installed"}
+    plan = build_plan(Selections(browser="chrome"), browser_states=states)
+    step = plan.get("set-default-browser")
+    assert step.payload == {"browser": "chrome", "pending": True}
+    assert "once it is added" in step.title
+    # the preference reaches the user config and system.json (the silent retry reads system.json)
+    assert plan.get("write-config").payload["browser"] == "chrome"
+    assert plan.get("write-system-config").payload["browser"] == "chrome"
+    assert len(plan.notes) == 1
+    assert "isn't on this PC yet" in plan.notes[0] and "when you're online" in plan.notes[0]
+    assert "Firefox" in plan.notes[0]
+    assert "install-browser" not in plan.actions()
+    # a browser that is installed, or a different choice, gets the ordinary step and no note
+    plan = build_plan(Selections(browser="firefox"), browser_states=states)
+    assert plan.get("set-default-browser").payload == {"browser": "firefox"} and plan.notes == []
+    plan = build_plan(Selections(browser="chrome"), browser_states=dict(states, chrome="installed"))
+    assert plan.get("set-default-browser").payload == {"browser": "chrome"} and plan.notes == []
 
 
 def test_write_config_payload_contains_privacy_and_look():
@@ -304,18 +269,18 @@ def test_write_config_payload_contains_privacy_and_look():
     assert plan.get("set-taskbar-alignment").payload == {"alignment": "left"}
 
 
-def test_build_plan_does_not_mutate_input(catalog: Catalog):
-    sel = Selections(browser="chrome", apps=["wine", "wine"])
-    build_plan(sel, catalog, online=False)
-    assert sel.browser == "chrome" and sel.apps == ["wine", "wine"]
+def test_build_plan_does_not_mutate_input():
+    sel = Selections(browser="chrome")
+    build_plan(sel, browser_states={"chrome": "pending"})
+    assert sel.browser == "chrome" and sel == Selections(browser="chrome")
 
 
 # --------------------------------------------------------------------------- json
-def test_json_roundtrip(catalog: Catalog):
+def test_json_roundtrip():
     sel = Selections(mode="creator", browser="chrome", theme="light", accent="#B4A0FF",
                      wallpaper=LIGHT_WALLPAPER, taskbar_alignment="left",
-                     apps=catalog.default_ids("creator"), location=True, crash_reports=False)
-    plan = build_plan(sel, catalog, online=True)
+                     location=True, crash_reports=False)
+    plan = build_plan(sel, browser_states={"chrome": "pending"})
     text = plan.to_json()
     data = json.loads(text)
     assert data["schema"] == 1
@@ -327,7 +292,23 @@ def test_json_roundtrip(catalog: Catalog):
     assert [s.action for s in back.steps] == plan.actions()
     assert back.system_payloads() == plan.system_payloads()
     # Plan.from_selections is build_plan
-    assert Plan.from_selections(sel, catalog, online=True) == plan
+    assert Plan.from_selections(sel, browser_states={"chrome": "pending"}) == plan
+
+
+def test_plan_json_from_before_the_installer_flow_still_loads():
+    """A saved plan that still has install-* steps and selections.apps loads; nothing crashes."""
+    old = {"schema": 1, "notes": [], "selections": {"mode": "gaming", "apps": ["steam"]},
+           "steps": [
+               {"id": "write-config", "title": "Save", "kind": "user", "action": "write-config",
+                "payload": {}},
+               {"id": "install-gaming", "title": "Install", "kind": "system",
+                "action": "install-gaming", "payload": {"items": ["steam"]}}]}
+    plan = Plan.from_json(json.dumps(old))
+    assert plan.selections.mode == "gaming" and not hasattr(plan.selections, "apps")
+    assert plan.actions() == ["write-config", "install-gaming"]
+    # no executor is registered for the retired action: it is skipped, never run
+    result = Runner(plan, make_recording_executors(["write-config"], []), log=lambda m: None).run()
+    assert result.ok and result.skipped_ids == ["install-gaming"]
 
 
 def test_plan_from_json_rejects_bad_schema():
@@ -342,9 +323,9 @@ def test_plan_from_json_rejects_bad_schema():
 
 
 # --------------------------------------------------------------------------- runner
-def test_runner_with_fake_executors(catalog: Catalog):
-    sel = Selections(mode="gaming", browser="edge", apps=catalog.default_ids("gaming"))
-    plan = build_plan(sel, catalog, online=True)
+def test_runner_with_fake_executors():
+    sel = Selections(mode="gaming", browser="edge")
+    plan = build_plan(sel)
     record = []
     executors = make_recording_executors(plan.actions(), record)
     logs = []
@@ -362,30 +343,30 @@ def test_runner_with_fake_executors(catalog: Catalog):
     assert any("[ok]" in line for line in logs)
     assert "finished" in logs[-1].lower()
     # payloads passed through untouched
-    assert ("install-browser", {"browser": "edge"}) in record
+    assert ("apply-mode", {"mode": "gaming", "install": False}) in record
+    assert ("set-default-browser", {"browser": "edge"}) in record
 
 
-def test_runner_failure_isolation(catalog: Catalog):
-    sel = Selections(mode="gaming", browser="edge", apps=catalog.default_ids("gaming"))
-    plan = build_plan(sel, catalog, online=True)
+def test_runner_failure_isolation():
+    plan = build_plan(Selections(mode="gaming", browser="edge"))
     record = []
     executors = make_recording_executors(plan.actions(), record,
-                                         fail={"install-browser"}, raise_on={"install-gaming"})
+                                         fail={"apply-mode"}, raise_on={"write-system-config"})
     logs = []
     result = Runner(plan, executors, log=logs.append).run()
     assert not result.ok
-    assert set(result.failed_ids) == {"install-browser", "install-gaming"}
+    assert set(result.failed_ids) == {"apply-mode", "write-system-config"}
     # every step still ran (isolation), in order
     assert [a for a, _p in record] == plan.actions()
-    assert result.get("install-browser").message == "simulated failure"
-    assert "RuntimeError" in result.get("install-gaming").message
+    assert result.get("apply-mode").message == "simulated failure"
+    assert "RuntimeError" in result.get("write-system-config").message
     assert result.get("set-default-browser").ok  # ran after the failures
     assert any("[failed]" in line for line in logs)
     assert result.summary().endswith("2 failed")
 
 
 def test_runner_missing_executor_is_skipped_not_failed():
-    plan = build_plan(Selections(browser="edge"), online=True)
+    plan = build_plan(Selections(browser="edge"))
     record = []
     executors = make_recording_executors(["write-config", "set-theme"], record)
     result = Runner(plan, executors, log=lambda m: None).run()
@@ -417,16 +398,16 @@ def test_executor_result_shapes():
     assert result.get("c").failed and result.get("c").message == "nope"
 
 
-def test_printing_executors_dry_run(catalog: Catalog):
-    sel = Selections(mode="work", apps=catalog.default_ids("work"))
-    plan = build_plan(sel, catalog)
+def test_printing_executors_dry_run():
+    plan = build_plan(Selections(mode="work"))
     out = []
     executors = make_printing_executors(plan, write=out.append)
     result = Runner(plan, executors, log=lambda m: None).run()
     assert result.ok
     assert len(out) == len(plan)
     assert all(line.startswith("[dry-run] ") for line in out)
-    assert any("install-flatpaks" in line and "org.onlyoffice.desktopeditors" in line for line in out)
+    assert any("apply-mode" in line and '"install": false' in line for line in out)
+    assert not any("install-" in line for line in out)
     # without write=, lines go through the runner log
     logs = []
     Runner(plan, make_printing_executors(plan), log=logs.append).run()
@@ -434,9 +415,9 @@ def test_printing_executors_dry_run(catalog: Catalog):
 
 
 # --------------------------------------------------------------------------- summary
-def test_summarize_rows(catalog: Catalog):
-    sel = Selections(mode="gaming", browser="edge", apps=["wine", "steam"], accent="#60CDFF")
-    rows = dict(summarize(sel, catalog, {"gaming": "Gaming"}, {"edge": "Microsoft Edge"},
+def test_summarize_rows():
+    sel = Selections(mode="gaming", browser="edge", accent="#60CDFF")
+    rows = dict(summarize(sel, {"gaming": "Gaming"}, {"edge": "Microsoft Edge"},
                           {"#60CDFF": "Aurora Blue"}))
     assert rows["Mode"] == "Gaming"
     assert rows["Browser"] == "Microsoft Edge"
@@ -444,13 +425,60 @@ def test_summarize_rows(catalog: Catalog):
     assert rows["Accent"] == "Aurora Blue (#60CDFF)"
     assert rows["Wallpaper"] == "Aurora Dark"
     assert rows["Taskbar"] == "Center"
-    assert "Steam" in rows["Apps"] and "Windows app support" in rows["Apps"]
+    assert "Apps" not in rows, "the wizard installs no apps, so it does not summarise any"
     assert rows["Location services"] == "Off" and rows["Crash reports"] == "Off"
     assert rows["Bring your files from Windows"] == "Not now"
-    assert dict(summarize(Selections()))["Apps"] == "None"
     sel.transfer = {"enabled": True, "source_type": "partition", "source": "/media/alice/OS"}
-    rows2 = dict(summarize(sel, catalog))
+    rows2 = dict(summarize(sel))
     assert "Transfer tool" in rows2["Bring your files from Windows"]
+
+
+def test_summarize_says_plainly_when_the_browser_is_still_pending():
+    sel = Selections(browser="chrome")
+    rows = dict(summarize(sel, None, {"chrome": "Google Chrome"}, None, {"chrome": "pending"}))
+    assert rows["Browser"] == "Google Chrome — will be added when you're online (Firefox until then)"
+    rows = dict(summarize(sel, None, {"chrome": "Google Chrome"}, None, {"chrome": "installed"}))
+    assert rows["Browser"] == "Google Chrome"
+
+
+# --------------------------------------------------------------------------- install-state recap
+def test_install_recap_only_reports_what_the_installer_recorded():
+    assert planmod.install_recap(None) == [] and planmod.install_recap({}) == []
+    rows = planmod.install_recap({"browser": "done", "drivers": "done", "compat": "pending",
+                                  "flatpaks": "failed", "gaming": "skipped", "updates": "pending",
+                                  "mode_extras": "done", "unknown-step": "done"})
+    by_step = {step: (name, text) for step, name, text in rows}
+    assert [step for step, _n, _t in rows] == [
+        "updates", "drivers", "browser", "compat", "gaming", "mode_extras", "flatpaks"]   # canonical order
+    assert by_step["browser"] == ("Google Chrome", "installed while Lindos was installing")
+    assert by_step["drivers"][1] == "set up while Lindos was installing"
+    assert "Update Manager" in by_step["updates"][1]
+    assert "Lindos Settings › Apps" in by_step["compat"][1] and "Lindos Settings › Apps" in by_step["flatpaks"][1]
+    assert by_step["gaming"][1] == "left out on purpose"
+    # the two steps with a silent background retry say so
+    rows = dict((s, t) for s, _n, t in planmod.install_recap({"browser": "pending", "drivers": "failed"}))
+    assert "in the background" in rows["browser"] and "in the background" in rows["drivers"]
+
+
+def test_pending_steps_are_pending_or_failed_in_canonical_order():
+    steps = {"flatpaks": "failed", "browser": "pending", "compat": "done", "gaming": "skipped", "x": "pending"}
+    assert planmod.pending_steps(steps) == ["browser", "flatpaks"]
+    assert planmod.pending_steps(None) == [] and planmod.pending_steps({}) == []
+
+
+def test_mode_extras_pending_follows_what_the_mode_brings():
+    import types
+    plain = types.SimpleNamespace(packages=[], flatpaks=[])
+    apt_mode = types.SimpleNamespace(packages=["thunderbird"], flatpaks=[])
+    flat_mode = types.SimpleNamespace(packages=[], flatpaks=["com.usebottles.bottles"])
+    waiting = {"mode_extras": "pending", "flatpaks": "failed", "gaming": "pending"}
+    assert planmod.mode_extras_pending(plain, "everyday", waiting) is False
+    assert planmod.mode_extras_pending(apt_mode, "work", waiting) is True
+    assert planmod.mode_extras_pending(flat_mode, "creator", waiting) is True
+    assert planmod.mode_extras_pending(plain, "gaming", waiting) is True        # launchers
+    assert planmod.mode_extras_pending(plain, "gaming", {"gaming": "done"}) is False
+    assert planmod.mode_extras_pending(apt_mode, "work", {"flatpaks": "pending"}) is False
+    assert planmod.mode_extras_pending(apt_mode, "work", {}) is False
 
 
 def test_plan_module_has_no_gtk_or_lindos_imports():
@@ -467,8 +495,7 @@ def test_plan_module_has_no_gtk_or_lindos_imports():
     assert core.in_xfce({"DESKTOP_SESSION": "xfce"})
     assert set(core.make_real_executors()) == {
         "write-config", "set-theme", "set-accent", "set-wallpaper", "set-taskbar-alignment",
-        "set-default-browser", "write-system-config", "apply-mode", "install-browser",
-        "install-packages", "install-flatpaks", "install-compat", "install-gaming"}
+        "set-default-browser", "write-system-config", "apply-mode"}
 
 
 def test_core_paths_honour_lindos_home(monkeypatch, tmp_path):
@@ -483,14 +510,14 @@ def test_core_paths_honour_lindos_home(monkeypatch, tmp_path):
     assert not os.path.exists(core.setup_done_path())
 
 
-def test_headless_dry_run_prints_default_plan(monkeypatch):
+def test_headless_dry_run_prints_default_plan():
     from lindos_setup import core
-    monkeypatch.setattr(core, "is_online", lambda *a, **k: False)
     out = []
     assert core.headless_dry_run(write=out.append) == 0
     data = json.loads(out[0])
     assert data["schema"] == 1 and data["selections"]["mode"] == "everyday"
-    assert "install-compat" in [s["action"] for s in data["steps"]]
+    actions = [s["action"] for s in data["steps"]]
+    assert "apply-mode" in actions and not INSTALL_ACTIONS & set(actions)
 
 
 # --------------------------------------------------------------------------- shipped files
@@ -556,7 +583,7 @@ def test_main_parser_flags_match_spec():
     assert args.first_run and args.dry_run and args.page == "summary" and not args.reconfigure
     args = parser.parse_args(["--reconfigure"])
     assert args.reconfigure and not args.first_run
-    assert main.PAGE_IDS == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
+    assert main.PAGE_IDS == ["welcome", "mode", "browser", "personalize", "privacy",
                              "transfer", "summary", "apply", "done"]
     with pytest.raises(SystemExit):
         parser.parse_args(["--first-run", "--reconfigure"])   # mutually exclusive
@@ -587,6 +614,84 @@ def test_first_run_gate(monkeypatch, tmp_path):
     assert main.main(["--first-run"]) == 0
 
 
+def _cmdline(tmp_path, monkeypatch, text):
+    path = tmp_path / "fake-cmdline"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("LINDOS_TEST_CMDLINE", str(path))
+
+
+def test_first_run_gate_never_runs_in_the_live_session(monkeypatch, tmp_path, caplog):
+    import logging
+    main = _load_main_module()
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "XFCE")
+    logger = logging.getLogger("lindos-setup-test-live")
+    assert main.first_run_gate(logger) is None                   # an ordinary installed session
+    for line in ("BOOT_IMAGE=/casper/vmlinuz boot=casper username=liveuser quiet splash ---\n",
+                 "boot=live noprompt\n"):
+        _cmdline(tmp_path, monkeypatch, line)
+        with caplog.at_level(logging.INFO, logger="lindos-setup-test-live"):
+            caplog.clear()
+            assert main.first_run_gate(logger) == 0
+        assert any("live" in rec.getMessage() for rec in caplog.records), "the gate logs why it exited"
+        assert main.main(["--first-run"]) == 0
+    # words are matched exactly, like lindos.session does
+    _cmdline(tmp_path, monkeypatch, "xboot=casper boot=casper2 quiet\n")
+    assert main.first_run_gate(logger) is None
+
+
+def test_first_run_gate_never_runs_as_the_temporary_oem_user(monkeypatch, caplog):
+    import logging
+    from lindos_setup import core
+    main = _load_main_module()
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "XFCE")
+    logger = logging.getLogger("lindos-setup-test-oem")
+    monkeypatch.setattr(core, "is_oem_temp_user", lambda: True)
+    with caplog.at_level(logging.INFO, logger="lindos-setup-test-oem"):
+        assert main.first_run_gate(logger) == 0
+    assert any("oem" in rec.getMessage() for rec in caplog.records)
+    assert main.main(["--first-run"]) == 0
+    monkeypatch.setattr(core, "is_oem_temp_user", lambda: False)
+    assert main.first_run_gate(logger) is None
+
+
+def test_reconfigure_is_refused_in_live_or_oem_but_dry_run_is_not(monkeypatch, tmp_path, capsys):
+    from lindos_setup import core
+    main = _load_main_module()
+    _cmdline(tmp_path, monkeypatch, "boot=casper\n")
+    monkeypatch.setattr(core, "headless_dry_run", lambda logger=None, write=None: 7)
+    assert main.main(["--reconfigure"]) == 0
+    assert "not available in the live" in capsys.readouterr().err
+    # a dry run only prints a plan and changes nothing, so it stays available for developers
+    monkeypatch.setitem(sys.modules, "lindos_setup.app", None)   # no GTK: the headless fallback answers
+    assert main.main(["--dry-run"]) == 7
+
+
+def test_session_helpers_fall_back_when_lindos_core_is_missing(monkeypatch, tmp_path):
+    from lindos_setup import core
+    monkeypatch.setattr(core, "core_module", lambda name: None)
+    assert core.is_live_session() is False
+    _cmdline(tmp_path, monkeypatch, "quiet boot=casper\n")
+    assert core.is_live_session() is True
+    import getpass
+    monkeypatch.setattr(getpass, "getuser", lambda: "oem")
+    assert core.is_oem_temp_user() is True
+    monkeypatch.setattr(getpass, "getuser", lambda: "alice")
+    assert core.is_oem_temp_user() is False
+
+
+def test_session_helpers_use_lindos_session_when_available(monkeypatch, tmp_path):
+    from lindos_setup import core
+    core._module_cache.clear()
+    _cmdline(tmp_path, monkeypatch, "boot=casper\n")
+    try:
+        import lindos.session  # noqa: F401
+    except ImportError:
+        pytest.skip("lindos-core is not importable")
+    assert core.is_live_session() is True
+    assert core.is_oem_temp_user() is False
+    core._module_cache.clear()
+
+
 def _ensure_gi() -> None:
     """Real PyGObject or the repo ``gi`` stub (tests/lindos_testsupport.py); else skip."""
     import sys
@@ -608,9 +713,10 @@ def test_ui_modules_import_with_gi_stub():
     """widgets/pages/app import under the repo ``gi`` stub (or real PyGObject)."""
     _ensure_gi()
     from lindos_setup import app, pages, widgets
-    assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "apps", "privacy",
+    assert pages.PAGE_ORDER == ["welcome", "mode", "browser", "personalize", "privacy",
                                 "transfer", "summary", "apply", "done"]
     assert [p.id for p in pages.make_pages()] == pages.PAGE_ORDER
+    assert not hasattr(pages, "AppsPage"), "the wizard no longer has an apps page"
     assert widgets.COLUMN_MAX_W == 760            # centred content column, not a fixed 900x620 card
     assert not hasattr(app, "CARD_W")
     assert (widgets.THUMB_W, widgets.THUMB_H) == (192, 108)
@@ -618,38 +724,30 @@ def test_ui_modules_import_with_gi_stub():
     assert isinstance(widgets.style_priority(1), int)
 
 
-def test_page_context_connectivity_state(monkeypatch):
-    """PageContext.set_online / ensure_online_known (pure logic, runs under the gi stub)."""
+def test_page_context_knows_the_install_state_and_never_probes_the_network():
     _ensure_gi()
     from lindos_setup import core, pages
     ctx = pages.PageContext(
-        selections=Selections(browser="edge"), catalog=Catalog([]), accents=[], modes={},
-        browsers={}, online=False, dry_run=True, first_run=True, wallpapers=[],
-        ram_total_mb=None, live=core.LiveApplier(dry_run=True),
-        executors_factory=lambda plan: {}, online_known=False)
-    assert ctx.online_known is False and ctx.online is False
-    seen = []
-    ctx.online_listeners.append(lambda: seen.append(ctx.online))
-    # a blocking probe result is recorded once and listeners fire
-    monkeypatch.setattr(core, "is_online", lambda *a, **k: True)
-    assert ctx.ensure_online_known() is True
-    assert ctx.online_known and ctx.online and seen == [True]
-    monkeypatch.setattr(core, "is_online", lambda *a, **k: False)
-    assert ctx.ensure_online_known() is True          # already known: no re-probe
-    assert ctx.set_online(False) is False              # idle_add-compatible return value
-    assert ctx.online is False and seen == [True, False]
-    # default: known immediately (tests / explicit callers)
-    ctx2 = pages.PageContext(
-        selections=Selections(), catalog=Catalog([]), accents=[], modes={}, browsers={},
-        online=True, dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
+        selections=Selections(), accents=[], modes={}, browsers={"chrome": {}, "edge": {}, "firefox": {}},
+        dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
         live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {})
-    assert ctx2.online_known is True and ctx2.ensure_online_known() is True
+    assert ctx.install_steps == {}
+    # without install-state Firefox is the only browser that is certainly there
+    assert ctx.browser_states == {"chrome": "unavailable", "edge": "unavailable", "firefox": "installed"}
+    for gone in ("online", "online_known", "ensure_online_known", "set_online", "online_listeners"):
+        assert not hasattr(ctx, gone), gone
+    ctx2 = pages.PageContext(
+        selections=Selections(), accents=[], modes={}, browsers={}, dry_run=True, first_run=True,
+        wallpapers=[], ram_total_mb=None, live=core.LiveApplier(dry_run=True),
+        executors_factory=lambda plan: {}, install_steps={"browser": "pending"},
+        browser_states={"chrome": "pending"})
+    assert ctx2.install_steps == {"browser": "pending"} and ctx2.browser_states == {"chrome": "pending"}
 
 
 def _make_ctx(**kw):
     from lindos_setup import core, pages
-    defaults = dict(selections=Selections(), catalog=Catalog([]), accents=[], modes={}, browsers={},
-                    online=True, dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
+    defaults = dict(selections=Selections(), accents=[], modes={}, browsers={},
+                    dry_run=True, first_run=True, wallpapers=[], ram_total_mb=None,
                     live=core.LiveApplier(dry_run=True), executors_factory=lambda plan: {})
     defaults.update(kw)
     return pages.PageContext(**defaults)

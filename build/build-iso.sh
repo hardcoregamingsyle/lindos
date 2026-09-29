@@ -118,6 +118,9 @@ STAGE="/tmp/lindos"                       # inside the chroot
 STAGE_HOST="${SQ}${STAGE}"                # same dir seen from the host
 LIVE_DIR="casper"
 : "${SYNC_CASPER_KERNEL:=1}"
+: "${LIVE_ONLY_PACKAGES:=lindos-installer}"   # appended to casper/filesystem.manifest-remove
+: "${REQUIRE_OEM_POOL:=1}"                     # verify_oem_offline: fail the build when oem-config cannot come from the medium
+: "${OEM_DEBS_DIR:=}"                          # fallback: oem-config debs of the squashfs's ubiquity version (+ closure)
 : "${KEEP_ISO_MODDATE:=1}"
 : "${LINDOS_PASSTHRU_VARS:=HEROIC_VERSION HEROIC_SHA256 PRISM_PPA ACCEPT_MSCOREFONTS_EULA}"
 
@@ -664,6 +667,18 @@ casper_metadata() {
     log "  $(wc -l < "${cdir}/filesystem.manifest") packages"
     if [ -f "${cdir}/filesystem.manifest-remove" ]; then
         log "filesystem.manifest-remove kept from base ($(wc -l < "${cdir}/filesystem.manifest-remove") entries)"
+        # Packages that exist only on the installation medium and must not be in the installed system:
+        # the Lindos installer scripts (lindos-installer), like the ubiquity family the base lists.
+        local live_only
+        for live_only in ${LIVE_ONLY_PACKAGES}; do
+            if ! grep -qxF "${live_only}" "${cdir}/filesystem.manifest-remove"; then
+                if [ -n "$(tail -c 1 "${cdir}/filesystem.manifest-remove")" ]; then
+                    printf '\n' >> "${cdir}/filesystem.manifest-remove"
+                fi
+                printf '%s\n' "${live_only}" >> "${cdir}/filesystem.manifest-remove"
+                log "  + ${live_only} added to filesystem.manifest-remove (removed from the installed system)"
+            fi
+        done
     else
         warn "base ISO has no filesystem.manifest-remove (installer will keep live-only packages)"
     fi
@@ -797,6 +812,16 @@ apply_overlay() {
         printf '%s/releases/%s\n' "${LINDOS_HOME_URL}" "${LINDOS_VERSION}" > "${ISO_DIR}/.disk/release_notes_url"
     fi
 
+    # BIOS boots through ISOLINUX, whose base entries say username=mint and know nothing of the Lindos
+    # flow: regenerate its casper entries from the GRUB entries just filled in (single source of truth).
+    if [ -f "${ISO_DIR}/isolinux/live.cfg" ] && [ -f "${ISO_DIR}/boot/grub/grub.cfg" ]; then
+        python3 "${BUILD_DIR}/lib/boot_menu.py" isolinux --grub "${ISO_DIR}/boot/grub/grub.cfg" \
+            --live "${ISO_DIR}/isolinux/live.cfg" --write \
+            || die "could not rewrite isolinux/live.cfg from the GRUB entries (BIOS boot would keep the base entries)"
+    else
+        log "no isolinux/live.cfg in the ISO tree - nothing to rewrite for BIOS boot"
+    fi
+
     # Brand every boot config / text that still carries Mint's product name.
     local f
     while IFS= read -r f; do
@@ -815,6 +840,16 @@ apply_overlay() {
         if grep -v '^[[:space:]]*#' "${ISO_DIR}/boot/grub/grub.cfg" | grep -q '@[A-Z_][A-Z_]*@'; then
             die "boot/grub/grub.cfg still contains an unfilled @PLACEHOLDER@: $(grep -v '^[[:space:]]*#' "${ISO_DIR}/boot/grub/grub.cfg" | grep -o '@[A-Z_][A-Z_]*@' | sort -u | tr '\n' ' ')"
         fi
+        # The installer flow lives in these entries: the first one is the installer-only OEM entry.
+        local first_linux
+        first_linux="$(grep -E '^[[:space:]]*linux[[:space:]]' "${ISO_DIR}/boot/grub/grub.cfg" | head -n 1)"
+        case "${first_linux}" in
+            *only-ubiquity*oem-config/enable=true*|*oem-config/enable=true*only-ubiquity*) ;;
+            *) die "the first boot entry lost 'only-ubiquity oem-config/enable=true': ${first_linux}" ;;
+        esac
+        if grep -rEq --include='*.cfg' 'username=mint|hostname=mint' "${ISO_DIR}/boot/grub" "${ISO_DIR}/isolinux" 2>/dev/null; then
+            die "a boot entry still says username=mint/hostname=mint (the live user is liveuser@lindos): $(grep -rEl --include='*.cfg' 'username=mint|hostname=mint' "${ISO_DIR}/boot/grub" "${ISO_DIR}/isolinux" | tr '\n' ' ')"
+        fi
         # The kernel/initrd the menu points at must exist in the tree.
         local kimg iimg
         kimg="$(grep -oE '^\s*linux\s+\S+' "${ISO_DIR}/boot/grub/grub.cfg" | awk '{print $2; exit}')"
@@ -829,6 +864,29 @@ apply_overlay() {
         log "isolinux/ present (BIOS via ISOLINUX or legacy leftovers): configs branded via sed"
     fi
     timer_end "overlay + branding"
+}
+
+# ---------------------------------------------------------------------------
+# Step 7b: can the installed system get oem-config from the medium?
+# ---------------------------------------------------------------------------
+# Ubiquity's OEM mode installs oem-config-gtk from the medium's pool and silently skips it when the
+# pool has no matching version - the install would "succeed" without the first-boot account wizard.
+# (No Lindos hook upgrades ubiquity, so the pool of the base ISO matches the squashfs; this proves it.)
+verify_oem_offline() {
+    timer_start "oem-config pool check"
+    local fallback=() result rc=0
+    if [ -n "${OEM_DEBS_DIR}" ]; then
+        fallback=(--fallback-dir "$(abs_path "${OEM_DEBS_DIR}")" --copy-fallback-to "${ISO_DIR}/lindos/oem-debs")
+    fi
+    result="$(python3 "${BUILD_DIR}/lib/verify_oem_pool.py" --iso-dir "${ISO_DIR}" --squashfs-root "${SQ}" "${fallback[@]}")" || rc=$?
+    printf '%s\n' "${result}" >&2
+    if [ "${rc}" -ne 0 ] || printf '%s' "${result}" | grep -q 'NOT ok'; then
+        if [ "${REQUIRE_OEM_POOL}" = "1" ]; then
+            die "oem-config cannot be installed from this medium (see above); refusing to build an ISO whose first boot would have no account wizard (REQUIRE_OEM_POOL=0 overrides, OEM_DEBS_DIR names a fallback directory)"
+        fi
+        warn "REQUIRE_OEM_POOL=${REQUIRE_OEM_POOL}: continuing without a usable oem-config source"
+    fi
+    timer_end "oem-config pool check"
 }
 
 # ---------------------------------------------------------------------------
@@ -1030,6 +1088,7 @@ main() {
     casper_metadata
     make_squashfs
     apply_overlay
+    verify_oem_offline
     regen_md5
     build_iso
     verify_iso

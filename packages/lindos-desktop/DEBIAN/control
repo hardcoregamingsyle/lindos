@@ -24,6 +24,9 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  graphical polkit authentication agent (polkit-agent-start.sh: whichever of
  policykit-1-gnome, mate-polkit or lxpolkit is installed), so the
  administrator-password prompt is a normal dialog instead of a text prompt.
+ A further autostart entry (lindos-live-session) acts in the live USB session
+ only and turns off sleep, screen blanking, lock and lid-suspend there, so a
+ long installation is never interrupted; installed sessions are untouched.
  .
  It also keeps the base system's own branding from showing through: the
  base's Welcome Screen and Software Manager menu entries (duplicates of

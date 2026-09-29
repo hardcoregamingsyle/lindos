@@ -11,12 +11,13 @@ Homepage: https://lindos.dev
 Description: Lindos core library, privileged helper and command-line tools
  Lindos is a remaster of Linux Mint XFCE with a Windows-11-style desktop.
  This package ships the pure-Python 'lindos' module (paths, config, modes,
- browsers, hardware, helper client, theme, compat, ram, dualboot, update), the
- polkit-guarded helper /usr/libexec/lindos/lindos-helper, the vendor browser
- installer (Edge/Chrome are downloaded from Microsoft's/Google's apt
- repositories at setup time — their licences forbid shipping them on the ISO;
- Firefox is the system's .deb), the five mode definitions under
- /usr/share/lindos/modes and the CLIs lindos-mode, lindos-browser,
+ browsers, hardware, helper client, theme, compat, ram, dualboot, update,
+ session, installstate), the polkit-guarded helper
+ /usr/libexec/lindos/lindos-helper, the vendor browser installer (Edge/Chrome
+ are downloaded from Microsoft's/Google's apt repositories — by the Lindos
+ installer while it installs, or later on demand; their licences forbid
+ shipping them on the ISO; Firefox is the system's .deb), the five mode
+ definitions under /usr/share/lindos/modes and the CLIs lindos-mode, lindos-browser,
  lindos-config, lindos-ram, lindos-dualboot and lindos-update, plus the
  read-only lindos-update-notify.sh (login/6-hourly systemd --user timer
  toast when a Lindos component update is available; lindos-desktop ships
@@ -33,5 +34,16 @@ Description: Lindos core library, privileged helper and command-line tools
  touches the base system, which the system Update Manager already updates.
  apt/dpkg are always present on a Debian/Ubuntu system (Priority: required/
  important), so no extra Depends are needed for this.
+ .
+ The installer records what it did in /var/lib/lindos/install-state.json
+ (lindos.installstate, 'lindos-config install-state'); the first-boot units
+ lindos-browser-firstboot.service and lindos-driver-firstboot.service are only
+ silent retries for steps still pending there. is-live-session and
+ oem-config-pending are the shared shell tests for 'running from the install
+ medium' and 'the first-boot account wizard has not finished'; wait-for-network
+ gives those retries a bounded wait for NetworkManager (network-online.target
+ comes too early here, wait-online being masked);
+ lindos-live-inhibit.service keeps a live USB session from suspending during
+ an installation.
  .
  No GTK dependency: the graphical parts live in lindos-setup / lindos-settings.

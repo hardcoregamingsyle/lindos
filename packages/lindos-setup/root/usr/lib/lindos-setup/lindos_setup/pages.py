@@ -1,10 +1,14 @@
 """Wizard pages for the Lindos OOBE (SPEC §6).
 
 Page ids, in order: ``welcome`` → ``mode`` → ``browser`` → ``personalize`` →
-``apps`` → ``privacy`` → ``transfer`` → ``summary`` → ``apply`` → ``done``.
+``privacy`` → ``transfer`` → ``summary`` → ``apply`` → ``done``.
+
+The wizard is install-free: the installer already installed the browser, drivers, apps and updates
+(its record, ``install-state.json``, only feeds read-only hints on the Browser, Mode and Done
+pages), and the account was created by oem-config before this wizard starts.
 
 Every page derives from :class:`Page`; :class:`PageContext` carries the shared
-state (selections, catalog, ...) and a reference to the window's navigation
+state (selections, install-state hints, ...) and a reference to the window's navigation
 API (``ctx.window``: ``set_next_sensitive``, ``set_next_label``,
 ``set_back_visible``, ``go_next``, ``finish``, ``set_light``).
 
@@ -29,10 +33,12 @@ from gi.repository import GLib, Gtk  # noqa: E402
 from . import core  # noqa: E402
 from .i18n import N_, _  # noqa: E402
 from .plan import (  # noqa: E402
-    Catalog, Plan, RunResult, Runner, Selections, Step, StepResult, build_plan, summarize,
+    BROWSER_INSTALLED, BROWSER_PENDING, BROWSER_UNAVAILABLE, INSTALL_STEP_NAMES, Plan, RunResult,
+    Runner, Selections, Step, StepResult, build_plan, install_recap, mode_extras_pending,
+    pending_steps, summarize,
 )
 from .widgets import (  # noqa: E402
-    AccentCss, Card, CardGroup, CheckRow, InfoBanner, LearnMore, Swatch, SwitchRow, WallpaperThumb,
+    AccentCss, Card, CardGroup, InfoBanner, LearnMore, Swatch, SwitchRow, WallpaperThumb,
     add_class, column_width, hbox, icon_image, label, load_svg_thumbnail, screen_width, section_title,
     set_a11y, taskbar_preview, theme_preview, vbox,
 )
@@ -40,7 +46,7 @@ from .widgets import (  # noqa: E402
 log = logging.getLogger("lindos-setup.pages")
 
 PAGE_ORDER: List[str] = [
-    "welcome", "mode", "browser", "personalize", "apps", "privacy", "transfer", "summary", "apply", "done",
+    "welcome", "mode", "browser", "personalize", "privacy", "transfer", "summary", "apply", "done",
 ]
 
 MODE_ICON_FALLBACK: Dict[str, str] = {
@@ -51,13 +57,14 @@ BROWSER_ICONS: Dict[str, str] = {
     "edge": "microsoft-edge", "chrome": "google-chrome", "firefox": "firefox",
 }
 BROWSER_BLURBS: Dict[str, str] = {
-    "edge": "Microsoft's browser. Downloaded from packages.microsoft.com during setup.",
-    "chrome": "Google's browser. Downloaded from dl.google.com during setup.",
-    "firefox": "Already installed on Lindos. Open source, works offline right now.",
+    "edge": "Microsoft's browser.",
+    "chrome": "Google's browser.",
+    "firefox": "Open source, from Mozilla. Included with Lindos.",
 }
+BROWSER_PENDING_HINT = N_("Will be added when you're online")
 LOW_RAM_MB = 4096
 
-# SPEC §0.1 honesty text, shown on the apps page (a short always-visible line plus a "Learn more"
+# SPEC §0.1 honesty text, shown on the Done page (a short always-visible line plus a "Learn more"
 # disclosure) instead of on the welcome page.
 WINE_HONESTY = N_(
     "Windows apps run through Wine and Proton — a translation layer with near-native speed, not a "
@@ -76,11 +83,12 @@ LEARN_MORE_LINES = (
 )
 
 # "Just a moment…" rotating lines (Windows-style). Tick 0 is the greeting; afterwards the rest repeat.
+# Saving choices is local and takes seconds, so nothing here talks about downloads or waiting.
 APPLY_LINES = (
     N_("Hi"),
     N_("We're getting things ready for you"),
-    N_("This might take a few minutes — please don't turn off your PC"),
-    N_("Downloads depend on your connection, so hang tight"),
+    N_("Saving your choices"),
+    N_("Setting up your desktop"),
 )
 APPLY_LINE_SECONDS = 6
 
@@ -100,6 +108,19 @@ def apply_line(tick: int) -> str:
         return _(APPLY_LINES[0])
     rest = APPLY_LINES[1:]
     return _(rest[(tick - 1) % len(rest)])
+
+
+def set_shown(widget: Any, shown: bool) -> None:
+    """Show or hide a widget that was built with ``set_no_show_all(True)``, children included.
+
+    ``set_visible(True)`` alone would reveal only the outer box: the window's ``show_all()`` skipped
+    the whole subtree, so a banner's icon and text (or a box's heading) would stay hidden."""
+    if shown:
+        widget.set_no_show_all(False)
+        widget.show_all()
+        widget.set_no_show_all(True)
+    else:
+        widget.hide()
 
 
 class BatchLine(NamedTuple):
@@ -132,7 +153,7 @@ class ApplyProgress:
 
     The Runner reports one step at a time, but every privileged step is sent to the helper as ONE
     batch that runs inside the first system step, so Runner progress alone would sit still for the
-    whole download.  Batch lines from the helper credit those steps as they finish.
+    whole batch.  Batch lines from the helper credit those steps as they finish.
     """
 
     def __init__(self) -> None:
@@ -176,20 +197,24 @@ class ApplyProgress:
 class PageContext:
     """Shared wizard state handed to every page."""
 
-    def __init__(self, *, selections: Selections, catalog: Catalog, accents: List[Dict[str, str]],
-                 modes: Dict[str, Any], browsers: Dict[str, Dict[str, Any]], online: bool,
+    def __init__(self, *, selections: Selections, accents: List[Dict[str, str]],
+                 modes: Dict[str, Any], browsers: Dict[str, Dict[str, Any]],
                  dry_run: bool, first_run: bool, wallpapers: List[str],
                  ram_total_mb: Optional[int], live: core.LiveApplier,
                  executors_factory: Callable[[Plan], Dict[str, Any]],
-                 logger: Optional[logging.Logger] = None, online_known: bool = True) -> None:
+                 logger: Optional[logging.Logger] = None,
+                 install_steps: Optional[Dict[str, str]] = None,
+                 browser_states: Optional[Dict[str, str]] = None) -> None:
         self.selections = selections
-        self.catalog = catalog
         self.accents = accents
         self.modes = modes
         self.browsers = browsers
-        self.online = online
-        self.online_known = online_known     # False while the start-up probe is still running
-        self.online_listeners: List[Callable[[], None]] = []
+        # what the installer recorded (step -> done|pending|skipped|failed); {} = no record
+        self.install_steps: Dict[str, str] = dict(install_steps or {})
+        # browser id -> installed|pending|unavailable; Firefox is always installed
+        self.browser_states: Dict[str, str] = (
+            dict(browser_states) if browser_states is not None
+            else {bid: (BROWSER_INSTALLED if bid == "firefox" else BROWSER_UNAVAILABLE) for bid in browsers})
         self.dry_run = dry_run
         self.first_run = first_run
         self.wallpapers = wallpapers
@@ -203,28 +228,6 @@ class PageContext:
         self.run_result: Optional[RunResult] = None
         self.applied = False
         self.transfer_launched = False   # DonePage spawns lindos-transfer-gui at most once
-
-    # connectivity ------------------------------------------------------------
-    def set_online(self, online: bool) -> bool:
-        """Record the connectivity result (UI thread) and notify listeners.
-
-        Returns False so it can be used directly as a ``GLib.idle_add`` callback.
-        """
-        self.online = bool(online)
-        self.online_known = True
-        self.log.info("connectivity: %s", "online" if self.online else "offline")
-        for cb in list(self.online_listeners):
-            try:
-                cb()
-            except Exception as exc:  # a listener must never break the wizard
-                log.warning("online listener failed: %s", exc)
-        return False
-
-    def ensure_online_known(self) -> bool:
-        """Block on the connectivity probe if it has not finished yet (rare)."""
-        if not self.online_known:
-            self.set_online(core.is_online())
-        return self.online
 
     # convenience -------------------------------------------------------------
     def mode_name(self, mid: str) -> str:
@@ -391,13 +394,14 @@ class WelcomePage(Page):
 class ModePage(Page):
     id = "mode"
     title = N_("How will you use this PC?")
-    subtitle = N_("Pick the closest fit. A Mode tunes performance, the taskbar pins and suggested apps — "
-                  "change it any time in Lindos Settings › Lindos Mode.")
+    subtitle = N_("Pick the closest fit. A Mode tunes performance and the taskbar pins — nothing is "
+                  "downloaded. Change it any time in Lindos Settings › Lindos Mode.")
 
     def __init__(self) -> None:
         super().__init__()
         self.group = CardGroup(on_change=self._changed)
         self.detail: Optional[Gtk.Label] = None
+        self.extras_note: Optional[Gtk.Label] = None
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
         box = vbox(14)
@@ -419,6 +423,10 @@ class ModePage(Page):
         box.pack_start(cards, False, False, 0)
         self.detail = label("", "note", wrap=True)
         box.pack_start(self.detail, False, False, 0)
+        # switching a Mode here is configuration only: say plainly when its extras are still missing
+        self.extras_note = label("", "note", wrap=True)
+        self.extras_note.set_no_show_all(True)
+        box.pack_start(self.extras_note, False, False, 0)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
@@ -451,6 +459,17 @@ class ModePage(Page):
         if not parts:
             parts.append(_("Mode details are applied by lindos-mode when you finish setup."))
         self.detail.set_text("  ·  ".join(parts))
+        self._update_extras_note(mid, mode)
+
+    def _update_extras_note(self, mid: str, mode: Any) -> None:
+        if self.extras_note is None or self.ctx is None:
+            return
+        waiting = mode is not None and mode_extras_pending(mode, mid, self.ctx.install_steps)
+        if waiting:
+            self.extras_note.set_text(_(
+                "Some apps for this Mode aren't installed yet. Add them from Lindos Settings › Apps "
+                "once you're online (use Install now)."))
+        self.extras_note.set_visible(waiting)
 
 
 # ---------------------------------------------------------------------------
@@ -459,115 +478,68 @@ class ModePage(Page):
 class BrowserPage(Page):
     id = "browser"
     title = N_("Choose your web browser")
-    subtitle = N_("Firefox is already on this PC. Microsoft Edge and Google Chrome are downloaded from the "
-                  "vendors' official repositories during setup — their licences do not allow shipping "
-                  "them on the ISO.")
+    subtitle = N_("Pick the browser you'd like to use. You can add or switch browsers later in "
+                  "Lindos Settings › Apps.")
 
     def __init__(self) -> None:
         super().__init__()
         self.group = CardGroup(on_change=self._changed)
         self.banner: Optional[InfoBanner] = None
-        self.recheck: Optional[Gtk.Button] = None
-        self._checking = False
 
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
         box = vbox(16)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         row.set_homogeneous(True)
+        # only browsers that are on this PC (or that Lindos is about to add) are offered; the
+        # installer already downloaded Chrome, and Edge is only listed if it was installed by hand
         for bid, info in ctx.browsers.items():
-            desc = _(BROWSER_BLURBS.get(bid, ""))
-            hint = ""
-            if bid in ("edge", "chrome"):
-                hint = _("Downloaded from vendor · needs internet")
-            elif core.browser_installed(bid):
-                hint = _("Installed")
-            card = Card(bid, str(info.get("name", bid)), desc,
+            state = ctx.browser_states.get(bid, BROWSER_UNAVAILABLE)
+            if state == BROWSER_UNAVAILABLE:
+                continue
+            hint = _("Installed") if state == BROWSER_INSTALLED else _(BROWSER_PENDING_HINT)
+            card = Card(bid, str(info.get("name", bid)), _(BROWSER_BLURBS.get(bid, "")),
                         icon_name=BROWSER_ICONS.get(bid, "web-browser"), hint=hint,
                         icon_size=48, height=200)
             self.group.add(card)
             row.pack_start(card, True, True, 0)
         box.pack_start(row, False, False, 0)
-        self.banner = InfoBanner("", "network-wireless-symbolic")
+        self.banner = InfoBanner("", "dialog-information-symbolic")
+        self.banner.set_no_show_all(True)
         box.pack_start(self.banner, False, False, 0)
-        self.recheck = Gtk.Button(label=_("Check connection again"))
-        add_class(self.recheck, "btn-link")
-        self.recheck.set_halign(Gtk.Align.START)
-        self.recheck.connect("clicked", self._on_recheck)
-        box.pack_start(self.recheck, False, False, 0)
-        # the start-up connectivity probe runs in the background; refresh when it lands
-        ctx.online_listeners.append(self._apply_online_state)
         return box
 
     def on_enter(self, ctx: PageContext) -> None:
-        self._apply_online_state()
+        self._sync()
 
-    def on_leave(self, ctx: PageContext, forward: bool) -> bool:
-        if forward and not ctx.online_known:
-            # probe still running (user was very fast): settle it now so the choice is honest
-            wanted = ctx.selections.browser
-            ctx.ensure_online_known()
-            if not ctx.online and wanted in ("edge", "chrome"):
-                self._apply_online_state()      # switches to Firefox and shows the notice
-                return False                    # let the user see it before moving on
-        return True
-
-    def _apply_online_state(self) -> None:
+    def _sync(self) -> None:
         ctx = self.ctx
-        if ctx is None or self.banner is None or self.recheck is None:
+        if ctx is None:
             return
-        if not ctx.online_known:
-            self.banner.get_style_context().remove_class("warn")
-            self.banner.set_text(_(
-                "Checking your internet connection… Edge and Chrome need it because they are "
-                "downloaded from the vendor's apt repository during the Apply step."))
-            self.recheck.hide()
-            for bid in ("edge", "chrome"):
-                self.group.set_disabled(bid, False)
-        elif ctx.online:
-            self.banner.get_style_context().remove_class("warn")
-            self.banner.set_text(_(
-                "You're online. Edge or Chrome will be added from the vendor's apt repository "
-                "during the Apply step and become the default browser."))
-            self.recheck.hide()
-            for bid in ("edge", "chrome"):
-                self.group.set_disabled(bid, False)
-        else:
-            self.banner.get_style_context().add_class("warn")
-            self.banner.set_text(_(
-                "You're offline, so Edge and Chrome can't be downloaded right now. Firefox is "
-                "selected. You can install Edge or Chrome later from Lindos Settings › Apps › "
-                "Web browsers (lindos-settings apps) or with 'lindos-browser install edge' / "
-                "'lindos-browser install chrome' in a Terminal."))
-            self.recheck.show()
-            for bid in ("edge", "chrome"):
-                self.group.set_disabled(bid, True, _("Needs an internet connection"))
-            if ctx.selections.browser in ("edge", "chrome"):
-                ctx.selections.browser = "firefox"
+        if ctx.selections.browser not in self.group.cards:
+            ctx.selections.browser = "firefox"    # the choice must be a card that is shown
         self.group.select(ctx.selections.browser)
+        self._update_banner()
+
+    def _update_banner(self) -> None:
+        ctx = self.ctx
+        if ctx is None or self.banner is None:
+            return
+        waiting = [bid for bid in self.group.order if ctx.browser_states.get(bid) == BROWSER_PENDING]
+        if not waiting:
+            set_shown(self.banner, False)
+            return
+        names = ", ".join(ctx.browser_name(bid) for bid in waiting)
+        text = _("%s isn't on this PC yet. Lindos adds it in the background when you're online, or you can "
+                 "press Install now in Lindos Settings › Apps. Until then Firefox is your browser.") % names
+        if ctx.selections.browser in waiting:
+            text += " " + _("%s becomes your default as soon as it's added.") % ctx.browser_name(ctx.selections.browser)
+        self.banner.set_text(text)
+        set_shown(self.banner, True)
 
     def _changed(self, key: str) -> None:
         assert self.ctx is not None
         self.ctx.selections.browser = key
-
-    def _on_recheck(self, _btn: Gtk.Button) -> None:
-        if self._checking:
-            return
-        self._checking = True
-        assert self.recheck is not None
-        self.recheck.set_sensitive(False)
-
-        def worker() -> None:
-            online = core.is_online()
-            GLib.idle_add(self._recheck_done, online)
-
-        threading.Thread(target=worker, name="lindos-setup-online", daemon=True).start()
-
-    def _recheck_done(self, online: bool) -> bool:
-        self._checking = False
-        assert self.ctx is not None and self.recheck is not None
-        self.recheck.set_sensitive(True)
-        self.ctx.set_online(online)          # notifies listeners -> _apply_online_state
-        return False
+        self._update_banner()
 
 
 # ---------------------------------------------------------------------------
@@ -699,90 +671,6 @@ class PersonalizePage(Page):
 
 
 # ---------------------------------------------------------------------------
-# apps
-# ---------------------------------------------------------------------------
-class AppsPage(Page):
-    id = "apps"
-    title = N_("Get the apps you need")
-    subtitle = N_("Pick what to install now. Anything you skip can be added later from "
-                  "Lindos Settings › Apps.")
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.rows: Dict[str, CheckRow] = {}
-        self._last_mode: Optional[str] = None
-        self.banner: Optional[InfoBanner] = None
-        self._syncing = False
-
-    def build_content(self, ctx: PageContext) -> Gtk.Widget:
-        box = vbox(14)
-        if len(ctx.catalog) == 0:
-            box.pack_start(InfoBanner(_(
-                "No optional apps catalog was found (apps.json). Nothing extra will be installed; "
-                "use Lindos Settings › Apps later."), warn=True), False, False, 0)
-        else:
-            flow = Gtk.FlowBox()
-            flow.set_selection_mode(Gtk.SelectionMode.NONE)
-            flow.set_min_children_per_line(2)
-            flow.set_max_children_per_line(2)
-            flow.set_column_spacing(12)
-            flow.set_row_spacing(10)
-            flow.set_homogeneous(True)
-            for entry in ctx.catalog:
-                row = CheckRow(entry.id, entry.name, entry.description)
-                row.connect("toggled", self._toggled, entry.id)
-                self.rows[entry.id] = row
-                flow.add(row)
-            for child in flow.get_children():
-                child.set_can_focus(False)
-            box.pack_start(flow, False, False, 0)
-            self.banner = InfoBanner("", "network-wireless-symbolic")
-            box.pack_start(self.banner, False, False, 0)
-        # SPEC §0.1: the Wine / anti-cheat reality check stays on this page, plainly
-        box.pack_start(InfoBanner(_(WINE_HONESTY), "dialog-information-symbolic"), False, False, 0)
-        box.pack_start(LearnMore(_(LEARN_MORE_TITLE), [_(t) for t in LEARN_MORE_LINES]), False, False, 0)
-        return box
-
-    def on_enter(self, ctx: PageContext) -> None:
-        if len(ctx.catalog) == 0:
-            return
-        if self._last_mode != ctx.selections.mode:
-            ctx.selections.apps = ctx.catalog.default_ids(ctx.selections.mode)
-            self._last_mode = ctx.selections.mode
-        self._syncing = True
-        try:
-            for app_id, row in self.rows.items():
-                row.set_active(app_id in ctx.selections.apps)
-        finally:
-            self._syncing = False
-        if self.banner is not None:
-            if ctx.online or not ctx.online_known:
-                self.banner.get_style_context().remove_class("warn")
-                self.banner.set_text(_(
-                    "Downloads run during the Apply step and can take a few minutes, depending on "
-                    "your connection."))
-            else:
-                self.banner.get_style_context().add_class("warn")
-                self.banner.set_text(_(
-                    "You're offline: downloads will be skipped and listed for later. Finish them "
-                    "from Lindos Settings › Apps (lindos-settings apps) once connected."))
-
-    def _toggled(self, row: Gtk.CheckButton, app_id: str) -> None:
-        if self._syncing or self.ctx is None:
-            return
-        apps = self.ctx.selections.apps
-        if row.get_active():
-            if app_id not in apps:
-                apps.append(app_id)
-        else:
-            if app_id in apps:
-                apps.remove(app_id)
-        # keep catalog order for a stable summary
-        order = self.ctx.catalog.ids()
-        apps.sort(key=lambda a: order.index(a) if a in order else len(order))
-
-
-# ---------------------------------------------------------------------------
 # privacy
 # ---------------------------------------------------------------------------
 class PrivacyPage(Page):
@@ -799,9 +687,9 @@ class PrivacyPage(Page):
     def build_content(self, ctx: PageContext) -> Gtk.Widget:
         box = vbox(12)
         box.pack_start(InfoBanner(_(
-            "Lindos never sends usage data anywhere and shows no advertising. Updates come from "
-            "the Ubuntu / system repositories; Edge and Chrome (if chosen) come from Microsoft "
-            "and Google, whose own privacy policies apply inside those browsers."),
+            "Lindos never sends usage data anywhere and shows no advertising. Browsers such as Chrome "
+            "or Edge are made by Google and Microsoft, and their own privacy policies apply inside "
+            "those browsers."),
             "security-high-symbolic"), False, False, 0)
         self.location_row = SwitchRow(
             _("Location services"),
@@ -998,8 +886,8 @@ class TransferPage(Page):
 class SummaryPage(Page):
     id = "summary"
     title = N_("Ready to set up your PC?")
-    subtitle = N_("Take a last look. Go Back to change anything — Apply starts the setup, and you may "
-                  "be asked for your password once.")
+    subtitle = N_("Take a last look. Go Back to change anything — Apply saves these choices on this PC. "
+                  "It only takes a moment and nothing is downloaded.")
     next_label = N_("Apply")
 
     def __init__(self) -> None:
@@ -1026,15 +914,12 @@ class SummaryPage(Page):
 
     def on_enter(self, ctx: PageContext) -> None:
         assert self.grid is not None and self.notes is not None and self.steps_label is not None
-        ctx.ensure_online_known()            # the plan depends on it (browser fallback, notes)
-        if not ctx.online and ctx.selections.browser in ("edge", "chrome"):
-            ctx.selections.browser = "firefox"
         for child in self.grid.get_children():
             self.grid.remove(child)
         for child in self.notes.get_children():
             self.notes.remove(child)
-        rows = summarize(ctx.selections, ctx.catalog, ctx.mode_names(), ctx.browser_names(),
-                         ctx.accent_names())
+        rows = summarize(ctx.selections, ctx.mode_names(), ctx.browser_names(), ctx.accent_names(),
+                         ctx.browser_states)
         for i, (key, value) in enumerate(rows):
             k = label(_(key), "summary-key")
             k.set_valign(Gtk.Align.START)
@@ -1042,14 +927,16 @@ class SummaryPage(Page):
             v.set_max_width_chars(70)
             self.grid.attach(k, 0, i, 1, 1)
             self.grid.attach(v, 1, i, 1, 1)
-        plan = build_plan(ctx.selections, ctx.catalog, online=ctx.online)
+        plan = build_plan(ctx.selections, browser_states=ctx.browser_states)
         ctx.plan = plan
         for note in plan.notes:
             self.notes.pack_start(InfoBanner(note, warn=True), False, False, 0)
-        n_sys = len(plan.system_steps())
-        text = _("%d steps in total; %d need administrator rights.") % (len(plan), n_sys)
+        text = ""
+        if plan.system_steps():
+            text = _("Saving the Mode for the whole PC may ask for your password once.")
         if ctx.dry_run:
-            text += "  " + _("Dry run: nothing will be changed; the plan is printed to the terminal.")
+            text = (text + "  " if text else "") + _(
+                "Dry run: nothing will be changed; the plan is printed to the terminal.")
         self.steps_label.set_text(text)
         self.grid.show_all()
         self.notes.show_all()
@@ -1180,8 +1067,7 @@ class ApplyPage(Page):
         ctx = self.ctx
         assert ctx is not None
         try:
-            ctx.ensure_online_known()
-            plan = build_plan(ctx.selections, ctx.catalog, online=ctx.online)
+            plan = build_plan(ctx.selections, browser_states=ctx.browser_states)
             ctx.plan = plan
             ctx.log.info("plan: %s", plan.to_json(indent=None))
             if ctx.dry_run:
@@ -1290,8 +1176,8 @@ class ApplyPage(Page):
             self.set_titles(_("Setup finished, with a few things left to do"), "")
             self.banner.get_style_context().add_class("warn")
             self.banner.set_text(_(
-                "Some steps were skipped or failed: %s. Your desktop is usable; finish the rest "
-                "later from Lindos Settings › Apps (lindos-settings apps). Log: %s")
+                "Some choices could not be saved: %s. Your desktop is usable; you can change them "
+                "later in Lindos Settings. Log: %s")
                 % (", ".join(problems), core.log_file()))
         else:
             self.set_titles(_("Everything is in place"), _("Select Next to finish."))
@@ -1320,6 +1206,9 @@ class DonePage(Page):
         super().__init__()
         self.recap: Optional[Gtk.Label] = None
         self.settings_btn: Optional[Gtk.Button] = None
+        self.installed_box: Optional[Gtk.Box] = None
+        self.installed_rows: Optional[Gtk.Box] = None
+        self.waiting_banner: Optional[InfoBanner] = None
 
     def hero_image(self, ctx: PageContext) -> Optional[Gtk.Widget]:
         badge = Gtk.Label(label="✓")
@@ -1347,11 +1236,20 @@ class DonePage(Page):
             grid.attach(label(_(meaning), "body"), col * 2 + 1, row, 1, 1)
         box.pack_start(grid, False, False, 0)
 
-        box.pack_start(InfoBanner(_(
-            "Double-click an .exe or .msi to run it through Wine/Proton. Games with anti-cheat "
-            "that block Linux (Valorant, Fortnite, League of Legends) will not work — Roblox runs "
-            "via Sober, Minecraft Java natively. See Lindos Settings › Windows apps."),
-            "dialog-information-symbolic"), False, False, 0)
+        # what the installer set up (read-only; filled in on_enter from install-state.json)
+        self.installed_box = vbox(6)
+        self.installed_box.pack_start(section_title(_("Set up while Lindos was installing")), False, False, 0)
+        self.installed_rows = vbox(4)
+        self.installed_box.pack_start(self.installed_rows, False, False, 0)
+        self.installed_box.set_no_show_all(True)
+        box.pack_start(self.installed_box, False, False, 0)
+        self.waiting_banner = InfoBanner("", "network-wireless-symbolic", warn=True)
+        self.waiting_banner.set_no_show_all(True)
+        box.pack_start(self.waiting_banner, False, False, 0)
+
+        # SPEC §0.1: the Wine / anti-cheat reality check, plainly, with the rest one click away
+        box.pack_start(InfoBanner(_(WINE_HONESTY), "dialog-information-symbolic"), False, False, 0)
+        box.pack_start(LearnMore(_(LEARN_MORE_TITLE), [_(t) for t in LEARN_MORE_LINES]), False, False, 0)
         self.settings_btn = Gtk.Button(label=_("Open Lindos Settings"))
         add_class(self.settings_btn, "btn-secondary")
         self.settings_btn.set_halign(Gtk.Align.CENTER)
@@ -1363,19 +1261,52 @@ class DonePage(Page):
         if self.recap is not None:
             parts = [
                 _("Mode: %s") % ctx.mode_name(ctx.selections.mode),
-                _("Browser: %s") % ctx.browser_name(ctx.selections.browser),
+                self._browser_recap(ctx),
                 _("Theme: %s") % (_("Dark") if ctx.selections.dark else _("Light")),
             ]
             if ctx.run_result is not None and (ctx.run_result.failed_ids or ctx.run_result.skipped_ids):
-                parts.append(_("Some installs are pending — see Lindos Settings › Apps."))
+                parts.append(_("Some choices could not be saved — see Lindos Settings."))
             if (ctx.selections.transfer or {}).get("enabled"):
                 parts.append(_("Opening the Transfer tool for your Windows files…"))
             self.recap.set_text("   ·   ".join(parts))
+        self._show_installed(ctx)
         if self.settings_btn is not None:
             self.settings_btn.set_visible(core.which("lindos-settings") is not None or ctx.dry_run)
         if ctx.window is not None:
             ctx.window.set_next_sensitive(True)
         self._maybe_launch_transfer(ctx)
+
+    @staticmethod
+    def _browser_recap(ctx: PageContext) -> str:
+        name = ctx.browser_name(ctx.selections.browser)
+        if ctx.browser_states.get(ctx.selections.browser) == BROWSER_PENDING:
+            return _("Browser: %s (Firefox until it's added)") % name
+        return _("Browser: %s") % name
+
+    def _show_installed(self, ctx: PageContext) -> None:
+        """Read-only recap of what the installer did, from install-state.json (nothing is installed)."""
+        if self.installed_box is None or self.installed_rows is None or self.waiting_banner is None:
+            return
+        rows = install_recap(ctx.install_steps)
+        for child in list(self.installed_rows.get_children()):
+            self.installed_rows.remove(child)
+        for step, name, text in rows:
+            mark = "✓" if ctx.install_steps.get(step) == "done" else "•"
+            self.installed_rows.pack_start(label("%s  %s — %s" % (mark, _(name), _(text)), "body", wrap=True),
+                                           False, False, 0)
+        set_shown(self.installed_box, bool(rows))
+        waiting = pending_steps(ctx.install_steps)
+        if waiting:
+            text = _("Still waiting for an internet connection: %s.") % ", ".join(
+                _(INSTALL_STEP_NAMES[step]) for step in waiting)
+            if {"browser", "drivers"} & set(waiting):
+                text += " " + _("Lindos retries Chrome and drivers in the background.")
+            if {"compat", "gaming", "mode_extras", "flatpaks"} & set(waiting):
+                text += " " + _("Add the apps with Install now in Lindos Settings › Apps.")
+            if "updates" in waiting:
+                text += " " + _("Install system updates from the Update Manager.")
+            self.waiting_banner.set_text(text)
+        set_shown(self.waiting_banner, bool(waiting))
 
     def _maybe_launch_transfer(self, ctx: PageContext) -> None:
         """Spawn ``lindos-transfer-gui`` once when the transfer page's choice was 'enabled'
@@ -1401,13 +1332,13 @@ class DonePage(Page):
 
 def make_pages() -> List[Page]:
     """Instantiate all pages in SPEC order."""
-    pages: List[Page] = [WelcomePage(), ModePage(), BrowserPage(), PersonalizePage(), AppsPage(),
+    pages: List[Page] = [WelcomePage(), ModePage(), BrowserPage(), PersonalizePage(),
                          PrivacyPage(), TransferPage(), SummaryPage(), ApplyPage(), DonePage()]
     assert [p.id for p in pages] == PAGE_ORDER
     return pages
 
 
 __all__ = ["PAGE_ORDER", "PageContext", "Page", "make_pages", "WelcomePage", "ModePage",
-           "BrowserPage", "PersonalizePage", "AppsPage", "PrivacyPage", "TransferPage",
+           "BrowserPage", "PersonalizePage", "PrivacyPage", "TransferPage",
            "SummaryPage", "ApplyPage", "DonePage", "ApplyProgress", "BatchLine", "parse_batch_line",
            "apply_line", "APPLY_LINES", "WINE_HONESTY", "LEARN_MORE_TITLE", "LEARN_MORE_LINES"]

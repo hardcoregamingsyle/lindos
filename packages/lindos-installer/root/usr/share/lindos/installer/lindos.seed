@@ -1,0 +1,31 @@
+# Lindos installer - debconf selections baked into the installation medium's debconf database
+# (build/chroot/79-installer-flow.sh runs debconf-set-selections on this file inside the image).
+#
+# This is the same database casper writes when a boot entry carries "owner/key=value" words, so
+# these answers are equivalent to kernel command line words.  The Install and Try boot entries also
+# carry oem-config/enable and ubiquity/success_command themselves (belt and braces: that the baked
+# selections reach Ubiquity is inferred from casper's code, not verified on a real install).
+#
+# Format: <owner> <question> <type> <value>
+
+# OEM mode: the installer creates a temporary account and Ubiquity's oem-config wizard asks for the
+# real account name, password and computer name at the first boot.
+ubiquity oem-config/enable boolean true
+
+# The short finalisation after the copy: arms oem-config for the next boot (lindos-installer,
+# /usr/libexec/lindos/installer/finalize.sh).  Heavy work is NOT done there (it freezes the window).
+ubiquity ubiquity/success_command string /usr/libexec/lindos/installer/finalize.sh
+
+# The installer's own hook does the updates for real; Ubiquity's pre-download would only be thrown away.
+ubiquity ubiquity/download_updates boolean false
+
+# Lindos enables the 32-bit (i386) architecture for Wine and Steam; without this answer Ubiquity's
+# apt setup tries to remove every foreign architecture.
+d-i apt-setup/multiarch string i386
+
+# The OEM installer still shows a page for the temporary account (it cannot be skipped by a
+# preseed).  Allowing an empty password lets the user just press Continue; finalize.sh locks the
+# account at the end of the installation, so the empty password is never usable, and sets this
+# answer back to false in the new system (Ubiquity's first-boot wizard reads the same database and
+# must not accept an empty password for the real account).
+d-i user-setup/allow-password-empty boolean true

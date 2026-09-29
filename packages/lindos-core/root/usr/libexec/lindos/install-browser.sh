@@ -8,6 +8,7 @@
 # from there.  Firefox is Mint's .deb (no snap) — 'apt-get install firefox'.
 #
 # Usage: install-browser.sh <edge|chrome> [--repo-only] [--dry-run] [--no-update]
+#                           [--in-installer [--download-only | --no-download]]
 #        install-browser.sh firefox [--dry-run] [--no-update]
 #   --repo-only   only add the vendor's apt repository + signing key (no 'apt-get install').
 #                 Used by build/chroot/00-repos.sh to pre-stage Chrome's repo/key on the ISO
@@ -15,6 +16,15 @@
 #                 google-chrome-stable package at build time — that would be redistribution.
 #                 Reusing this script (not duplicating the repo/key logic in 00-repos.sh) keeps
 #                 there being exactly one place that knows Chrome's key URL / repo line.
+#   --in-installer  root inside 'chroot /target' for the Lindos installer (the Ubiquity target-config
+#                 hook, packages/lindos-installer): the caller has already refreshed the apt lists,
+#                 so the vendor list is only refreshed when this run had to write it; apt never
+#                 consults the 'deb cdrom:' source and never cleans lists.  With no phase flag it
+#                 downloads, then installs from the downloaded files.
+#   --download-only (with --in-installer) stage key + repo and download the package; install nothing
+#                 - safe to kill.  The installer gives this phase a short timeout.
+#   --no-download   (with --in-installer) install from the files --download-only fetched; never
+#                 touches the network.  The installer never kills this phase mid-transaction.
 # Exit codes: 0 installed (or already installed / repo staged) · 1 failure · 2 usage / not root
 #             · 3 offline
 set -Eeuo pipefail
@@ -24,6 +34,12 @@ LOG_FILE="${LINDOS_ROOT:-}/var/log/lindos/install-browser.log"
 DRY_RUN=0
 NO_UPDATE=0
 REPO_ONLY=0
+IN_INSTALLER=0
+DOWNLOAD_ONLY=0
+NO_DOWNLOAD=0
+LIST_CHANGED=0
+# --in-installer: never read the 'deb cdrom:' source, never clean the lists of the medium, fail fast
+APT_EXTRA=()
 BROWSER=""
 
 # --- vendor metadata (must match lindos/browsers.py BROWSERS) ---------------------------------
@@ -58,7 +74,7 @@ die() {
 }
 
 usage() {
-    printf 'Usage: %s <edge|chrome|firefox> [--repo-only] [--dry-run] [--no-update]\n' "${PROG}" >&2
+    printf 'Usage: %s <edge|chrome|firefox> [--repo-only] [--dry-run] [--no-update] [--in-installer [--download-only|--no-download]]\n' "${PROG}" >&2
     exit 2
 }
 
@@ -102,19 +118,22 @@ fetch_key() {
     mkdir -p "$(dirname "${dest}")"
     chmod 0755 "$(dirname "${dest}")"
     tmp="$(mktemp)"
-    trap 'rm -f "${tmp}"' RETURN
+    # explicit cleanup, no RETURN trap: a RETURN trap that names a local outlives the function in some bash
+    # versions and then fires (with 'set -u': fails) when the caller returns
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 --max-time 60 -o "${tmp}" "${url}" || die "cannot download signing key ${url} (offline?)" 3
+        curl -fsSL --retry 3 --max-time 60 -o "${tmp}" "${url}" || { rm -f "${tmp}"; die "cannot download signing key ${url} (offline?)" 3; }
     elif command -v wget >/dev/null 2>&1; then
-        wget -q --tries=3 --timeout=60 -O "${tmp}" "${url}" || die "cannot download signing key ${url} (offline?)" 3
+        wget -q --tries=3 --timeout=60 -O "${tmp}" "${url}" || { rm -f "${tmp}"; die "cannot download signing key ${url} (offline?)" 3; }
     else
+        rm -f "${tmp}"
         die "neither curl nor wget is installed" 1
     fi
     if grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "${tmp}"; then
-        gpg --dearmor --yes --output "${dest}" "${tmp}" || die "gpg --dearmor failed for ${url}" 1
+        gpg --dearmor --yes --output "${dest}" "${tmp}" || { rm -f "${tmp}"; die "gpg --dearmor failed for ${url}" 1; }
     else
         install -m 0644 "${tmp}" "${dest}"
     fi
+    rm -f "${tmp}"
     chmod 0644 "${dest}"
     log "keyring installed: ${dest}"
 }
@@ -134,6 +153,7 @@ write_list() {
     printf '%s\n' "${line}" >"${list}.tmp"
     chmod 0644 "${list}.tmp"
     mv -f "${list}.tmp" "${list}"
+    LIST_CHANGED=1
     log "apt source written: ${list}"
 }
 
@@ -151,9 +171,24 @@ apt_update_list() {
 }
 
 apt_install() {
-    run apt-get install -y -q \
-        -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
-        || die "apt-get install $* failed" 1
+    if [[ "${IN_INSTALLER}" -eq 0 ]]; then
+        run apt-get install -y -q \
+            -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
+            || die "apt-get install $* failed" 1
+        return 0
+    fi
+    # The installer runs this in two phases (see --download-only / --no-download): a download that
+    # may be killed on a timeout, then a dpkg run from the downloaded files that never is.
+    if [[ "${NO_DOWNLOAD}" -eq 0 ]]; then
+        run apt-get install -y -q -d "${APT_EXTRA[@]}" \
+            -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
+            || die "apt-get download of $* failed" 1
+    fi
+    if [[ "${DOWNLOAD_ONLY}" -eq 0 ]]; then
+        run apt-get install -y -q --no-download "${APT_EXTRA[@]}" \
+            -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" "$@" \
+            || die "apt-get install $* failed" 1
+    fi
 }
 
 install_vendor() {
@@ -179,6 +214,10 @@ install_vendor() {
         log "${name} (${package}) is already installed"
         return 0
     fi
+    if [[ "${IN_INSTALLER}" -eq 1 ]]; then
+        install_vendor_in_installer "${package}" "${key_url}" "${keyring}" "${list}" "${repo}" "${name}"
+        return 0
+    fi
     if [[ "${DRY_RUN}" -eq 0 ]]; then
         online || die "offline: ${name} is downloaded from the vendor's apt repository — connect to the internet and run 'lindos-browser install ${BROWSER}' later (Firefox is available meanwhile)" 3
     fi
@@ -187,6 +226,37 @@ install_vendor() {
     apt_update_list "${list}"
     apt_install "${package}"
     log "${name} installed"
+}
+
+install_vendor_in_installer() {
+    # install_vendor_in_installer <package> <key_url> <keyring> <list> <repo-line> <name>
+    # The ISO already carries the vendor's repo + key (build-time pre-staging) and the installer's
+    # own 'apt-get update' has refreshed its lists, so only what is missing is fetched here.
+    local package="$1" key_url="$2" keyring="$3" list="$4" repo="$5" name="$6"
+    local key_path="${LINDOS_ROOT:-}${keyring}" list_path="${LINDOS_ROOT:-}${list}"
+    if [[ "${NO_DOWNLOAD}" -eq 1 ]]; then
+        # no network in this phase: everything must already be staged by the download phase
+        if [[ "${DRY_RUN}" -eq 0 && ( ! -s "${key_path}" || ! -s "${list_path}" ) ]]; then
+            die "${name}: repository not staged (run the --download-only phase first)" 1
+        fi
+    else
+        if [[ "${DRY_RUN}" -eq 0 ]]; then
+            online || die "offline: ${name} is downloaded from the vendor's apt repository" 3
+        fi
+        if [[ "${DRY_RUN}" -eq 1 || ! -s "${key_path}" ]]; then
+            fetch_key "${key_url}" "${key_path}"
+        fi
+        write_list "${list_path}" "${repo}"
+        if [[ "${LIST_CHANGED}" -eq 1 ]]; then
+            apt_update_list "${list}"
+        fi
+    fi
+    apt_install "${package}"
+    if [[ "${DOWNLOAD_ONLY}" -eq 1 ]]; then
+        log "${name} downloaded (--download-only: nothing installed)"
+    else
+        log "${name} installed"
+    fi
 }
 
 install_firefox() {
@@ -211,6 +281,9 @@ main() {
             --repo-only) REPO_ONLY=1 ;;
             --dry-run) DRY_RUN=1 ;;
             --no-update) NO_UPDATE=1 ;;
+            --in-installer) IN_INSTALLER=1 ;;
+            --download-only) DOWNLOAD_ONLY=1 ;;
+            --no-download) NO_DOWNLOAD=1 ;;
             -h|--help) usage ;;
             *) printf '%s: unknown argument %s\n' "${PROG}" "${arg}" >&2; usage ;;
         esac
@@ -219,6 +292,21 @@ main() {
     if [[ "${REPO_ONLY}" -eq 1 && "${BROWSER}" == "firefox" ]]; then
         printf '%s: --repo-only is not meaningful for firefox (no separate vendor repo)\n' "${PROG}" >&2
         usage
+    fi
+    if [[ ( "${DOWNLOAD_ONLY}" -eq 1 || "${NO_DOWNLOAD}" -eq 1 ) && "${IN_INSTALLER}" -eq 0 ]]; then
+        printf '%s: --download-only and --no-download need --in-installer\n' "${PROG}" >&2
+        usage
+    fi
+    if [[ "${DOWNLOAD_ONLY}" -eq 1 && "${NO_DOWNLOAD}" -eq 1 ]]; then
+        printf '%s: --download-only and --no-download exclude each other\n' "${PROG}" >&2
+        usage
+    fi
+    if [[ "${IN_INSTALLER}" -eq 1 ]]; then
+        APT_EXTRA=(-o "Dir::Etc::SourceList=/dev/null" -o "APT::Get::List-Cleanup=0"
+                   -o "Acquire::Retries=2" -o "Acquire::http::Timeout=20" -o "Acquire::https::Timeout=20")
+        if [[ "${NO_DOWNLOAD}" -eq 1 ]]; then
+            NO_UPDATE=1
+        fi
     fi
     if [[ "${DRY_RUN}" -eq 0 && "$(id -u)" -ne 0 ]]; then
         die "must run as root (the lindos helper calls this through pkexec)" 2

@@ -1,6 +1,10 @@
 [Unit]
 Description=Lindos: check for lindos-* component updates and notify (read-only, unprivileged)
 Documentation=man:lindos-update(1)
+# Not in the live USB session (that session only installs Lindos): the same test as
+# lindos-update-notify.sh's own is-live-session check, so it is skipped before it even starts.
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
 
 [Service]
 Type=oneshot

@@ -226,8 +226,14 @@ def current_mode() -> str:
     return lconfig.effective_mode()
 
 
-def build_system_plan(mode: Mode, *, set_system_default: bool = False, offline: bool = False) -> Dict[str, Any]:
-    """JSON-able plan for the helper action ``apply-mode``."""
+def build_system_plan(mode: Mode, *, set_system_default: bool = False, offline: bool = False,
+                      install: bool = True) -> Dict[str, Any]:
+    """JSON-able plan for the helper action ``apply-mode``.
+
+    ``install=False`` tells the helper to apply only the configuration (services, sysctl, zram,
+    governor, ...) and never to apt/flatpak-install the mode's packages: the installer already did
+    that, so the first-boot wizard must not.  ``lindos-mode set`` and Settings keep the default.
+    """
     return {
         "schema": PLAN_SCHEMA,
         "mode": mode.id,
@@ -242,6 +248,7 @@ def build_system_plan(mode: Mode, *, set_system_default: bool = False, offline: 
         "apply_system": mode.apply_system_script(),
         "set_system_default": bool(set_system_default),
         "offline": bool(offline),
+        "install": bool(install),
     }
 
 
@@ -463,8 +470,9 @@ def _step_user_script(mode: Mode, result: ApplyResult, dry_run: bool, log_fn: Lo
     result.add("apply-user-script", ok, _tail(out) or ("ok" if ok else "failed"))
 
 
-def _step_system(mode: Mode, result: ApplyResult, dry_run: bool, system: bool, log_fn: LogFn) -> None:
-    plan = build_system_plan(mode, set_system_default=system)
+def _step_system(mode: Mode, result: ApplyResult, dry_run: bool, system: bool, log_fn: LogFn,
+                 install: bool = True) -> None:
+    plan = build_system_plan(mode, set_system_default=system, install=install)
     if dry_run:
         result.add("system", True, "would call helper apply-mode with plan: " + json.dumps(plan, sort_keys=True))
         return
@@ -478,16 +486,18 @@ def _step_system(mode: Mode, result: ApplyResult, dry_run: bool, system: bool, l
 
 
 # --- public entry point ------------------------------------------------------------------
-def system_plan(mode_id: str, *, system: bool = False, offline: bool = False) -> Dict[str, Any]:
+def system_plan(mode_id: str, *, system: bool = False, offline: bool = False,
+                install: bool = True) -> Dict[str, Any]:
     """The helper ``apply-mode`` payload for *mode_id* (:func:`build_system_plan`); ``KeyError`` for an
     unknown mode.  Lets a caller that batches several privileged steps into one helper run
     (``lindos.helper.run_privileged_batch`` - the first-boot wizard) do the privileged half
-    itself and call :func:`apply_mode` with ``defer_system=True`` for the user half."""
-    return build_system_plan(get_mode(mode_id), set_system_default=system, offline=offline)
+    itself and call :func:`apply_mode` with ``defer_system=True`` for the user half.  The
+    first-boot wizard passes ``install=False``: it never installs packages."""
+    return build_system_plan(get_mode(mode_id), set_system_default=system, offline=offline, install=install)
 
 
 def apply_mode(mode_id: str, *, system: bool = False, dry_run: bool = False,
-               log: LogFn = print, defer_system: bool = False) -> ApplyResult:
+               log: LogFn = print, defer_system: bool = False, install: bool = True) -> ApplyResult:
     """Switch to *mode_id*.
 
     User side (always): write ``~/.config/lindos/config.json``, load the panel profile
@@ -496,7 +506,8 @@ def apply_mode(mode_id: str, *, system: bool = False, dry_run: bool = False,
     :func:`build_system_plan` (skipped when ``dry_run``).  ``system=True`` additionally makes
     the helper write ``/etc/lindos/system.json``.  ``defer_system=True`` leaves the privileged
     side entirely to the caller (which sends :func:`system_plan` to the helper itself, e.g. inside
-    a ``run-batch``) so this call never asks for a password.
+    a ``run-batch``) so this call never asks for a password.  ``install=False`` makes the helper
+    skip installing the mode's apt packages and Flatpaks (configuration only).
 
     Never raises for missing tools; see :class:`ApplyResult`.
     """
@@ -520,7 +531,7 @@ def apply_mode(mode_id: str, *, system: bool = False, dry_run: bool = False,
         result.add("system", True, "deferred: the privileged part is run by the caller (one password prompt)")
     else:
         try:
-            _step_system(mode, result, dry_run, system, log_fn)
+            _step_system(mode, result, dry_run, system, log_fn, install)
         except Exception as exc:
             _LOG.exception("system step crashed")
             result.add("system", False, f"error: {exc}")

@@ -162,6 +162,20 @@ def test_helper_item_whitelists_match_scripts_and_catalogues():
         assert set(app["items"]) <= set(allowed), app["id"]
 
 
+def test_installer_extras_use_only_what_the_helper_and_the_modes_know():
+    """lindos-installer's extras.json (what the installer adds once, for every Mode) hands ids to
+    install-compat.sh / install-gaming.sh: the same ones the helper accepts for Settings > Apps 'Install now'."""
+    from lindos import helper
+
+    extras = _json(_root("lindos-installer", "usr", "share", "lindos", "installer", "extras.json"))
+    assert extras["compat"] and set(extras["compat"]) <= set(helper.COMPAT_ITEMS)
+    assert extras["gaming"] and set(extras["gaming"]) <= set(helper.GAMING_ITEMS)
+    for mode_id in MODE_IDS:
+        mode = _json(_root("lindos-core", "usr", "share", "lindos", "modes", mode_id, "mode.json"))
+        assert set(mode.get("packages", [])) <= set(extras["apt"]), mode_id
+        assert set(mode.get("flatpaks", [])) <= set(extras["flatpaks"]), mode_id
+
+
 def test_tune_service_whitelist_within_helper_whitelist():
     from lindos import helper
     from lindos_tune import services

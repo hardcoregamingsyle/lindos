@@ -21,5 +21,10 @@ Description: Lindos Settings - Windows-11-style settings centre
  governor, GPU drivers, fans, power profile, RGB, TRIM).  The remaining pages
  delegate to the existing XFCE and system tools to keep memory use low.
  .
+ The Apps page lists whatever the Lindos installer could not finish (for
+ example while the PC was offline: Google Chrome, drivers, Wine, launchers,
+ Flatpak apps), read from /var/lib/lindos/install-state.json, each with an
+ "Install now" button that uses the ordinary privileged helper actions.
+ .
  "lindos-settings --power-menu" shows the Win+X style power menu.
  The lindos-settings.desktop launcher is shipped by lindos-desktop.

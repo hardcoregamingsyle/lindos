@@ -14,7 +14,6 @@ import logging
 import os
 import posixpath
 import queue
-import socket
 import subprocess
 import threading
 import types
@@ -22,10 +21,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import plan as _plan
 from .plan import (
-    ACT_APPLY_MODE, ACT_INSTALL_BROWSER, ACT_INSTALL_COMPAT, ACT_INSTALL_FLATPAKS,
-    ACT_INSTALL_GAMING, ACT_INSTALL_PACKAGES, ACT_SET_ACCENT, ACT_SET_DEFAULT_BROWSER,
-    ACT_SET_TASKBAR, ACT_SET_THEME, ACT_SET_WALLPAPER, ACT_WRITE_CONFIG,
-    ACT_WRITE_SYSTEM_CONFIG, Executor, LogFn, Step,
+    ACT_APPLY_MODE, ACT_SET_ACCENT, ACT_SET_DEFAULT_BROWSER, ACT_SET_TASKBAR, ACT_SET_THEME,
+    ACT_SET_WALLPAPER, ACT_WRITE_CONFIG, ACT_WRITE_SYSTEM_CONFIG, BROWSER_INSTALLED,
+    BROWSER_PENDING, BROWSER_UNAVAILABLE, Executor, LogFn, Step,
 )
 
 log = logging.getLogger("lindos-setup.core")
@@ -255,21 +253,101 @@ def browser_installed(bid: str) -> bool:
     return False
 
 
-def is_online(timeout: float = 2.0) -> bool:
-    """``lindos.browsers.online()``; fallback: a TCP connect to a public resolver."""
-    browsers = core_module("browsers")
-    if browsers is not None:
+# ---------------------------------------------------------------------------
+# which kind of session is this?  (the wizard must never run in the live USB session
+# or as the temporary OEM account: the installer and oem-config come first)
+# ---------------------------------------------------------------------------
+_LIVE_WORDS = ("boot=casper", "boot=live")
+
+
+def is_live_session() -> bool:
+    """True while running from the install medium (``boot=casper`` / ``boot=live`` on the kernel
+    command line).  ``lindos.session`` is the source of truth; if lindos-core cannot be imported
+    the same check is done here so the wizard still refuses to run in a live session."""
+    session = core_module("session")
+    if session is not None:
         try:
-            return bool(browsers.online())
+            return bool(session.is_live_session())
         except Exception as exc:
-            log.debug("browsers.online() failed: %s", exc)
-    for host, port in (("packages.microsoft.com", 443), ("1.1.1.1", 443), ("8.8.8.8", 53)):
+            log.warning("lindos.session.is_live_session failed: %s", exc)
+    path = os.environ.get("LINDOS_TEST_CMDLINE") or "/proc/cmdline"
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return any(word in _LIVE_WORDS for word in fh.read().split())
+    except OSError:
+        return False
+
+
+def is_oem_temp_user() -> bool:
+    """True for the temporary ``oem`` account of Ubiquity's OEM mode (the end user's own account
+    does not exist yet, so the wizard would set up the wrong person)."""
+    session = core_module("session")
+    if session is not None:
         try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except OSError:
-            continue
-    return False
+            return bool(session.is_oem_temp_user())
+        except Exception as exc:
+            log.warning("lindos.session.is_oem_temp_user failed: %s", exc)
+    try:
+        import getpass
+        return getpass.getuser().strip() == "oem"
+    except (ImportError, OSError, KeyError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# what the installer did (read-only; /var/lib/lindos/install-state.json)
+# ---------------------------------------------------------------------------
+def install_steps() -> Dict[str, str]:
+    """``{step id: done|pending|skipped|failed}`` for every step the installer recorded.
+
+    Empty when there is no record (an installation older than the installer flow, a dev machine)
+    or lindos-core cannot be imported.  Never raises."""
+    state = core_module("installstate")
+    if state is None:
+        return {}
+    try:
+        steps = state.load().get("steps", {})
+    except Exception as exc:
+        log.debug("lindos.installstate.load failed: %s", exc)
+        return {}
+    out: Dict[str, str] = {}
+    if isinstance(steps, dict):
+        for sid, entry in steps.items():
+            status = entry.get("status") if isinstance(entry, dict) else None
+            if isinstance(status, str) and status:
+                out[str(sid)] = status
+    return out
+
+
+def browser_state(bid: str, steps: Optional[Dict[str, str]] = None) -> str:
+    """``installed`` / ``pending`` / ``unavailable`` for one browser.
+
+    * Firefox is on the ISO: always installed.
+    * Anything really installed (dpkg / on PATH) is installed.
+    * Chrome: the installer's ``browser`` step says ``done`` -> installed; ``skipped`` ->
+      unavailable (the installer left it out on purpose); ``pending`` / ``failed`` / no record ->
+      pending (the silent start-up retry adds it once the PC is online).
+    * Edge is never installed by Lindos: only offered when it is already on this PC.
+    """
+    if bid == "firefox":
+        return BROWSER_INSTALLED
+    if browser_installed(bid):
+        return BROWSER_INSTALLED
+    if bid == "chrome":
+        status = (steps if steps is not None else install_steps()).get("browser", "")
+        if status == "done":
+            return BROWSER_INSTALLED
+        if status == "skipped":
+            return BROWSER_UNAVAILABLE
+        return BROWSER_PENDING
+    return BROWSER_UNAVAILABLE
+
+
+def browser_states(bids: Optional[List[str]] = None,
+                   steps: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """:func:`browser_state` for every browser id (default: the browsers table)."""
+    recorded = steps if steps is not None else install_steps()
+    return {bid: browser_state(bid, recorded) for bid in (bids or list(browsers_table()))}
 
 
 def ram_total_mb() -> Optional[int]:
@@ -488,7 +566,8 @@ def _exec_set_taskbar(step: Step, logf: LogFn) -> Any:
 def _exec_apply_mode(step: Step, logf: LogFn) -> Any:
     modes = _need("modes")
     mode_id = str(step.payload["mode"])
-    result = modes.apply_mode(mode_id, log=logf)
+    # install=False: configuration only - the installer already installed the Mode's packages
+    result = modes.apply_mode(mode_id, log=logf, install=False)
     steps = getattr(result, "steps", None)
     if steps:
         for entry in steps:
@@ -501,17 +580,6 @@ def _exec_apply_mode(step: Step, logf: LogFn) -> Any:
     return ok, "" if ok else "mode apply reported problems (see log)"
 
 
-def _exec_install_browser(step: Step, logf: LogFn) -> Any:
-    browsers = _need("browsers")
-    bid = str(step.payload["browser"])
-    ok = bool(browsers.install(bid, log=logf))
-    if not ok:
-        return False, ("%s could not be installed now. Install it later with "
-                       "'lindos-browser install %s --set-default' or from the Web browsers "
-                       "cards in Lindos Settings > Apps (lindos-settings apps)." % (bid, bid))
-    return True
-
-
 def _exec_set_default_browser(step: Step, logf: LogFn) -> Any:
     browsers = _need("browsers")
     bid = str(step.payload["browser"])
@@ -519,9 +587,15 @@ def _exec_set_default_browser(step: Step, logf: LogFn) -> Any:
         installed = bool(browsers.is_installed(bid))
     except Exception:
         installed = True
-    if not installed:
-        return False, "%s is not installed; default browser unchanged" % bid
-    return _ok(browsers.set_default(bid))
+    if installed:
+        return _ok(browsers.set_default(bid))
+    if step.payload.get("pending") or browser_state(bid) == BROWSER_PENDING:
+        # not a failure: the choice is stored (config + system.json) and the background retry
+        # makes it the default once it lands.  The personal default is left alone on purpose, so
+        # the system-wide default that retry writes applies to this account too.
+        return True, ("%s is not installed yet; it becomes the default browser when it is added "
+                      "(Firefox until then)" % bid)
+    return False, "%s is not installed; default browser unchanged" % bid
 
 
 def _exec_helper(step: Step, logf: LogFn) -> Any:
@@ -540,25 +614,17 @@ def _exec_helper(step: Step, logf: LogFn) -> Any:
     return ok, "" if ok else "helper %s exited with %s" % (step.action, code)
 
 
-def _browser_later_hint(bid: str, why: str = "") -> str:
-    return ("%s could not be installed now%s. Install it later with "
-            "'lindos-browser install %s --set-default' or from the Web browsers "
-            "cards in Lindos Settings > Apps (lindos-settings apps)."
-            % (bid, (" (%s)" % why) if why else "", bid))
-
-
 class SystemBatch:
     """Every ``kind=system`` step of a plan, run through ONE ``lindos-helper`` process.
 
     The first system step that the :class:`~lindos_setup.plan.Runner` reaches triggers
     :meth:`run`, which sends all of the plan's privileged work to
-    ``lindos.helper.run_privileged_batch`` -- a single ``pkexec``, i.e. a single password prompt
-    (a fresh pkexec per step meant one prompt per step, and again whenever polkit's temporary
-    grant expired during a long download).  Later system steps only read the cached per-step
-    outcomes, so ``Runner`` / ``Plan`` / ``Step`` semantics, per-step UI callbacks and failure
-    isolation are unchanged.  Work that needs no root stays in the executors and runs as the user
-    after the batch: the rest of ``apply-mode`` (config, panel, compositor, ``apply-user.sh``) and
-    the browser "already installed / offline" pre-check and later verification.
+    ``lindos.helper.run_privileged_batch`` -- a single ``pkexec``, i.e. a single password prompt.
+    Later system steps only read the cached per-step outcomes, so ``Runner`` / ``Plan`` /
+    ``Step`` semantics, per-step UI callbacks and failure isolation are unchanged.  The batch is
+    configuration only (system defaults, and the Mode's tuning with ``install=False``: nothing is
+    downloaded).  Work that needs no root stays in the executors and runs as the user after the
+    batch: the rest of ``apply-mode`` (config, panel, compositor, ``apply-user.sh``).
 
     ``run_batch`` is injectable for tests; the default is ``lindos.helper.run_privileged_batch``.
     """
@@ -581,19 +647,7 @@ class SystemBatch:
         payload = dict(step.payload)
         if step.action == ACT_APPLY_MODE:
             modes = _need("modes")
-            payload = modes.system_plan(str(step.payload["mode"]),
-                                        offline=not bool(step.payload.get("online", True)))
-        elif step.action == ACT_INSTALL_BROWSER:
-            browsers = _need("browsers")
-            bid = str(step.payload["browser"])
-            ready = browsers.install_preflight(bid, logf)
-            if ready is True:
-                self.outcomes[step.id] = (True, "already installed")
-                return None
-            if ready is False:
-                self.outcomes[step.id] = (False, "offline")
-                return None
-            payload = {"browser": bid}
+            payload = modes.system_plan(str(step.payload["mode"]), install=False)
         return {"id": step.id, "action": step.action, "payload": payload}
 
     def run(self, logf: LogFn) -> None:
@@ -660,20 +714,13 @@ class SystemBatch:
             problems.append("system part failed: %s" % (sys_msg or "no details"))
         return (not problems), "; ".join(problems)
 
-    def exec_install_browser(self, step: Step, logf: LogFn) -> Any:
-        self.run(logf)
-        ok, msg = self.outcome(step)
-        if ok:
-            return True
-        return False, _browser_later_hint(str(step.payload["browser"]), msg)
-
 
 def make_real_executors(plan: Optional[_plan.Plan] = None) -> Dict[str, Executor]:
     """Executors that call the real lindos-core APIs (SPEC §13 call map).
 
     With *plan*, every privileged step shares one :class:`SystemBatch` (one helper run, one
     password prompt); without it each privileged step makes its own helper call (the original
-    per-step behaviour, kept for callers that run a single step).
+    per-step behaviour, kept for callers that run a single step).  None of them installs anything.
     """
     execs = _make_step_executors()
     if plan is not None and plan.system_steps():
@@ -681,7 +728,6 @@ def make_real_executors(plan: Optional[_plan.Plan] = None) -> Dict[str, Executor
         for action in _plan.SYSTEM_ACTION_ORDER:
             execs[action] = batch.exec_helper
         execs[ACT_APPLY_MODE] = batch.exec_apply_mode
-        execs[ACT_INSTALL_BROWSER] = batch.exec_install_browser
     return execs
 
 
@@ -695,11 +741,6 @@ def _make_step_executors() -> Dict[str, Executor]:
         ACT_SET_DEFAULT_BROWSER: _exec_set_default_browser,
         ACT_WRITE_SYSTEM_CONFIG: _exec_helper,
         ACT_APPLY_MODE: _exec_apply_mode,
-        ACT_INSTALL_BROWSER: _exec_install_browser,
-        ACT_INSTALL_PACKAGES: _exec_helper,
-        ACT_INSTALL_FLATPAKS: _exec_helper,
-        ACT_INSTALL_COMPAT: _exec_helper,
-        ACT_INSTALL_GAMING: _exec_helper,
     }
 
 
@@ -712,10 +753,7 @@ def headless_dry_run(logger: Optional[logging.Logger] = None,
     import sys
     logger = logger or log
     emit = write if write is not None else (lambda s: (sys.stdout.write(s + "\n"), sys.stdout.flush()))
-    catalog = _plan.load_catalog()
-    sel = _plan.Selections()
-    sel.apps = catalog.default_ids(sel.mode)
-    plan = _plan.build_plan(sel, catalog, online=is_online())
+    plan = _plan.build_plan(_plan.Selections())
     emit(plan.to_json())
     logger.info("headless dry-run: printed default plan (%d steps)", len(plan))
     return 0
@@ -800,7 +838,8 @@ def launch_settings(page: Optional[str] = None) -> bool:
 __all__ = [
     "core_module", "core_available", "home_dir", "user_path", "setup_done_path", "log_dir",
     "log_file", "setup_done_exists", "in_xfce", "mark_setup_done", "load_modes", "RAM_HINTS",
-    "browsers_table", "browser_installed", "is_online", "ram_total_mb", "list_wallpapers",
+    "browsers_table", "browser_installed", "ram_total_mb", "list_wallpapers",
+    "is_live_session", "is_oem_temp_user", "install_steps", "browser_state", "browser_states",
     "wallpaper_display_name", "LiveApplier", "SystemBatch", "make_real_executors", "launch_settings", "which",
     "headless_dry_run", "transfer_sources", "launch_transfer_gui",
 ]

@@ -21,7 +21,9 @@ recipe notes, the compat matrix, docs and this file. In particular:
 * Adobe CC 2019–2021 recipes are `partial` at best (CS6 `works`); newer releases, Premiere and
   AutoCAD are `broken` and must name native alternatives.
 * RAM: "target 350–500 MB, measured as `free -m` used at idle" — no marketing numbers.
-* Edge and Chrome are downloaded during setup from the vendors; never put them on the ISO.
+* Chrome is downloaded by the installer from Google's own apt repository, and Edge on demand from Microsoft's
+  (`install-browser.sh`); never put either on the ISO or install them at build time (`79-installer-flow.sh` dies
+  if one is in the image).
 
 ## 2. Repository map
 

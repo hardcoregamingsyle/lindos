@@ -35,8 +35,11 @@ lindos-game launch <ID> [--install]             start a launcher (offers to inst
 Non-root `lindos-game install` goes through the polkit helper action `install-gaming` → root runs
 `/usr/libexec/lindos/install-gaming.sh <items…>` (`[--from-chroot] [--no-flatpak] [--dry-run]
 [--list]`; exit 0 ok / 1 an item failed / 2 usage or not root / 3 offline; log
-`/var/log/lindos/install-gaming.log`). The Gaming mode pins Steam, Lutris, Heroic, Prism and
-Roblox; the OOBE offers the same items.
+`/var/log/lindos/install-gaming.log`; the installer runs it with `--in-installer`, which is
+`--from-chroot` plus the installer's download-then-install phases). The Gaming mode pins Steam, Lutris,
+Heroic, Prism and Roblox; the installer already installed those launchers for every Mode (best effort for the
+Flatpaks; anything it could not do offline is offered under Lindos Settings › Apps › Left to finish from
+setup).
 
 Menu entries shipped: **Roblox** (`flatpak run org.vinegarhq.Sober`), **Roblox Studio**
 (`flatpak run org.vinegarhq.Vinegar`), **Minecraft** (`lindos-game launch prism`).
@@ -82,8 +85,9 @@ lindos-drivers xone install|remove|status [--accept-firmware-license] [--skip-fi
 ```
 
 `autodetect` and `install --auto` extend the GPU logic to **Broadcom Wi-Fi** and **audio firmware**,
-and a first-boot service offers the install on a fresh machine — see the dedicated
-[DRIVERS.md](DRIVERS.md). The GPU-specific behaviour below is unchanged.
+and the installer installs the free drivers and firmware while it installs (a proprietary GPU driver only
+with your consent, never with Secure Boot on; a silent background service retries what it could not do) —
+see the dedicated [DRIVERS.md](DRIVERS.md). The GPU-specific behaviour below is unchanged.
 
 * NVIDIA drivers are **not** on the ISO (size, proprietary blob). `install --nvidia-open` /
   `--nvidia-proprietary` uses `ubuntu-drivers`' recommendation → `nvidia-driver-<N>[-open]`,

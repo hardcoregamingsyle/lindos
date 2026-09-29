@@ -1,0 +1,31 @@
+#!/bin/bash
+# oem-config-pending — exit 0 while Ubiquity's oem-config first-boot wizard is armed and has not
+# finished yet (the new user's account does not exist), 1 otherwise.
+#
+# How "armed" looks on disk (Ubiquity's oem-config-prepare, which the Lindos installer repeats):
+#   * /lib/systemd/system/oem-config.target (and .service) are copied in from /usr/lib/oem-config/
+#     - the package itself never ships them there, and oem-config-firstboot deletes them again as
+#     the last thing it does, right before it isolates graphical.target;
+#   * /etc/systemd/system/default.target points at oem-config.target.
+# While either is true the machine only reaches the wizard: WantedBy=multi-user.target units do not
+# start on their own (oem-config.target conflicts with multi-user.target), but a unit started by
+# hand or by an unexpected path must still leave the machine alone.  Lindos first-boot retries
+# ask this helper and wait for the wizard to finish.
+#
+# Usage: oem-config-pending            (silent; the exit status is the answer)
+# Test override: LINDOS_ROOT=<dir> is prefixed to every path (like every Lindos system path).
+set -Eeuo pipefail
+
+root="${LINDOS_ROOT:-}"
+
+for dir in /lib/systemd/system /usr/lib/systemd/system /etc/systemd/system; do
+    if [ -e "${root}${dir}/oem-config.target" ]; then
+        exit 0
+    fi
+done
+
+link="$(readlink "${root}/etc/systemd/system/default.target" 2>/dev/null || true)"
+if [ "${link##*/}" = "oem-config.target" ]; then
+    exit 0
+fi
+exit 1

@@ -1,6 +1,9 @@
 """One password prompt for the whole first-boot apply: every ``kind=system`` step of a plan goes
-through a SINGLE ``lindos.helper.run_privileged_batch`` call; the user-side halves of ``apply-mode``
-and ``install-browser`` still run as the user afterwards; failures stay isolated per step.
+through a SINGLE ``lindos.helper.run_privileged_batch`` call; the user-side half of ``apply-mode``
+still runs as the user afterwards; failures stay isolated per step.
+
+The batch is configuration only: the wizard never installs anything (the installer did), so the
+Mode's system plan is always built with ``install=False``.
 
 A fake ``lindos`` package is injected (like ``test_core.py``) so the wizard side is exercised on any
 OS; ``test_default_plan_through_the_real_helper_dry_run`` additionally drives the real
@@ -18,14 +21,13 @@ import pytest
 
 from lindos_setup import core
 from lindos_setup import plan as planmod
-from lindos_setup.plan import Plan, Runner, Selections, Step, build_plan, load_catalog
+from lindos_setup.plan import Plan, Runner, Selections, Step, build_plan
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-APPS_JSON = os.path.normpath(os.path.join(HERE, "..", "root", "usr", "share", "lindos", "setup", "apps.json"))
 CORE_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "lindos-core", "root"))
 REAL_HELPER = os.path.join(CORE_ROOT, "usr", "libexec", "lindos", "lindos-helper")
 
-SYSTEM_IDS = ["write-system-config", "apply-mode", "install-browser", "install-compat"]
+SYSTEM_IDS = ["write-system-config", "apply-mode"]
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +62,6 @@ class Env:
     def __init__(self) -> None:
         self.calls: List[tuple] = []          # ordered, across every fake module
         self.installed = {"firefox"}          # browsers considered installed
-        self.preflight = None                 # override of install_preflight's result
         self.fail_ids: Dict[str, str] = {}    # batch step id -> failure message
         self.batch_code = 0                   # helper exit code of the batch
         self.cancel = False                   # authentication cancelled: nothing runs
@@ -69,7 +70,7 @@ class Env:
         self.singles: List[str] = []
 
 
-def _install_fake_lindos(monkeypatch, tmp_path, *, online: bool = True) -> Env:
+def _install_fake_lindos(monkeypatch, tmp_path) -> Env:
     env = Env()
     calls = env.calls
 
@@ -89,12 +90,14 @@ def _install_fake_lindos(monkeypatch, tmp_path, *, online: bool = True) -> Env:
 
     modes = types.ModuleType("lindos.modes")
 
-    def system_plan(mode_id, *, system=False, offline=False):
+    def system_plan(mode_id, *, system=False, offline=False, install=True):
+        calls.append(("system_plan", mode_id, install))
         if env.system_plan_error:
             raise env.system_plan_error
-        return {"mode": mode_id, "offline": offline, "packages": [], "flatpaks": []}
+        return {"mode": mode_id, "offline": offline, "packages": ["thunderbird"], "flatpaks": [],
+                "install": install}
 
-    def apply_mode(mode_id, *, system=False, dry_run=False, log=print, defer_system=False):
+    def apply_mode(mode_id, *, system=False, dry_run=False, log=print, defer_system=False, install=True):
         calls.append(("apply_mode(user)", mode_id, defer_system))
         assert defer_system is True, "the wizard must never let apply_mode ask for a password itself"
         log("fake user half of %s" % mode_id)
@@ -105,24 +108,10 @@ def _install_fake_lindos(monkeypatch, tmp_path, *, online: bool = True) -> Env:
 
     browsers = types.ModuleType("lindos.browsers")
     browsers.BROWSERS = {"edge": {}, "chrome": {}, "firefox": {}}
-
-    def install_preflight(bid, log=print):
-        calls.append(("install_preflight", bid))
-        if env.preflight is not None:
-            if env.preflight is False:
-                log("offline: %s is downloaded from the vendor's apt repository" % bid)
-            return env.preflight
-        if bid in env.installed:
-            return True
-        if bid != "firefox" and not online:
-            return False
-        return None
-
-    browsers.install_preflight = install_preflight
-    browsers.install = lambda bid, log=print: (_ for _ in ()).throw(AssertionError("per-step install must not run"))
+    browsers.install_preflight = lambda *a, **k: (_ for _ in ()).throw(AssertionError("the wizard installs nothing"))
+    browsers.install = lambda *a, **k: (_ for _ in ()).throw(AssertionError("the wizard installs nothing"))
     browsers.is_installed = lambda bid: bid in env.installed
     browsers.set_default = lambda bid: (calls.append(("set_default", bid)), True)[1]
-    browsers.online = lambda: online
 
     helper = types.ModuleType("lindos.helper")
 
@@ -146,8 +135,6 @@ def _install_fake_lindos(monkeypatch, tmp_path, *, online: bool = True) -> Env:
             else:
                 if log:
                     log("[batch] ran %s" % s["id"])
-                if s["action"] == "install-browser":
-                    env.installed.add(s["payload"]["browser"])
                 res = types.SimpleNamespace(id=s["id"], action=s["action"], ok=True, code=0, message="")
             results.append(res)
             if on_step:
@@ -175,11 +162,8 @@ def _install_fake_lindos(monkeypatch, tmp_path, *, online: bool = True) -> Env:
     return env
 
 
-def _default_plan(online: bool = True, **sel_kw) -> Plan:
-    catalog = load_catalog(APPS_JSON)
-    sel = Selections(**sel_kw)
-    sel.apps = catalog.default_ids(sel.mode)
-    return build_plan(sel, catalog, online=online)
+def _default_plan(**sel_kw) -> Plan:
+    return build_plan(Selections(**sel_kw))
 
 
 def _run(plan: Plan, logs=None):
@@ -187,9 +171,9 @@ def _run(plan: Plan, logs=None):
 
 
 # ---------------------------------------------------------------------------------------------
-# (b) exactly one batch, zero per-step helper calls
+# (b) exactly one batch, zero per-step helper calls, and never an install
 # ---------------------------------------------------------------------------------------------
-def test_default_plan_has_the_four_system_steps_that_used_to_mean_four_prompts():
+def test_default_plan_has_only_the_two_configuration_system_steps():
     plan = _default_plan()
     assert [s.id for s in plan.system_steps()] == SYSTEM_IDS
 
@@ -207,12 +191,25 @@ def test_default_plan_makes_exactly_one_batch_call_and_no_per_step_helper_calls(
     assert [e["action"] for e in entries] == SYSTEM_IDS
     payloads = {e["id"]: e["payload"] for e in entries}
     assert payloads["write-system-config"] == {"mode": "everyday", "browser": "chrome"}
-    assert payloads["apply-mode"] == {"mode": "everyday", "offline": False, "packages": [], "flatpaks": []}
-    assert payloads["install-browser"] == {"browser": "chrome"}
-    assert payloads["install-compat"] == {"items": ["wine", "umu"]}
+    # the Mode's plan still lists its packages, but tells the helper NOT to install them
+    assert payloads["apply-mode"] == {"mode": "everyday", "offline": False, "packages": ["thunderbird"],
+                                      "flatpaks": [], "install": False}
+    assert ("system_plan", "everyday", False) in env.calls
     # every plan step still got its own result and callbacks-worthy outcome, in plan order
     assert [r.step_id for r in result.results] == [s.id for s in plan.steps]
     assert any("single administrator prompt" in line for line in logs)
+
+
+def test_the_batch_never_carries_an_install_action(monkeypatch, tmp_path):
+    env = _install_fake_lindos(monkeypatch, tmp_path)
+    for mode in planmod.MODE_IDS:
+        for browser in planmod.BROWSER_IDS:
+            env.installed = {"firefox", "chrome", "edge"}
+            _run(_default_plan(mode=mode, browser=browser))
+    actions = {e["action"] for batch in env.batches for e in batch}
+    assert actions == {"write-system-config", "apply-mode"}
+    assert all(e["payload"].get("install") is False for batch in env.batches for e in batch
+               if e["action"] == "apply-mode")
 
 
 def test_batch_is_triggered_by_the_first_system_step_not_before(monkeypatch, tmp_path):
@@ -244,6 +241,7 @@ def test_batch_runs_once_even_if_asked_twice(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------------------------
 def test_user_side_steps_run_after_the_batch(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
+    env.installed.add("chrome")            # the installer put Chrome there
     result = _run(_default_plan())
     assert result.ok
     names = [c[0] for c in env.calls]
@@ -252,16 +250,15 @@ def test_user_side_steps_run_after_the_batch(monkeypatch, tmp_path):
     set_default_at = names.index("set_default")
     assert batch_at < apply_user_at < set_default_at
     assert ("apply_mode(user)", "everyday", True) in env.calls
-    assert ("set_default", "chrome") in env.calls           # chrome was installed by the batch, then made default
-    assert "chrome" in env.installed
+    assert ("set_default", "chrome") in env.calls
 
 
 def test_a_failed_system_part_is_reported_on_apply_mode_but_its_user_half_still_ran(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
-    env.fail_ids = {"apply-mode": "apply-mode everyday finished with errors: packages"}
+    env.fail_ids = {"apply-mode": "apply-mode everyday finished with errors: lindos-tune"}
     result = _run(_default_plan())
     step = result.get("apply-mode")
-    assert step.failed and "system part failed: apply-mode everyday finished with errors: packages" in step.message
+    assert step.failed and "system part failed: apply-mode everyday finished with errors: lindos-tune" in step.message
     assert ("apply_mode(user)", "everyday", True) in env.calls
     assert result.failed_ids == ["apply-mode"]
 
@@ -271,25 +268,14 @@ def test_a_failed_system_part_is_reported_on_apply_mode_but_its_user_half_still_
 # ---------------------------------------------------------------------------------------------
 def test_one_failing_batch_step_does_not_affect_the_others(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
-    env.fail_ids = {"install-compat": "install-compat failed: 404 Not Found"}
+    env.fail_ids = {"write-system-config": "cannot write /etc/lindos/system.json"}
     result = _run(_default_plan())
-    assert result.failed_ids == ["install-compat"]
-    assert "helper install-compat failed: install-compat failed: 404 Not Found" in result.get("install-compat").message
-    assert result.get("write-system-config").ok and result.get("apply-mode").ok
-    assert result.get("install-browser").ok and result.get("set-default-browser").ok
+    assert "write-system-config" in result.failed_ids
+    assert "helper write-system-config failed: cannot write /etc/lindos/system.json" in \
+        result.get("write-system-config").message
+    assert result.get("apply-mode").ok
+    assert result.get("set-theme").ok
     assert len(env.batches) == 1
-
-
-def test_failed_browser_install_keeps_the_install_later_hint(monkeypatch, tmp_path):
-    env = _install_fake_lindos(monkeypatch, tmp_path)
-    env.fail_ids = {"install-browser": "install-browser chrome failed: apt-get exit 100"}
-    result = _run(_default_plan())
-    msg = result.get("install-browser").message
-    assert "chrome could not be installed now (install-browser chrome failed: apt-get exit 100)" in msg
-    assert "lindos-browser install chrome --set-default" in msg and "lindos-settings apps" in msg
-    # chrome is not installed -> the default-browser step fails honestly, everything else went ahead
-    assert "set-default-browser" in result.failed_ids
-    assert result.get("install-compat").ok
 
 
 def test_cancelled_authentication_fails_the_system_steps_once_without_reprompting(monkeypatch, tmp_path):
@@ -298,8 +284,7 @@ def test_cancelled_authentication_fails_the_system_steps_once_without_repromptin
     result = _run(_default_plan())
     assert len(env.batches) == 1 and env.singles == []          # one prompt, cancelled: never asked again
     assert set(result.failed_ids) >= set(SYSTEM_IDS)
-    for step_id in ("write-system-config", "install-compat"):
-        assert "authentication cancelled or not authorised" in result.get(step_id).message
+    assert "authentication cancelled or not authorised" in result.get("write-system-config").message
     # user-side work is unaffected and the mode's user half still ran
     for step_id in ("write-config", "set-theme", "set-accent", "set-wallpaper", "set-taskbar-alignment"):
         assert result.get(step_id).ok, step_id
@@ -312,8 +297,8 @@ def test_a_step_that_cannot_be_prepared_fails_alone(monkeypatch, tmp_path):
     env.system_plan_error = KeyError("unknown mode 'everyday'")
     result = _run(_default_plan())
     assert "apply-mode" in result.failed_ids and "KeyError" in result.get("apply-mode").message
-    assert [e["id"] for e in env.batches[0]] == ["write-system-config", "install-browser", "install-compat"]
-    assert result.get("write-system-config").ok and result.get("install-compat").ok
+    assert [e["id"] for e in env.batches[0]] == ["write-system-config"]
+    assert result.get("write-system-config").ok
 
 
 def test_the_helper_module_raising_fails_every_privileged_step_not_the_wizard(monkeypatch, tmp_path):
@@ -334,46 +319,34 @@ def test_helper_that_forgets_a_step_is_reported_not_hung(monkeypatch, tmp_path):
     good = sys.modules["lindos.helper"].run_privileged_batch
 
     def forgetful(steps, log=None, on_step=None, timeout=None):
-        res = good(steps[:1], log=log, on_step=on_step)
-        return res
+        return good(steps[:1], log=log, on_step=on_step)
 
     sys.modules["lindos.helper"].run_privileged_batch = forgetful
     result = _run(_default_plan())
     assert result.get("write-system-config").ok
-    assert "the helper did not report this step" in result.get("install-compat").message
+    assert "the helper did not report this step" in result.get("apply-mode").message
 
 
 # ---------------------------------------------------------------------------------------------
-# browser pre-check and offline
+# the browser: nothing is installed or probed; a pending Chrome is a preference, not a failure
 # ---------------------------------------------------------------------------------------------
-def test_already_installed_browser_is_not_sent_to_the_helper(monkeypatch, tmp_path):
+def test_a_pending_browser_never_reaches_the_helper_and_does_not_fail_the_run(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
-    env.installed.add("chrome")
-    result = _run(_default_plan())
-    assert result.ok
-    assert [e["id"] for e in env.batches[0]] == ["write-system-config", "apply-mode", "install-compat"]
-
-
-def test_offline_browser_precheck_fails_only_that_step_and_the_batch_still_runs(monkeypatch, tmp_path):
-    env = _install_fake_lindos(monkeypatch, tmp_path)
-    env.preflight = False
-    logs: List[str] = []
-    result = _run(_default_plan(), logs)
-    assert result.failed_ids == ["install-browser", "set-default-browser"]
-    assert "chrome could not be installed now (offline)" in result.get("install-browser").message
-    assert [e["id"] for e in env.batches[0]] == ["write-system-config", "apply-mode", "install-compat"]
-    assert any("offline: chrome is downloaded" in line for line in logs)
-
-
-def test_offline_plan_passes_offline_to_the_mode_payload(monkeypatch, tmp_path):
-    env = _install_fake_lindos(monkeypatch, tmp_path, online=False)
-    plan = _default_plan(online=False)          # chrome falls back to firefox: no install-browser step
-    assert not plan.has_action("install-browser")
+    plan = build_plan(Selections(browser="chrome"), browser_states={"chrome": "pending"})
     result = _run(plan)
+    assert result.ok, [(r.step_id, r.message) for r in result.results if not r.ok]
+    assert [e["id"] for e in env.batches[0]] == SYSTEM_IDS
+    assert env.batches[0][0]["payload"]["browser"] == "chrome"      # the silent retry reads system.json
+    assert not [c for c in env.calls if c[0] == "set_default"], "the personal default is left alone"
+    assert "not installed yet" in result.get("set-default-browser").message
+
+
+def test_an_installed_browser_is_made_the_default(monkeypatch, tmp_path):
+    env = _install_fake_lindos(monkeypatch, tmp_path)
+    env.installed.add("edge")
+    result = _run(_default_plan(browser="edge"))
     assert result.ok
-    payloads = {e["id"]: e["payload"] for e in env.batches[0]}
-    assert payloads["apply-mode"]["offline"] is True
-    assert payloads["write-system-config"]["browser"] == "firefox"
+    assert ("set_default", "edge") in env.calls
 
 
 # ---------------------------------------------------------------------------------------------
@@ -382,10 +355,10 @@ def test_offline_plan_passes_offline_to_the_mode_payload(monkeypatch, tmp_path):
 def test_without_a_plan_each_privileged_step_still_calls_the_helper_itself(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
     execs = core.make_real_executors()
-    step = Step("install-packages", "Install", planmod.KIND_SYSTEM, planmod.ACT_INSTALL_PACKAGES,
-                {"packages": ["gimp"]})
-    assert execs[planmod.ACT_INSTALL_PACKAGES](step, lambda m: None) == (True, "")
-    assert env.singles == ["install-packages"] and env.batches == []
+    step = Step("write-system-config", "Save", planmod.KIND_SYSTEM, planmod.ACT_WRITE_SYSTEM_CONFIG,
+                {"mode": "gaming", "browser": "firefox"})
+    assert execs[planmod.ACT_WRITE_SYSTEM_CONFIG](step, lambda m: None) == (True, "")
+    assert env.singles == ["write-system-config"] and env.batches == []
 
 
 def test_plan_without_system_steps_keeps_the_plain_executors(monkeypatch, tmp_path):
@@ -399,13 +372,23 @@ def test_plan_without_system_steps_keeps_the_plain_executors(monkeypatch, tmp_pa
 
 def test_plan_subset_only_batches_the_system_steps_it_has(monkeypatch, tmp_path):
     env = _install_fake_lindos(monkeypatch, tmp_path)
-    steps = [Step("install-packages", "Install", planmod.KIND_SYSTEM, planmod.ACT_INSTALL_PACKAGES,
-                  {"packages": ["gimp"]}),
-             Step("install-flatpaks", "Flatpaks", planmod.KIND_SYSTEM, planmod.ACT_INSTALL_FLATPAKS,
-                  {"flatpaks": ["org.gimp.GIMP"]})]
-    result = Runner(Plan(steps, Selections()), core.make_real_executors(Plan(steps, Selections())),
-                    log=lambda m: None).run()
-    assert result.ok and [e["id"] for e in env.batches[0]] == ["install-packages", "install-flatpaks"]
+    steps = [Step("write-system-config", "Save", planmod.KIND_SYSTEM, planmod.ACT_WRITE_SYSTEM_CONFIG,
+                  {"mode": "work", "browser": "firefox"})]
+    plan = Plan(steps, Selections())
+    result = Runner(plan, core.make_real_executors(plan), log=lambda m: None).run()
+    assert result.ok and [e["id"] for e in env.batches[0]] == ["write-system-config"]
+
+
+def test_legacy_install_steps_in_an_old_plan_are_never_batched(monkeypatch, tmp_path):
+    """A plan written before the installer flow may still name install-* steps: they have no
+    executor and are not in the batch (a skipped step is not a failure, and nothing is installed)."""
+    env = _install_fake_lindos(monkeypatch, tmp_path)
+    plan = _default_plan()
+    plan = Plan(list(plan.steps) + [Step("install-compat", "Wine", planmod.KIND_SYSTEM, "install-compat",
+                                         {"items": ["wine"]})], plan.selections)
+    result = _run(plan)
+    assert result.ok and result.skipped_ids == ["install-compat"]
+    assert "install-compat" not in [e["action"] for e in env.batches[0]]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -413,7 +396,7 @@ def test_plan_subset_only_batches_the_system_steps_it_has(monkeypatch, tmp_path)
 # ---------------------------------------------------------------------------------------------
 def test_default_plan_through_the_real_helper_dry_run(monkeypatch, tmp_path):
     """Real lindos.helper + real lindos-helper script (dry-run): one subprocess for the whole plan, no
-    per-step run_privileged, every system step reports back."""
+    per-step run_privileged, every system step reports back, and the helper is told not to install."""
     try:
         from lindos import browsers as rbrowsers
         from lindos import helper as rhelper
@@ -459,22 +442,22 @@ def test_default_plan_through_the_real_helper_dry_run(monkeypatch, tmp_path):
     monkeypatch.setattr(rmodes, "apply_mode",
                         lambda mode_id, **kw: (seen["user_apply"].append((mode_id, kw.get("defer_system"))),
                                                types.SimpleNamespace(ok=True, steps=[]))[1])
-    monkeypatch.setattr(rbrowsers, "online", lambda *a, **k: True)
-    monkeypatch.setattr(rbrowsers, "is_installed", lambda bid: bid == "firefox")
+    monkeypatch.setattr(rbrowsers, "is_installed", lambda bid: bid in ("firefox", "chrome"))
     monkeypatch.setattr(rbrowsers, "set_default", lambda bid: True)
     for name in ("set_dark", "set_accent", "set_wallpaper", "set_taskbar_alignment"):
         monkeypatch.setattr(rtheme, name, lambda *a, **k: True)
 
     logs: List[str] = []
-    plan = _default_plan()
+    plan = _default_plan(mode="gaming")          # a Mode that has packages and Flatpaks of its own
     result = Runner(plan, core.make_real_executors(plan), log=logs.append).run()
     system_results = {sid: result.get(sid) for sid in SYSTEM_IDS}
     assert all(r is not None and r.ok for r in system_results.values()), \
         [(sid, r.message) for sid, r in system_results.items() if r is not None and not r.ok] + logs
     assert seen["batches"] == 1 and seen["singles"] == 0 and seen["popen"] == 1
-    assert seen["user_apply"] == [("everyday", True)]
+    assert seen["user_apply"] == [("gaming", True)]
     text = "\n".join(logs)
-    assert "install-compat.sh wine umu" in text.replace("'", "")
-    assert "install-browser.sh chrome" in text.replace("'", "")
+    assert "install disabled: configuration only" in text
+    for word in ("installing packages", "installing flatpak", "install-browser.sh", "install-compat.sh"):
+        assert word not in text.replace("'", ""), word
     assert "system.json" in text
     assert "@@lindos-batch" not in text

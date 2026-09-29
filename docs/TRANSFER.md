@@ -64,8 +64,8 @@ same PC), `lindos-transfer` can read the Windows partition directly, read-only, 
 needed.
 
 1. Open **Transfer from Windows** (Settings → Windows apps → "Transfer from Windows…", or the app
-   `lindos-transfer-gui` from the Start Menu). It also appears as an optional page during first-boot
-   setup.
+   `lindos-transfer-gui` from the Start Menu). It also appears as an optional page in Lindos Setup, the
+   wizard on your first login (nothing is copied there).
 2. On the **Where are your Windows files?** page, pick the detected Windows partition. If Windows was
    hibernated or used Fast Startup, you will be warned that the files might be a little out of date —
    either restart Windows and do a **full shutdown** first (`shutdown /s /t 0`, or Shift+Shut down),
@@ -137,8 +137,9 @@ collected them) and, for each one, offers the closest honest match:
 * or, honestly, **"not possible on Linux yet"** — for example a kernel-anti-cheat game, which is shown
   with its [play-anywhere route](GAMING.md) instead of a fake "installed" checkmark.
 
-**Nothing is installed without you choosing it**, on the Apps page of the wizard or by ticking items
-in a saved plan file before running `lindos-transfer install-apps --plan plan.json`.
+**Nothing is installed without you choosing it**: by ticking items in a saved plan file before running
+`lindos-transfer install-apps --plan plan.json` (Lindos Setup no longer has an Apps page; the installer
+already installed Lindos' own launchers and Mode apps).
 
 ## 5. Steam games
 

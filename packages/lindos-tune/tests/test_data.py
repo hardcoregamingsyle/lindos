@@ -113,6 +113,17 @@ def test_preset_units_are_valid_and_whitelisted_where_toggleable() -> None:
             assert unit in wl, f"{unit} in preset but not toggleable via the whitelist"
 
 
+def test_sensors_detect_unit_never_runs_in_the_live_session() -> None:
+    """The live overlay never keeps the marker, so without this the bus probing (up to 180 s) would run
+    on every live-USB boot; it runs once on the installed system."""
+    lines = [ln.strip() for ln in _lf(ROOT / "usr/lib/systemd/system/lindos-sensors-detect.service").splitlines()]
+    assert "ConditionKernelCommandLine=!boot=casper" in lines
+    assert "ConditionKernelCommandLine=!boot=live" in lines
+    # the other run-once conditions are still there
+    assert "ConditionPathExists=!/var/lib/lindos-tune/sensors-detect.done" in lines
+    assert "ConditionVirtualization=!container" in lines and "WantedBy=multi-user.target" in lines
+
+
 def test_autostart_hide_list_entries_valid() -> None:
     entries = services.parse_hide_list(_lf(tl.SHARE / "autostart-hide.list"))
     assert len(entries) >= 4

@@ -6,6 +6,10 @@
 #    * apt-get autoremove --purge, apt-get clean, drop apt lists + caches
 #      (the installed system runs 'apt update' itself; casper does not need
 #      the lists and they cost ~100 MB in the squashfs)
+#      Deleting the lists is deliberate: the base ISO's lists are stale by the time anyone
+#      installs, and Ubiquity's own package steps would try to fetch versions the archive no
+#      longer has.  The installer hook (79-installer-flow.sh) refreshes the lists in the target
+#      first thing - and offline the medium's cdrom: source serves what Ubiquity needs.
 #    * machine-id reset (/etc/machine-id empty, /var/lib/dbus/machine-id gone)
 #      so every installation gets a fresh id
 #    * resolv.conf restored from the backup build-iso.sh made

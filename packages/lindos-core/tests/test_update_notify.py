@@ -31,6 +31,7 @@ BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(BASH is None, reason="bash not available on this host")
 
 FAKE_LINDOS_UPDATE = """#!/bin/bash
+printf 'CALLED\n' >> "${FAKE_UPDATE_LOG:-/dev/null}"
 printf '%s' "${FAKE_LINDOS_UPDATE_JSON:-null}"
 exit "${FAKE_LINDOS_UPDATE_RC:-0}"
 """
@@ -69,9 +70,14 @@ def _fake_bin(tmp_path: Path, *, with_lindos_update: bool = True, with_notify_se
     return fake_bin
 
 
+INSTALLED_CMDLINE = "BOOT_IMAGE=/boot/vmlinuz-6.14.0-lindos root=UUID=1234 ro quiet splash"
+LIVE_CMDLINE = "BOOT_IMAGE=/casper/vmlinuz boot=casper username=liveuser quiet splash --"
+
+
 def _run(tmp_path: Path, *, json_out: Optional[str] = None, rc: int = 0, boot_id: str = "boot-aaa",
          with_lindos_update: bool = True, with_notify_send: bool = True,
-         env_extra: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+         env_extra: Optional[Dict[str, str]] = None,
+         cmdline: str = INSTALLED_CMDLINE) -> subprocess.CompletedProcess:
     assert BASH is not None
     fake_bin = _fake_bin(tmp_path, with_lindos_update=with_lindos_update, with_notify_send=with_notify_send)
     home = tmp_path / "home"
@@ -86,6 +92,12 @@ def _run(tmp_path: Path, *, json_out: Optional[str] = None, rc: int = 0, boot_id
     env["XDG_RUNTIME_DIR"] = ""          # force the durable XDG_STATE_HOME fallback, deterministically
     env["XDG_STATE_HOME"] = _msys_path(str(state))
     env["FAKE_NOTIFY_LOG"] = _msys_path(str(notify_log))
+    update_log = tmp_path / "update.log"
+    env["FAKE_UPDATE_LOG"] = _msys_path(str(update_log))
+    # hermetic: never the host's /proc/cmdline (a live-USB CI runner would silence every toast)
+    cmdline_file = tmp_path / "cmdline"
+    cmdline_file.write_text(cmdline, encoding="utf-8")
+    env["LINDOS_TEST_CMDLINE"] = _msys_path(str(cmdline_file))
     env["LINDOS_BOOT_ID"] = boot_id
     env["LINDOS_PYTHON"] = sys.executable
     if json_out is not None:
@@ -97,6 +109,7 @@ def _run(tmp_path: Path, *, json_out: Optional[str] = None, rc: int = 0, boot_id
     result = subprocess.run([BASH, str(SCRIPT)], capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=30, check=False, env=env)
     result.notify_log = notify_log          # type: ignore[attr-defined]
+    result.update_log = update_log          # type: ignore[attr-defined]
     result.state_dir = state / "lindos"     # type: ignore[attr-defined]
     return result
 
@@ -167,6 +180,28 @@ def test_updates_available_sends_one_notification_and_writes_marker(tmp_path: Pa
     marker = res.state_dir / "update-notify-seen"          # type: ignore[attr-defined]
     assert marker.is_file()
     assert marker.read_text(encoding="utf-8") == "boot-aaa|lindos-core=1.0.1"
+
+
+@pytest.mark.parametrize("cmdline", [LIVE_CMDLINE, "initrd=/live/initrd.img boot=live quiet"])
+def test_live_session_never_checks_or_notifies(tmp_path: Path, cmdline: str) -> None:
+    """The live USB session only installs Lindos: no 'updates available' toast there."""
+    res = _run(tmp_path, json_out=ONE_UPDATE, cmdline=cmdline)
+    assert res.returncode == 0, res.stderr
+    assert _notify_lines(res) == []
+    assert not res.update_log.exists(), "lindos-update must not even be asked in the live session"   # type: ignore[attr-defined]
+    assert not (res.state_dir / "update-notify-seen").exists()                                       # type: ignore[attr-defined]
+
+
+def test_installed_session_still_notifies_with_the_same_updates(tmp_path: Path) -> None:
+    res = _run(tmp_path, json_out=ONE_UPDATE, cmdline=INSTALLED_CMDLINE)
+    assert res.returncode == 0, res.stderr
+    assert len(_notify_lines(res)) == 1
+    assert res.update_log.read_text(encoding="utf-8").split() == ["CALLED"]                          # type: ignore[attr-defined]
+
+
+def test_live_check_uses_the_shared_helper_not_a_private_cmdline_grep() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "is-live-session" in text and "/proc/cmdline" not in text
 
 
 def test_no_updates_never_notifies(tmp_path: Path) -> None:

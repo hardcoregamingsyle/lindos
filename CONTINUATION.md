@@ -1,7 +1,7 @@
 # Lindos — Continuation Guide (agent handoff)
 
-_Last updated: 2026-09-28 (boot-test finally green — see §3/§4 item 2). Written for the next
-agent/developer taking over this project._
+_Last updated: 2026-09-29 (the installer flow was rebuilt — see §3 and §4 item 9; boot-test green since
+2026-09-28, §4 item 2). Written for the next agent/developer taking over this project._
 
 Lindos is a **Windows-11-style remaster of Linux Mint 22.x XFCE** (Ubuntu 24.04 "noble" base):
 first-boot OOBE, 5 modes, a Win11 desktop, one-click Wine/Proton `.exe`, a gaming stack, heavy
@@ -58,12 +58,13 @@ If asked again, decline the circumvention and offer the honest capability.
 SPEC.md, SPEC-KERNEL.md, SPEC-VM.md, SPEC-WINDOWS.md   the binding contracts
 README.md, CONTRIBUTING.md, LICENSE (GPL-3.0-or-later), THIRD_PARTY.md
 Makefile                              make debs | assets | iso | iso-docker | qemu | kernel | test | lint
-packages/                             12 Debian packages (DEBIAN/ + root/ trees):
+packages/                             13 Debian packages (DEBIAN/ + root/ trees):
   lindos-core      python lib `lindos.*` (paths/config/modes/browsers/hardware/helper/theme/compat/
                    ram/dualboot) + privileged helper /usr/libexec/lindos/lindos-helper + polkit +
                    CLIs incl. lindos-dualboot (one-shot restart into an existing Windows install)
   lindos-desktop   XFCE Win11 look: panel, themes, shortcuts, branding, autostart
-  lindos-setup     first-boot OOBE (GTK) — mode, browser, personalise, apps, privacy, transfer, apply
+  lindos-setup     first-boot OOBE (GTK) — mode, browser, personalise, privacy, transfer, apply; install-free
+                   (the installer does the installing); gated off in the live session and for the `oem` user
   lindos-settings  Win11-style settings centre (12 pages, GTK)
   lindos-compat    Windows apps: lindos-run (every Windows file type: .exe/.msi/MSIX-APPX/.reg/.ps1/
                    .vbs/.url/.scr/.cpl/.inf/.cab/disk images/DOS/16-bit/ClickOnce/…), recipes,
@@ -77,8 +78,12 @@ packages/                             12 Debian packages (DEBIAN/ + root/ trees)
   lindos-transfer  Windows Easy Transfer-style migration (read-only) + Windows-side kit + GUI
   lindos-meta      metapackage (Depends the nine packages above incl. lindos-transfer;
                    Recommends lindos-kernel/-vm/-winapps)
+  lindos-installer the installer flow (13th package, installation medium only, removed from the installed
+                   system): Ubiquity target-config hook `target-config.sh` + `lib.sh` + success command
+                   `finalize.sh`, `extras.json`, `lindos.seed` (SPEC §17). Not a Depends of lindos-meta
 build/             ISO remaster + .deb pipeline: build-iso.sh, mkdeb.sh, fetch-assets.sh,
-                   chroot/00..80 hooks (+35-kernel.sh, 75-vm.sh), kernel/build-kernel.sh, Docker, config.env
+                   chroot/00..80 hooks (+35-kernel.sh, 75-vm.sh, 79-installer-flow.sh), lib/ (boot_menu.py,
+                   installer_extras.py, verify_oem_pool.py), kernel/build-kernel.sh, Docker, config.env
 docs/              README-level docs incl. COMPATIBILITY.md (GENERATED — see below), ANTI-CHEAT.md,
                    KERNEL.md, VM.md, WINAPPS.md, DRIVERS.md, MODES.md, SETTINGS.md, WINDOWS-FORMATS.md,
                    WINGET.md, TRANSFER.md, DUALBOOT.md, etc.
@@ -90,6 +95,31 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
 
 ## 3. Current state
 
+- **2026-09-29 (installer flow rebuilt — written and unit-tested, NEVER run end to end):** the user's
+  contract is (1) the live USB session is only the installer (no wizard, no installs, no prompts, never
+  sleeps); (2) the installer does everything heavy while installing — updates, drivers, Chrome (downloaded
+  from Google's apt repo), Wine/Proton, launchers, Mode apps, Flatpaks; (3) after the reboot the first boot
+  only asks for the account and personalisation. Implemented with **Ubiquity OEM mode**: boot entries
+  `Install Lindos` (`only-ubiquity oem-config/enable=true …`) / compat / `Try Lindos` / compat / integrity
+  check (GRUB, loopback and the generated isolinux menu; the old "OEM install" entry is gone); one target-config
+  hook `/usr/lib/ubiquity/target-config/50lindos-install` (deployed by `build/chroot/79-installer-flow.sh`)
+  does all downloading/installing, time-boxed, always exit 0, kernel/boot-loader/Ubiquity held; the
+  `ubiquity/success_command` `finalize.sh` (<5 s) arms oem-config and locks the temporary account; install
+  results go to `/var/lib/lindos/install-state.json` (`lindos.installstate`), the silent retries
+  (`browser-firstboot`, `driver-firstboot`) and Settings › Apps › "Left to finish from setup" pick up what is
+  pending; `lindos.session` / `is-live-session` gate the live session; `lindos-setup` is install-free (no Apps
+  page). Docs: `docs/INSTALLER.md` (users + the honest known-limitations list), `docs/BUILDING.md` "Installer
+  flow" (maintainers, QEMU procedure), SPEC §17.
+  - **Verified only by hermetic tests** (fake `/target`, fake runners, `LINDOS_TEST_CMDLINE`; the last
+    reported runs: ~2300 tests in installer/build/tests/tests/compat/gaming/core and 700 in
+    tests/desktop/core/settings/setup, 0 failures, the only skips being POSIX-only on this Windows host;
+    `bash tests/run.sh --quick` green incl. ShellCheck 0.11.0). Nothing ran on Linux: no `.deb` was built,
+    no ISO built, no QEMU install. The full-suite gate (`bash tests/run.sh`) was not re-run by the docs pass.
+  - **Base ISO facts** came from reading the real Mint 22.2 XFCE ISO's file tree over HTTP and Ubiquity's
+    upstream source (not from running anything): no `preseed/` directory (so `@PRESEED@` is empty),
+    `oem-config`/`oem-config-gtk` `24.04.3+mint18` in `/pool`, isolinux menu with `username=mint`,
+    Ubiquity's target-config hook semantics (`plugininstall.py`). Re-check them when `MINT_VERSION` changes.
+  - What to do next: §4 item 9.
 - **2026-09-27 (new session — `libdw-dev`, the real black-screen root cause, 3 rounds, now
   blocked on a newly-found lightdm hang):** Full detail in `CI-LOGS.md`; summary here.
   - **Kernel job fixed**: added `libdw-dev` (provides `dwarf.h`, needed by
@@ -310,6 +340,33 @@ out/               git-ignored build products (ISO, debs, kernel, acceptance log
    A mod-256 guess was rejected because it could report a real failure as "restart needed". The
    likely proper fix: run msiexec with `/l*v <log>` and read the full return code from the log, but
    first verify what Wine's msi logging actually writes.
+9. **Run the installer flow for real (highest priority).** Everything in SPEC §17 is untested on Linux:
+   - Build the ISO (`gh workflow run CI … -f build_iso=true`), then follow the QEMU procedure at the end of
+     `docs/BUILDING.md` "Installer flow": boot both menus (BIOS and UEFI), install online to a blank disk,
+     inspect `/target` before rebooting (mounts, `dpkg --audit`, holds, `install-state.json`, default target,
+     lightdm autologin, locked `oem`), boot the disk and check the account wizard → LightDM → Lindos Setup
+     sequence; then the failure drills (offline, black-holed network, `kill -TERM` the hook, `lindos.install=off`).
+   - Get the unattended QEMU install test green on CI: `build/qa/install_test.py` (blank disk,
+     `automatic-ubiquity` + a CI-only seed), `build/qa/install_checks.py` (the assertions above on the mounted
+     disk) and `build/qa/ci-observer.sh` (serial-console log of the live and first-boot guests) were being added
+     by the CI work when this was written and have not run on Actions; check `build/qa/` and `ci.yml`.
+     `boot_test.py` still boots the kernel directly and never sees the installer, the hook or oem-config.
+     Expect several rounds, like the boot-test one.
+   - Product decisions still open (from the installer/OOBE streams): the **temporary-account page** Ubiquity
+     always shows in OEM mode (options: keep it, patch `ubi-usersetup.py`, or a hidden-page plugin + a
+     hook-created `oem` user); **consent wording** (the "Install multimedia codecs" checkbox doubles as the
+     proprietary-GPU-driver consent; relabelling needs a patch of `ubi-prepare.py`); **theming** the oem-config
+     first-boot wizard (`GTK_THEME=Lindos-Setup` via systemd drop-ins is an untested idea) or a Lindos-native
+     account page (phase 2); copying the live **Wi-Fi/Bluetooth profiles** to the new system (a privacy choice);
+     the **one pkexec prompt** at Lindos Setup's Apply (a polkit rule or skipping it for Everyday would remove it);
+     a **minimal-install switch** (today it is everything-for-every-Mode or `lindos.install=off`); an OEM entry
+     for real manufacturers.
+   - Watch for: Ubiquity's own later steps now going online (the hook refreshes the target's apt lists, which
+     the deleted lists had silently disabled) — a dropped connection there can abort an install; `oem-config-gtk`'s
+     Recommends pulling extras (`base-installer/install-recommends=false` if seen); `linux-firmware`/`systemd`
+     upgrades rebuilding the initramfs in the hook (slow; shorten `lindos.install_budget` or exclude them).
+   - The GTK visual pass for the new OOBE/Settings pieces (pending banners, the done-page recap, Apps › Left to
+     finish from setup) folds into item 3.
 
 ## 4a. Addendum W (`SPEC-WINDOWS.md`, every Windows format / Transfer / Play-anywhere) — status
 
@@ -375,6 +432,25 @@ cross-component checks to `tests/test_integration.py`, and re-ran the full gate.
 - **Tests must be hermetic** — the 6 CI failures were all tests accidentally depending on the
   runner's host state (preinstalled Chrome, real `gi` without GTK typelibs, the runner kernel having
   `sched_ext`). Sandbox via `LINDOS_ROOT`/monkeypatch; never assume host state.
+
+### Working on the installer flow (gotchas)
+
+- **The hook must never break an install.** `target-config.sh` always exits 0, has no `set -e`, never writes
+  to stdout (Ubiquity's debconf pipe), time-boxes every child, keeps dpkg clean and releases its holds on every
+  exit path. Ubiquity has no timeout for hooks and ignores their exit status: a hung hook hangs every install.
+  Keep ShellCheck clean (`tests/run.sh --quick`); `set -Eeuo pipefail` is the rule everywhere **except** the hook
+  and `lib.sh`.
+- **The deployed hook name has no `.` and the file needs the exec bit**, or Ubiquity skips it silently. Git on
+  Windows loses exec bits, so `79-installer-flow.sh` does `install -m 0755` (and strips CRs); `mkdeb.sh` only marks
+  `*.sh`/`libexec` files executable and strips CRs from `*.templates` and `*.seed`.
+- Do not print, `echo` or let a child inherit stdout/stdin in the hook; do not call `dist-upgrade`; do not touch the
+  kernel, boot loader or the ubiquity/oem-config/casper families (they are held for a reason).
+- Test seams (unset on a real system): `LINDOS_TARGET`, `LINDOS_TARGET_RUNNER`, `LINDOS_DRY_RUN`,
+  `LINDOS_INSTALL_BUDGET`, `LINDOS_TIMEOUT_PCT`, `LINDOS_INSTALLER_STEPS`, `LINDOS_FREE_KB`, `LINDOS_TEST_CMDLINE`
+  (also for `is-live-session`), `LINDOS_INSTALLER_ROOT` (the 79 hook). `extras.json` is generated: after changing a
+  `mode.json` or the OOBE `apps.json`, run `python3 build/lib/installer_extras.py --write` (a test fails when stale).
+- Anything that can only be settled by a real install is written down in `docs/INSTALLER.md` ("Known limitations and
+  what is unverified"): keep that list honest when you verify or change something.
 
 ## 6. Command cheat-sheet
 

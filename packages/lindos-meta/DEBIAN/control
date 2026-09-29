@@ -46,5 +46,5 @@ Description: Lindos 1.0 (Aurora) — complete Windows-11-style desktop remaster 
  Honesty notes: Windows programs run through Wine/Proton (a translation
  layer, not Windows and not a VM); Valorant and Fortnite do not run on any
  Linux; Roblox runs through Sober; Edge/Chrome are downloaded from the vendor
- at setup time (Firefox ships on the ISO); the idle RAM target is 350-500 MB.
+ while Lindos installs (Firefox ships on the ISO); the idle RAM target is 350-500 MB.
  No anti-cheat circumvention of any kind is shipped or possible.

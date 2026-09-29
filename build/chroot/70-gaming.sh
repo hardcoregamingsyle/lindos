@@ -10,9 +10,10 @@
 #                        (default items: steam lutris; Valve's steam-launcher
 #                        from the repo added by 00-repos.sh, lutris from noble)
 #    INCLUDE_FLATPAK_LAUNCHERS=1 → Prism/Heroic/Sober Flatpaks preinstalled
-#                        (big; off by default — OOBE installs them on demand)
-#  NVIDIA drivers are NOT preinstalled (mintdrivers / lindos-drivers at first
-#  boot) to keep the ISO small and avoid a proprietary blob in the live image.
+#                        (big; off by default — the installer / Settings > Apps add them)
+#  NVIDIA drivers are NOT preinstalled (the installer's drivers step adds them, only
+#  with consent and when Secure Boot allows; else lindos-drivers / Settings) to keep
+#  the ISO small and avoid a proprietary blob in the live image.
 # ============================================================================
 set -Eeuo pipefail
 # shellcheck source=build/chroot/lib.sh
@@ -90,7 +91,7 @@ if [ "${INCLUDE_STEAM}" = "1" ]; then
         "${INSTALLER}" --from-chroot "${GAMING_ITEM_LIST[@]}" || rc=$?
         case "${rc}" in
             0) log "install-gaming.sh finished" ;;
-            3) warn "install-gaming.sh: offline (exit 3) — launchers installed at OOBE" ;;
+            3) warn "install-gaming.sh: offline (exit 3) — the installer installs the launchers when online" ;;
             *) warn "install-gaming.sh exited ${rc} — some items failed (see /var/log/lindos/install-gaming.log)" ;;
         esac
     else

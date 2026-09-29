@@ -25,6 +25,18 @@
 #               optionally downloads the 'kernel' artifact into out/kernel/
 #               first so 35-kernel.sh installs the Lindos kernel; the ISO still
 #               builds if no kernel artifact is present.
+#   boot-test   workflow_dispatch only (needs the 'iso' job): boots the ISO's LIVE session under
+#               QEMU/KVM (build/qa/boot_test.py) and judges it from the serial log: the smoke
+#               test's CLI checks plus the live-session checks (no first-run wizard, the "Install
+#               Lindos" launcher, panel/desktop, no sleep, nothing installing) and a screenshot
+#               that must not be blank.
+#   install-test  workflow_dispatch only, opt-in (install_test=true; needs the 'iso' job): the
+#               only real test of the installer.  build/qa/install_test.py installs the ISO onto a
+#               blank virtual disk (Ubiquity's automatic mode, a CI-only preseed, real network),
+#               asserts the installed disk read-only (install-state.json, oem-config armed, no
+#               leftovers, dpkg clean, Chrome vs marker), then boots the INSTALLED disk and expects
+#               Ubiquity's oem-config wizard.  Nothing depends on it and it never fails the run
+#               (continue-on-error): it exists to hand the maintainers a reproducible install log.
 #
 # The Windows pytest job globs packages/*/tests, so lindos-vm/tests and
 # lindos-winapps/tests (SPEC-VM §26) run on both Ubuntu (via tests/run.sh) and
@@ -58,6 +70,21 @@ on:
         description: "Boot-test the built ISO under QEMU/KVM (needs build_iso)"
         type: boolean
         default: true
+      install_test:
+        description: "Install-test the built ISO onto a blank disk under QEMU/KVM with real network, then boot the installed disk (needs build_iso; slow, ~1-2 h; never fails the run)"
+        type: boolean
+        default: false
+      install_budget:
+        description: "install_test: wall-clock budget of the installer hook in seconds (kernel word lindos.install_budget)"
+        type: string
+        default: "2400"
+      install_firmware:
+        description: "install_test: guest firmware (uefi is supported but not yet proven)"
+        type: choice
+        options:
+          - bios
+          - uefi
+        default: bios
 
 permissions:
   contents: read
@@ -344,6 +371,10 @@ jobs:
     # delays or replaces the real desktop, and never waits on multi-user.target/graphical.target
     # either. GitHub's ubuntu-24.04 hosted runners have nested KVM; boot_test.py falls back to
     # TCG automatically (slower, but never hard-fails just because /dev/kvm is absent).
+    # The live session no longer runs the first-run wizard (it is only the installer), so the
+    # screenshot of the desktop is judged by guest-side checks (packages/lindos-core/.../qa/
+    # ci-live-checks.sh: no wizard, the "Install Lindos" launcher, panel/desktop, no sleep) and
+    # must not be blank; the wizard is no longer what proves a working desktop.
     if: >-
       ${{ always()
           && needs.iso.result == 'success'
@@ -424,5 +455,116 @@ jobs:
             out/qemu-boot-test/serial.log
             out/qemu-boot-test/desktop.png
             out/qemu-boot-test/desktop.ppm
+          if-no-files-found: warn
+          retention-days: 14
+
+  install-test:
+    name: install-test the ISO (QEMU/KVM, real network)
+    # The only real test of the installer flow (Ubiquity OEM mode + the lindos-installer target-config
+    # hook + finalize.sh + the oem-config first boot): nothing else can run an installation - not the
+    # Windows dev host, not the unit tests.  Opt-in (install_test=true) because it is slow and needs
+    # the internet: the hook downloads updates, Chrome, Wine, launchers and Flatpaks for real.
+    #
+    #   * build/qa/install_test.py boots the ISO's own kernel/initrd DIRECTLY (like boot-test) with the
+    #     words of the shipped "Install Lindos" boot entry + automatic-ubiquity.  The CI-only preseed
+    #     reaches Ubiquity as /preseed.cfg in a small cpio archive prepended to the ISO's initrd (casper
+    #     loads it), so the medium is not modified and no second device is needed.
+    #   * user-mode networking, so the network steps really run; a blank sparse 32 GB virtio disk.
+    #   * afterwards the disk is loop-mounted READ-ONLY and asserted (build/qa/install_checks.py), then
+    #     the installed disk is booted and must show Ubiquity's oem-config wizard.
+    #   * everything the maintainers need lands in the artifact: both serial logs, progress and
+    #     first-boot screenshots, the installer's own logs copied off the installed disk (the CI
+    #     password scrubbed), summary.md / report.json.
+    #
+    # Ubiquity's automatic mode is lightly maintained: expect the first rounds to fail on a page the
+    # preseed does not answer.  That is what this job is for; the artifact shows where.  Hence
+    # continue-on-error (a red job here must not hide the ISO/boot-test results of the same run) -
+    # remove it once the job has passed a few times.  Nothing lists this job in 'needs'.
+    if: >-
+      ${{ always()
+          && needs.iso.result == 'success'
+          && github.event_name == 'workflow_dispatch'
+          && inputs.build_iso
+          && inputs.install_test }}
+    runs-on: ubuntu-24.04
+    needs: iso
+    continue-on-error: true
+    # 90 min install + 15 min first boot + ~15 min setup/upload; the install itself normally takes 20-60.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU + xorriso + Pillow + OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 xorriso python3-pil ovmf
+
+      - name: Check for KVM
+        run: |
+          # An install under TCG (software emulation) takes hours; install_test.py refuses to start
+          # without a usable /dev/kvm.  The device node is there on GitHub's hosted runners, but the
+          # 'runner' user is not (yet) in the kvm group in this already-running job.
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+            ls -la /dev/kvm
+            echo "KVM available."
+          else
+            echo "::warning::no /dev/kvm on this runner - install_test.py will refuse to run under TCG"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lindos-iso
+          path: out
+
+      - name: Free disk space
+        run: |
+          # the ISO (3.6 GB) + the installed disk (up to ~18 GB written) need real room
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          df -h /
+
+      - name: Install Lindos onto a blank disk, then boot it
+        id: install
+        env:
+          INSTALL_BUDGET: ${{ inputs.install_budget }}
+          INSTALL_FIRMWARE: ${{ inputs.install_firmware }}
+        run: |
+          extra=()
+          if [ "${{ inputs.build_kernel }}" = "true" ]; then
+            # --opt=value form, see the boot-test step (argparse and a value starting with '-')
+            extra+=(--require-kernel-suffix=-lindos)
+          fi
+          # root is needed for the loop mounts; the whole script runs under sudo (the harness itself
+          # uses sudo -n when it is not root)
+          sudo env "PATH=$PATH" PYTHONUTF8=1 python3 build/qa/install_test.py --iso 'out/lindos-*.iso' \
+            --out-dir out/qemu-install-test --cpus 4 \
+            --install-budget "${INSTALL_BUDGET:-2400}" --firmware "${INSTALL_FIRMWARE:-bios}" "${extra[@]}"
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f out/qemu-install-test/summary.md ]; then
+            cat out/qemu-install-test/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "install_test.py wrote no summary.md (it stopped before the report)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload install-test artifacts (logs + screenshots + report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lindos-install-test
+          # never the disk image or the kernel/initrd copies (work/): gigabytes, and nothing to read in them
+          path: |
+            out/qemu-install-test/summary.md
+            out/qemu-install-test/report.json
+            out/qemu-install-test/serial-install.log
+            out/qemu-install-test/serial-first-boot.log
+            out/qemu-install-test/install-cmdline.txt
+            out/qemu-install-test/preseed.redacted.seed
+            out/qemu-install-test/*.png
+            out/qemu-install-test/*.ppm
+            out/qemu-install-test/installed-logs/**
+            out/qemu-install-test/work/grub.cfg
           if-no-files-found: warn
           retention-days: 14

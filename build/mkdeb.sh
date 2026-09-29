@@ -135,7 +135,7 @@ strip_crlf_tree() {
             continue
         fi
         case "${f}" in
-            *.sh|*.py|*.desktop|*.conf|*.cfg|*.json|*.xml|*.css|*.policy|*.rules|*.service|*.timer|*.preset|*.list|*.sources|*.ini|*.txt|*.md|*.svg|*.pref|*.yaml|*.yml|*.plymouth|*.script|*.theme|*.rc)
+            *.sh|*.py|*.desktop|*.conf|*.cfg|*.json|*.xml|*.css|*.policy|*.rules|*.service|*.timer|*.preset|*.list|*.sources|*.ini|*.txt|*.md|*.svg|*.pref|*.yaml|*.yml|*.plymouth|*.script|*.theme|*.rc|*.templates|*.seed)
                 strip_crlf "${f}" ;;
         esac
     done < <(find "${stage}" -path "${stage}/DEBIAN" -prune -o -type f -print0)

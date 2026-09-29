@@ -5,7 +5,7 @@
 #  Runs INSIDE the squashfs chroot as root (staged by build/build-iso.sh).
 #    * i386 multiarch (Wine / Steam / 32-bit Vulkan)
 #    * WineHQ  — deb822 .sources for Ubuntu ${BASE_UBUNTU_CODENAME} + key
-#                (used by install-compat.sh at OOBE for winehq-staging)
+#                (used by install-compat.sh, run by the installer, for winehq-staging)
 #    * Steam   — Valve's apt repository (same key/list paths as
 #                /usr/libexec/lindos/install-gaming.sh so both stay idempotent)
 #    * Mozilla — NOT added by default: Linux Mint ships its own firefox .deb
@@ -105,7 +105,7 @@ Signed-By: ${WINEHQ_KEY}
 EOF
         fi
     else
-        warn "could not download the WineHQ key — WineHQ repo NOT added (OOBE will add it when online)"
+        warn "could not download the WineHQ key — WineHQ repo NOT added (install-compat.sh adds it when online)"
         rm -f "${WINEHQ_SRC}"
     fi
 else
@@ -170,7 +170,7 @@ if [ "${ADD_FLATHUB}" = "1" ]; then
             log "flatpak remote-add flathub"
             if ! flatpak remote-add --system --if-not-exists flathub \
                     https://dl.flathub.org/repo/flathub.flatpakrepo; then
-                warn "flatpak remote-add flathub failed (offline?) — OOBE adds it on first use"
+                warn "flatpak remote-add flathub failed (offline?) — the installer adds it when online"
             fi
         fi
     else

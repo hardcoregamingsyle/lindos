@@ -1,0 +1,28 @@
+#!/bin/bash
+# is-live-session — exit 0 when this machine is running from the install medium (live session),
+# 1 when it is an installed system.
+#
+# The test is Mint's own: the kernel command line has the word boot=casper or boot=live.  This is
+# the shell twin of lindos.session.is_live_session(); every Lindos script that must not run in the
+# live session (first-boot retries, update toasts, ...) asks this one helper instead of keeping a
+# private copy.  Note: /proc/cmdline still says boot=casper inside the installer's 'chroot /target'
+# (proc is the live kernel's) - scripts that run there must check LINDOS_INSTALLER=1 themselves.
+#
+# Usage: is-live-session            (silent; the exit status is the answer)
+# Test override: LINDOS_TEST_CMDLINE=<file> is read instead of /proc/cmdline (never set it on a
+# real system).
+set -Eeuo pipefail
+
+cmdline="${LINDOS_TEST_CMDLINE:-/proc/cmdline}"
+[ -r "${cmdline}" ] || exit 1
+
+words=()
+read -r -a words <"${cmdline}" || true   # no trailing newline makes read return 1 but still fills words
+
+for word in "${words[@]+"${words[@]}"}"; do
+    word="${word%$'\r'}"
+    case "${word}" in
+        boot=casper|boot=live) exit 0 ;;
+    esac
+done
+exit 1

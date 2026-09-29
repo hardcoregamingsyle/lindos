@@ -2,10 +2,11 @@
 
 > **What it is, in one paragraph.** `lindos-drivers` detects your hardware and installs the right
 > drivers for it — **GPU** (NVIDIA / AMD / Intel), **Broadcom Wi-Fi**, and **audio firmware** — with a
-> single `install --auto`, or one class at a time. A first-boot service runs the detection once and
-> offers the install when you are online, so a fresh Lindos install ends up with working graphics,
-> Wi-Fi and sound without you hunting for packages. Proprietary drivers are **never installed silently**
-> — the first-boot/OOBE consent gate always applies.
+> single `install --auto`, or one class at a time. The **installer** installs firmware and the free drivers
+> while it installs the system, so a fresh Lindos install ends up with working graphics, Wi-Fi and sound
+> without you hunting for packages; a silent background service retries whatever the installer could not do.
+> Proprietary drivers are **never installed silently**: only with your consent, and never while Secure Boot
+> would need a key enrolment for them (§3).
 
 This extends the GPU/driver CLI documented in [GAMING.md](GAMING.md) §3 and is binding-consistent with
 [`SPEC-VM.md`](../SPEC-VM.md) §24. `lindos-drivers` lives in the `lindos-gaming` package.
@@ -35,7 +36,7 @@ install. It covers three classes:
   speakers/mics to work: `sof-firmware`, `alsa-ucm-conf`, and `firmware-sof-signed` where applicable.
 
 `--json` emits the machine-readable recommendation set (per class: detected device + recommended
-packages) that the first-boot service and Lindos Settings consume.
+packages) that the silent retry and Lindos Settings consume.
 
 ## 2. `lindos-drivers install --auto`
 
@@ -54,28 +55,62 @@ Wi-Fi/audio installs) remain available individually — `--auto` is the convenie
 at once from the autodetect result. GPU specifics (NVIDIA not on the ISO, `nvidia-drm modeset=1`, the
 32-bit Vulkan/GL halves Proton needs, `LINDOS_NVIDIA_DRIVER`) are in [GAMING.md](GAMING.md) §3.
 
-## 3. First-boot service
+## 3. Installer, first boot and consent
 
-Lindos ships `/usr/lib/systemd/system/lindos-driver-firstboot.service`: a **oneshot** unit gated on a
-first-run marker (systemd `ConditionPathExists` / `ConditionFirstBoot`) that:
+**While installing.** The Lindos installer (SPEC §17, [INSTALLER.md](INSTALLER.md)) runs a `drivers` step
+inside the new system, after the package lists are refreshed:
 
-1. runs `lindos-drivers autodetect`;
-2. when the machine is **online and not an OEM image**, offers the install — either interactively or
-   by writing a notification for the OOBE / Lindos Settings to surface;
-3. does nothing on later boots (idempotent) and **never blocks boot** — if it cannot run (offline, OEM,
-   already done) it exits cleanly and gets out of the way.
+1. **firmware** the image already carries is made sure of (`linux-firmware`, `firmware-sof-signed`, the CPU
+   microcode packages; a package no archive carries is left out instead of failing the step);
+2. **free drivers**: `ubuntu-drivers install --free-only` — never anything proprietary; "nothing to install"
+   is not a failure;
+3. **a proprietary GPU driver** (`lindos-drivers install --auto`) **only with your consent** — the installer's
+   *Install multimedia codecs* (third-party software) checkbox (`ubiquity/use_nonfree`) or the kernel word
+   `lindos.proprietary_drivers=1`; the consent is recorded in `/var/lib/lindos/driver-proprietary-consent`. The
+   checkbox's own label mentions only codecs, so the kernel word is the only fully explicit consent.
 
-Because it only *offers* the install, proprietary drivers are never pulled in behind your back; you
-confirm through the first-boot prompt or the OOBE. On an OEM image the offer is deferred to the end
-user's own first boot.
+**Secure Boot.** With Secure Boot **enabled or undetectable**, a PC that may have an NVIDIA GPU never gets the
+proprietary driver from the installer, consent or not: an NVIDIA module built on your PC (DKMS) is unsigned
+and would need an interactive key enrolment (a blue screen) at the next start, which does not belong in a
+first boot that only asks for an account. The step is recorded **`skipped`** with the reason and the driver
+stays available in Lindos Settings › Hardware or `lindos-drivers install --nvidia-open|--nvidia-proprietary`
+(or turn Secure Boot off). Lindos does not enrol keys for you (OEM mode also skips Ubiquity's own key-enrolment
+copy). Legacy-BIOS machines have no Secure Boot. Detection uses `mokutil`, then the EFI variables; whether it
+works from the live installer environment is unverified.
+
+**The result** is recorded in `/var/lib/lindos/install-state.json`, step `drivers`: `done`, `pending`
+(offline, out of time or disk space), `failed` or `skipped`. `lindos-config install-state` prints it, and
+Settings › Apps › Left to finish from setup offers an **Install now** button for `pending`/`failed`.
+
+**Silent retry on the installed system.** `/usr/lib/systemd/system/lindos-driver-firstboot.service` is a
+**oneshot** that only covers what the installer could not do. It runs on the installed system only
+(`ConditionKernelCommandLine=!boot=casper` and `!boot=live`, never in a container or chroot), only after the
+account wizard has finished (`ConditionPathExists=!/lib/systemd/system/oem-config.target`), and only until
+`/var/lib/lindos/driver-firstboot.done` exists. It runs `/usr/libexec/lindos/driver-firstboot.sh`, which:
+
+1. reads the install state: `done` or `skipped` → writes the marker and exits at once;
+2. for `pending`, `failed` or no record, waits a bounded time for NetworkManager (`wait-for-network`;
+   Lindos masks `NetworkManager-wait-online`, so `network-online.target` comes before Wi-Fi is up), and, when
+   online, retries **silently** — no window, no wizard, no notification — and records the outcome;
+3. never goes beyond what the installer was allowed to do: `ubuntu-drivers install --free-only` by default;
+   `lindos-drivers install --auto` only when the consent file exists, and never an NVIDIA DKMS driver with
+   Secure Boot on (recorded `skipped`);
+4. gives up after three attempts (an attempt counter), never blocks the boot and always exits 0.
+
+The old behaviour — the service writing a `driver-install-offer.json` for the wizard to show — is gone
+(nothing ever read it); a retry still records the output of `lindos-drivers autodetect --json` in
+`/var/lib/lindos/driver-recommendations.json`, which it uses to tell whether an NVIDIA GPU is present.
 
 **Enabled by default.** `lindos-driver-firstboot.service` is explicitly listed in
 `packages/lindos-tune/root/usr/lib/systemd/system-preset/90-lindos.preset`'s enable list
-(applied by `lindos-tune apply` at ISO build time, SPEC §8, §11) — this was made explicit rather
-than relying on the ambient systemd default-enable policy for a unit with no matching preset
-entry, and is now covered by a regression test (`packages/lindos-tune/tests/test_data.py`'s
-preset test). `lindos-drivers install --auto` (what a confirmed offer runs) already resolves the
-NVIDIA package via `ubuntu-drivers devices` — see §2.
+(applied by `lindos-tune apply` at ISO build time, SPEC §8, §11) and covered by a regression test
+(`packages/lindos-tune/tests/test_data.py`'s preset test). `lindos-drivers install --auto` already resolves
+the NVIDIA package via `ubuntu-drivers devices` — see §2.
+
+**Unverified.** None of this has run on a real install yet: `ubuntu-drivers install --free-only` output and exit
+codes for "nothing to install" (handled defensively, not confirmed), `lindos-drivers install --auto` inside a
+chroot with the custom `6.14.0-lindos` kernel (DKMS needs matching headers), and the Secure Boot detection.
+See [INSTALLER.md](INSTALLER.md#known-limitations-and-what-is-unverified).
 
 ## 4. Non-free repositories and metadata
 
@@ -84,7 +119,8 @@ Some of these drivers are proprietary or firmware blobs that live in Ubuntu's `r
 needs them, Lindos **enables those components as required** and refreshes the driver metadata — this
 is documented, expected behaviour, not a silent change of your sources. It **never** installs a
 proprietary driver silently: enabling a repo makes a package *available*; installing it still goes
-through the first-boot / OOBE consent gate above.
+through the consent gate above (the installer's checkbox or kernel word, or your own explicit
+`lindos-drivers install` / Settings action).
 
 ## 5. Controllers and other classes
 
@@ -117,3 +153,4 @@ lindos-drivers xpadneo|xone install|remove|status …
 * [GAMING.md](GAMING.md) — GPU drivers in depth, Vulkan/GL, controllers, Proton.
 * [HARDWARE-CONTROL.md](HARDWARE-CONTROL.md) — governor, power profiles, fans, RGB, refresh rate.
 * [ARCHITECTURE.md](ARCHITECTURE.md) — the helper and its `install-drivers` action.
+* [INSTALLER.md](INSTALLER.md) — the installer flow, offline installs and pending items.

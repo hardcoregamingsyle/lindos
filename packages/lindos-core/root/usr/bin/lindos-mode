@@ -4,10 +4,12 @@
   lindos-mode list [--json]                 all modes (id, name, description, current marker)
   lindos-mode get  [--json]                 the effective mode id
   lindos-mode show <id> [--json]            full definition + the privileged plan
-  lindos-mode set  <id> [--system] [--dry-run] [--json] [--quiet]
+  lindos-mode set  <id> [--system] [--no-install] [--dry-run] [--json] [--quiet]
       user part (config, panel profile, pins, compositor, apply-user.sh) then the privileged
       part through the polkit helper ('apply-mode').  --system also makes it the system default
-      (/etc/lindos/system.json).  --dry-run prints every step without changing anything.
+      (/etc/lindos/system.json).  --no-install applies the configuration only (the mode's apt
+      packages and Flatpaks are not installed).  --dry-run prints every step without changing
+      anything.
 
 Exit codes: 0 ok · 1 error (unknown mode, a step failed) · 2 usage.
 """
@@ -124,7 +126,8 @@ def cmd_set(ns: argparse.Namespace) -> int:
         if not ns.quiet and not ns.json:
             print(msg, flush=True)
 
-    result = lmodes.apply_mode(ns.mode, system=ns.system, dry_run=ns.dry_run, log=log)
+    result = lmodes.apply_mode(ns.mode, system=ns.system, dry_run=ns.dry_run, log=log,
+                               install=not ns.no_install)
     if ns.json:
         data = result.to_dict()
         data["mode"] = ns.mode
@@ -157,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("set", help="switch to a mode")
     p.add_argument("mode")
     p.add_argument("--system", action="store_true", help="also make it the system default (/etc/lindos/system.json)")
+    p.add_argument("--no-install", action="store_true",
+                   help="configuration only: do not install the mode's apt packages / Flatpaks")
     p.add_argument("--dry-run", action="store_true", help="print the steps without changing anything")
     p.add_argument("--json", action="store_true", help="machine-readable result")
     p.add_argument("--quiet", "-q", action="store_true", help="only report failures")

@@ -552,7 +552,7 @@ write_licenses() {
 
 Exact commits / URLs / SHA256 of what was fetched: see `assets.lock` and `SHA256SUMS`
 in this directory.  Lindos' own artwork (wallpapers, logo, icons) is GPL-3.0-or-later.
-Edge and Chrome are NOT fetched (their licences forbid redistribution; the OOBE installs
+Edge and Chrome are NOT fetched (their licences forbid redistribution; the installer downloads
 them from the vendors' apt repositories).
 EOS
 }

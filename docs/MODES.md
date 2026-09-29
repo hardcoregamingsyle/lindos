@@ -1,9 +1,16 @@
 # Lindos Modes
 
 A **Mode** is a named bundle of taskbar pins, packages, services, kernel settings, CPU governor,
-zram size and compositor choice. You pick one in the first-boot wizard and can switch any time —
-in **Lindos Settings → Lindos Mode** or with `lindos-mode set <id>`. Exactly five modes exist:
-`everyday`, `gaming`, `work`, `creator`, `lite`.
+zram size and compositor choice. You pick one in **Lindos Setup** (the wizard on your first login) and can
+switch any time — in **Lindos Settings → Lindos Mode** or with `lindos-mode set <id>`. Exactly five modes
+exist: `everyday`, `gaming`, `work`, `creator`, `lite`.
+
+> **Mode apps are installed by the installer, for every Mode.** The Mode is chosen only after the
+> installation, so the Lindos installer installs the *union* of every Mode's `packages`, `flatpaks` and
+> extras once, while it installs ([INSTALLER.md](INSTALLER.md)). Choosing or switching a Mode therefore
+> normally installs nothing: Lindos Setup applies a Mode's configuration only (`install: false`), and
+> `lindos-mode set` / Settings install just what is still missing. If the install was offline, the missing
+> apps are listed in Lindos Settings › Apps › Left to finish from setup.
 
 Every value in the table below is read from the shipped files:
 `packages/lindos-core/root/usr/share/lindos/modes/<id>/mode.json` (definition),
@@ -28,13 +35,13 @@ Every value in the table below is read from the shipped files:
 | MGLRU (`mglru=`) | default | default | default | default | **`on`** |
 | Game Mode auto (`gamemode_auto`) | on | on | off | off | off |
 | MangoHud default | off (Shift_R+F12 toggles) | off (Shift_R+F12 toggles) | off | off | off |
-| apt packages installed on switch (if online) | — | `gamemode mangohud steam-devices mesa-vulkan-drivers libvulkan1 vulkan-tools ananicy-cpp lutris` | `libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 thunderbird power-profiles-daemon redshift-gtk hunspell-en-us` | `winetricks cabextract icoutils fonts-liberation colord` | — |
-| Flatpaks installed on switch | — | `org.prismlauncher.PrismLauncher`, `org.vinegarhq.Sober`, `com.heroicgameslauncher.hgl` | — (suggested: `org.onlyoffice.desktopeditors`) | `com.usebottles.bottles` | — |
+| apt packages (installed by the installer for every Mode; a switch installs any still missing, if online) | — | `gamemode mangohud steam-devices mesa-vulkan-drivers libvulkan1 vulkan-tools ananicy-cpp lutris` | `libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 thunderbird power-profiles-daemon redshift-gtk hunspell-en-us` | `winetricks cabextract icoutils fonts-liberation colord` | — |
+| Flatpaks (installed by the installer for every Mode, best effort; a switch installs any still missing, if online) | — | `org.prismlauncher.PrismLauncher`, `org.vinegarhq.Sober`, `com.heroicgameslauncher.hgl` | — (suggested: `org.onlyoffice.desktopeditors`) | `com.usebottles.bottles` | — |
 | services enabled | `earlyoom`, `fstrim.timer` | `ananicy-cpp`, `earlyoom` | `power-profiles-daemon`, `earlyoom`, `fstrim.timer` | `colord`, `earlyoom` | `earlyoom` |
 | services disabled | — | `ModemManager`, `cups-browsed` | — | — | `bluetooth cups-browsed ModemManager avahi-daemon NetworkManager-wait-online colord switcheroo-control geoclue packagekit` (tune.d wins: `bluetooth.service ModemManager.service cups-browsed.service`) — **the only mode that turns Bluetooth off**; every other mode keeps `bluetooth.service` enabled (SPEC §8) |
 | sysctl (`/etc/sysctl.d/90-lindos-mode.conf`) | — | `vm.max_map_count=2147483642`, `vm.compaction_proactiveness=0`, `kernel.split_lock_mitigate=0` | `vm.dirty_writeback_centisecs=1500` | `fs.inotify.max_user_watches=524288` | `vm.dirty_ratio=10`, `vm.dirty_background_ratio=5`, `kernel.nmi_watchdog=0` |
 | Taskbar pins (in order) | File Explorer · Firefox · Store · Settings · Terminal | File Explorer · Firefox · Steam · Lutris · Heroic · Minecraft (Prism) · Roblox (Sober) · Settings | File Explorer · Firefox · LibreOffice Writer · LibreOffice Calc · Thunderbird · Settings · Terminal | File Explorer · Firefox · Bottles · GIMP · Krita · Kdenlive · Settings | File Explorer · Firefox · Settings |
-| Extras | — | `gaming_items: steam lutris heroic prism sober` (offered by the OOBE) | `power_profile: balanced`, `night_light: true` (redshift-gtk) | `compat_items: wine winetricks bottles`; suggested apt: `gimp krita kdenlive inkscape blender obs-studio`; colour-profile hint | `minimal_tray`, `animations: false` |
+| Extras | — | `gaming_items: steam lutris heroic prism sober` (all installed by the installer) | `power_profile: balanced`, `night_light: true` (redshift-gtk) | `compat_items: wine winetricks bottles`; suggested apt: `gimp krita kdenlive inkscape blender obs-studio`; colour-profile hint | `minimal_tray`, `animations: false` |
 
 > `vm.max_map_count=2147483642` is shipped **always-on** by lindos-gaming's
 > `/etc/sysctl.d/80-lindos-gaming.conf`; only Gaming mode repeats it in the mode drop-in, the
@@ -71,7 +78,7 @@ Honesty notes carried in the mode files themselves:
 lindos-mode list [--json]                 all modes with a one-liner
 lindos-mode get [--json]                  the effective mode id (user config → /etc/lindos/system.json → everyday)
 lindos-mode show <id> [--json]            the definition + the exact helper plan
-lindos-mode set <id> [--system] [--dry-run] [--json] [--quiet]
+lindos-mode set <id> [--system] [--no-install] [--dry-run] [--json] [--quiet]
 ```
 
 1. `~/.config/lindos/config.json` gets `"mode": "<id>"` (`--system` also writes
@@ -83,8 +90,9 @@ lindos-mode set <id> [--system] [--dry-run] [--json] [--quiet]
    according to `compositor`; the mode's `apply-user.sh` (guarded xfconf / animations /
    night-light / `lindos-mangohud sync`).
 3. **Privileged part** — one `pkexec` prompt for the helper action `apply-mode` with the plan
-   from `lindos.modes.build_system_plan()`: apt packages and Flatpaks (only when online — offline
-   they are skipped and logged), then `lindos-tune apply --mode <id> --system` (services,
+   from `lindos.modes.build_system_plan()`: apt packages and Flatpaks that are still missing (only when
+   online — offline they are skipped and logged; skipped altogether with `--no-install` / `install: false`,
+   which is what Lindos Setup sends), then `lindos-tune apply --mode <id> --system` (services,
    `/etc/sysctl.d/90-lindos-mode.conf`, governor + EPP, zram, earlyoom, ananicy, presets), then
    the mode's `apply-system.sh` if present, then `system.json`.
 4. Every step is reported as ok / failed / skipped; `--dry-run` prints them without touching
@@ -109,8 +117,8 @@ Steps that depend on another package (panel profiles from lindos-desktop, `lindo
 ## 4. Choosing
 
 * **4 GB of RAM or less, or a pre-2012 machine →** Lite (the wizard suggests it automatically).
-* **You play games →** Gaming (performance governor, ananicy, zram 75 %; the launchers you ticked
-  in the wizard are pinned).
+* **You play games →** Gaming (performance governor, ananicy, zram 75 %; the launchers are pinned —
+  the installer already installed them).
 * **Office/mail all day →** Work (`power-profiles-daemon` balanced, night light).
 * **Photoshop CS6/2021, Illustrator 2021, drawing/video →** Creator (Bottles + recipes; note the
   Adobe caveats above).

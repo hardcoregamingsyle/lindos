@@ -1,0 +1,3 @@
+Template: lindos-installer/msg
+Type: text
+Description: ${MSG}

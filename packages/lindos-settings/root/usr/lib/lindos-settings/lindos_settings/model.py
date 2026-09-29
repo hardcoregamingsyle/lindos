@@ -10,7 +10,8 @@ time**, so it can be unit-tested on any OS.  It contains:
 * the ``which_or_install`` resolver used by delegate pages,
 * small formatting helpers (MB, uptime, initials, RAM summary),
 * static data tables (launchers, accents, power-menu items) and defensive normalisers for
-  data returned by lindos-core / external CLIs.
+  data returned by lindos-core / external CLIs,
+* the "what the installer could not finish" rows for Settings > Apps (install-state.json).
 """
 
 from __future__ import annotations
@@ -2044,6 +2045,167 @@ def compositor_state_from_output(code: int, out: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------------------------
+# What the installer could not finish (/var/lib/lindos/install-state.json, lindos.installstate)
+# ---------------------------------------------------------------------------------------------
+# The Lindos installer installs updates, drivers, Chrome, Wine/Proton, launchers and the Modes'
+# apps while it installs.  Whatever it could not do (offline, timeout, failure) is recorded as
+# ``pending`` / ``failed``; Settings > Apps lists those items with an "Install now" button that
+# uses the ordinary helper actions.  Nothing here installs anything: it is all pure data handling.
+
+SETUP_STEPS: tuple[str, ...] = ("updates", "drivers", "browser", "compat", "gaming", "mode_extras", "flatpaks")
+SETUP_PENDING_STATUSES: tuple[str, ...] = ("pending", "failed")
+#: launchers the installer's ``gaming`` step covers (the Flatpak-based ones Prism/Sober are launchers too)
+SETUP_GAMING_ITEMS: tuple[str, ...] = ("steam", "lutris", "heroic", "prism", "sober")
+SETUP_COMPAT_ITEMS: tuple[str, ...] = ("wine", "umu")
+#: steps that lindos-*-firstboot retries silently in the background (the others need "Install now")
+SETUP_BACKGROUND_RETRY: tuple[str, ...] = ("browser", "drivers")
+
+SETUP_STEP_TITLES: dict[str, str] = {
+    "updates": "System updates",
+    "drivers": "Drivers and firmware",
+    "browser": "Google Chrome",
+    "compat": "Windows app support (Wine + Proton)",
+    "gaming": "Gaming launchers",
+    "mode_extras": "Apps for the Lindos Modes",
+    "flatpaks": "Flatpak apps (Prism, Sober, Heroic, Bottles)",
+}
+
+
+def normalize_install_state(data: Any) -> dict[str, Any]:
+    """``{"online": bool|None, "steps": {step: {"status", "detail"}}}`` from install-state.json.
+
+    Tolerant like the file reader in lindos-core: anything malformed is dropped, a missing or
+    corrupt file is an empty state.  Never raises."""
+    out: dict[str, Any] = {"online": None, "steps": {}}
+    if not isinstance(data, dict):
+        return out
+    if isinstance(data.get("online"), bool):
+        out["online"] = data["online"]
+    steps = data.get("steps")
+    if isinstance(steps, dict):
+        for sid, entry in steps.items():
+            if not isinstance(sid, str) or not isinstance(entry, dict):
+                continue
+            status = entry.get("status")
+            if status not in ("done", "pending", "skipped", "failed"):
+                continue
+            detail = entry.get("detail")
+            out["steps"][sid] = {"status": status, "detail": " ".join(detail.split()) if isinstance(detail, str) else ""}
+    return out
+
+
+def setup_step_status(state: Any, step: str) -> str:
+    """The recorded status of *step* (``""`` when nothing is recorded)."""
+    entry = normalize_install_state(state)["steps"].get(step)
+    return entry["status"] if entry else ""
+
+
+def setup_pending_steps(state: Any) -> list[str]:
+    """Recorded steps that are ``pending`` or ``failed``, canonical order first."""
+    steps = normalize_install_state(state)["steps"]
+    order = [s for s in SETUP_STEPS if s in steps] + sorted(s for s in steps if s not in SETUP_STEPS)
+    return [s for s in order if steps[s]["status"] in SETUP_PENDING_STATUSES]
+
+
+def _setup_item_subtitle(step: str, status: str, detail: str) -> str:
+    retry = step in SETUP_BACKGROUND_RETRY
+    if status == "failed":
+        text = "Couldn't be installed while Lindos was installing"
+        if detail:
+            text += f" ({detail})"
+        text += ". Lindos also tries again in the background when this PC starts online." if retry else ". You can try again now."
+        return text
+    if retry:
+        return "Waiting for an internet connection. Lindos also adds it in the background when this PC starts online."
+    return "Not installed yet — it needs an internet connection. Press Install now once you're online."
+
+
+def pending_setup_items(
+    state: Any,
+    *,
+    mode_packages: Iterable[str] = (),
+    mode_flatpaks: Iterable[str] = (),
+    installed: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Rows for Settings > Apps: what the installer could not finish, each with the helper call
+    that finishes it.
+
+    *installed* holds cheap live checks (keys optional; a missing key means "unknown", so the item
+    stays listed): ``browser`` (bool: Chrome is installed), ``compat`` (bool: Wine and umu are on
+    PATH), ``gaming`` / ``packages`` / ``flatpaks`` (ids that are installed).  An item whose live
+    check says it is already there is dropped even if the record still says pending - the record
+    is written by the installer and by the background retries, not by every Install button.
+
+    Each row is ``{"id", "title", "subtitle", "status", "kind", "payload", "button"}`` where
+    ``kind`` is one of ``browser compat gaming packages flatpaks drivers`` and ``payload`` is the
+    argument for the matching helper action.  System updates are not listed here (the Updates page
+    covers them, see :func:`os_updates_subtitle`).
+    """
+    steps = normalize_install_state(state)["steps"]
+    have = installed or {}
+    packages = [p for p in dict.fromkeys(str(x) for x in mode_packages) if p]
+    flatpaks = [f for f in dict.fromkeys(str(x) for x in mode_flatpaks) if f]
+    rows: list[dict[str, Any]] = []
+    for step in SETUP_STEPS:
+        entry = steps.get(step)
+        if step == "updates" or not entry or entry["status"] not in SETUP_PENDING_STATUSES:
+            continue
+        kind: str
+        payload: dict[str, Any]
+        if step == "browser":
+            if have.get("browser") is True:
+                continue
+            kind, payload = "browser", {"browser": "chrome"}
+        elif step == "compat":
+            if have.get("compat") is True:
+                continue
+            kind, payload = "compat", {"items": list(SETUP_COMPAT_ITEMS)}
+        elif step == "gaming":
+            missing = [i for i in SETUP_GAMING_ITEMS if i not in set(have.get("gaming") or ())] if "gaming" in have else list(SETUP_GAMING_ITEMS)
+            if not missing:
+                continue
+            kind, payload = "gaming", {"items": missing}
+        elif step == "mode_extras":
+            missing = [p for p in packages if p not in set(have.get("packages") or ())] if "packages" in have else packages
+            if not missing:
+                continue          # nothing known to install (or all there): never show a button that does nothing
+            kind, payload = "packages", {"packages": missing}
+        elif step == "flatpaks":
+            missing = [f for f in flatpaks if f not in set(have.get("flatpaks") or ())] if "flatpaks" in have else flatpaks
+            if not missing:
+                continue
+            kind, payload = "flatpaks", {"flatpaks": missing}
+        elif step == "drivers":
+            kind, payload = "drivers", {"args": []}
+        else:  # pragma: no cover - SETUP_STEPS is closed
+            continue
+        rows.append({
+            "id": step,
+            "title": SETUP_STEP_TITLES[step],
+            "subtitle": _setup_item_subtitle(step, entry["status"], entry["detail"]),
+            "status": entry["status"],
+            "kind": kind,
+            "payload": payload,
+            "button": "Install now",
+        })
+    return rows
+
+
+def os_updates_subtitle(state: Any) -> str:
+    """The Updates page's "Operating system & apps" line, honest about what the installer did."""
+    base = "System packages, Firefox, Wine and everything else update through the system Update Manager"
+    status = setup_step_status(state, "updates")
+    if status == "done":
+        return ("Lindos installed the available system updates while installing. New ones — for system "
+                "packages, Firefox, Wine and everything else — arrive through the system Update Manager")
+    if status in SETUP_PENDING_STATUSES:
+        return ("The updates that were available while Lindos was installing are still waiting (there was no "
+                "internet connection). Open the Update Manager to install them — it also handles Firefox, Wine "
+                "and everything else")
+    return base
+
+
 __all__ = [
     "PAGE_ORDER",
     "NATIVE_PAGES",
@@ -2154,4 +2316,14 @@ __all__ = [
     "needs_sideload_note",
     "kernel_status_summary",
     "secureboot_summary",
+    "SETUP_STEPS",
+    "SETUP_STEP_TITLES",
+    "SETUP_GAMING_ITEMS",
+    "SETUP_COMPAT_ITEMS",
+    "SETUP_BACKGROUND_RETRY",
+    "normalize_install_state",
+    "setup_step_status",
+    "setup_pending_steps",
+    "pending_setup_items",
+    "os_updates_subtitle",
 ]

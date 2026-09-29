@@ -7,6 +7,12 @@ HELPER="/usr/libexec/lindos/lindos-helper"
 INSTALL_BROWSER="/usr/libexec/lindos/install-browser.sh"
 BROWSER_FIRSTBOOT="/usr/libexec/lindos/browser-firstboot.sh"
 UPDATE_NOTIFY="/usr/libexec/lindos/lindos-update-notify.sh"
+IS_LIVE_SESSION="/usr/libexec/lindos/is-live-session"
+OEM_CONFIG_PENDING="/usr/libexec/lindos/oem-config-pending"
+WAIT_FOR_NETWORK="/usr/libexec/lindos/wait-for-network"
+STATE_DIR="/var/lib/lindos"
+LIVE_INHIBIT_UNIT="/usr/lib/systemd/system/lindos-live-inhibit.service"
+LIVE_INHIBIT_WANTS="/usr/lib/systemd/system/multi-user.target.wants"
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 SYSTEM_CONF="/etc/lindos/system.json"
 USER_TIMER_WANTS="/usr/lib/systemd/user/timers.target.wants"
@@ -23,6 +29,22 @@ case "$1" in
         chmod 0755 "$HELPER" "$INSTALL_BROWSER" 2>/dev/null || true
         [ -f "$BROWSER_FIRSTBOOT" ] && chmod 0755 "$BROWSER_FIRSTBOOT" 2>/dev/null || true
         [ -f "$UPDATE_NOTIFY" ] && chmod 0755 "$UPDATE_NOTIFY" 2>/dev/null || true
+        [ -f "$IS_LIVE_SESSION" ] && chmod 0755 "$IS_LIVE_SESSION" 2>/dev/null || true
+        [ -f "$OEM_CONFIG_PENDING" ] && chmod 0755 "$OEM_CONFIG_PENDING" 2>/dev/null || true
+        [ -f "$WAIT_FOR_NETWORK" ] && chmod 0755 "$WAIT_FOR_NETWORK" 2>/dev/null || true
+
+        # install-state.json (lindos.installstate) lives here; the installer writes it, the
+        # first-boot retries and Settings read it.
+        mkdir -p "$STATE_DIR"
+        chmod 0755 "$STATE_DIR"
+
+        # lindos-live-inhibit.service only ever starts in the live USB session (its own
+        # ConditionKernelCommandLine); vendor-enable it with a static ".wants" symlink, the same way
+        # the user timer below is, so it does not depend on the systemd preset having run.
+        if [ -f "$LIVE_INHIBIT_UNIT" ]; then
+            mkdir -p "$LIVE_INHIBIT_WANTS"
+            ln -sf ../lindos-live-inhibit.service "$LIVE_INHIBIT_WANTS/lindos-live-inhibit.service"
+        fi
         for cli in lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot lindos-update; do
             [ -f "/usr/bin/$cli" ] && chmod 0755 "/usr/bin/$cli"
         done

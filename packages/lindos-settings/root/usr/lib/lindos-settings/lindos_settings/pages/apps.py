@@ -1,7 +1,8 @@
-"""Apps page (delegate): Store, Installed apps, Startup, Default apps — plus the web-browser
-cards (Edge / Chrome / Firefox: install through the helper action ``install-browser`` and set the
-default) so an offline first boot can be finished here (SPEC §6: "finish later in
-`lindos-settings apps`"), and shortcuts to Windows apps / Gaming launchers."""
+"""Apps page (delegate): Store, Installed apps, Startup, Default apps — plus a "Left to finish from
+setup" list (what the installer could not do while offline, from install-state.json, each with an
+"Install now" button that uses the ordinary helper actions), the web-browser cards (Edge / Chrome /
+Firefox: install through the helper action ``install-browser`` and set the default) and shortcuts
+to Windows apps / Gaming launchers."""
 
 from __future__ import annotations
 
@@ -23,6 +24,75 @@ BROWSER_ICONS: dict[str, tuple[str, ...]] = {
 class AppsPage(DelegatePage):
     PAGE_ID = "apps"
 
+    # ------------------------------------------------------------------ left to finish from setup
+    def build_extra_top(self) -> None:
+        self._pending_cards = self.add_section("Left to finish from setup")
+        self._pending_title = self._sections[-1][0]
+        self._pending_items: list[dict[str, Any]] = []
+        self._installed_now: set[str] = set()      # finished from this page in this session
+        self._pending_busy = False
+        self._set_pending_visible(False)
+
+    def _set_pending_visible(self, visible: bool) -> None:
+        if self._pending_title is not None:
+            self._pending_title.set_no_show_all(not visible)
+            self._pending_title.set_visible(visible)
+        self._pending_cards.widget.set_no_show_all(not visible)
+        self._pending_cards.widget.set_visible(visible)
+
+    def _refresh_pending(self) -> None:
+        def _done(rows: Any, exc: Optional[BaseException]) -> None:
+            items = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) and not exc else []
+            self._render_pending(items)
+
+        run_async(self.backend.setup_pending_items, _done, name="setup-pending")
+
+    def _render_pending(self, items: list[dict[str, Any]]) -> None:
+        items = [it for it in items if it.get("id") not in self._installed_now]
+        self._pending_items = items
+        self._pending_cards.clear()
+        for item in items:
+            card = ButtonCard(
+                str(item.get("title") or ""),
+                str(item.get("subtitle") or ""),
+                ("emblem-downloads", "system-software-install"),
+                ("setup", "install", "pending", str(item.get("id") or "")),
+                button_label=str(item.get("button") or "Install now"),
+                on_click=lambda it=item: self._install_pending(it),
+                activatable=False,
+            )
+            self._pending_cards.add(card)
+        # reveal the list first: show_all() is a no-op on a widget that still has no_show_all set
+        self._set_pending_visible(bool(items))
+        self._pending_cards.show_all()
+
+    def _install_pending(self, item: dict[str, Any]) -> None:
+        if self._pending_busy:
+            self.toast("Another install is still running")
+            return
+        title = str(item.get("title") or "this item")
+        if not confirm(self.app.window, f"Install {title}?",
+                       "It is downloaded from its official source, so this PC needs an internet connection. "
+                       "The administrator password is asked once.", "Install now"):
+            return
+        self._pending_busy = True
+        self.toast(f"Installing {title}…")
+
+        def _done(res: Any, exc: Optional[BaseException]) -> None:
+            self._pending_busy = False
+            ok = res is not None and getattr(res, "ok", False) and not exc
+            if ok:
+                self._installed_now.add(str(item.get("id") or ""))
+                self.toast(f"{title} installed")
+            else:
+                err = (getattr(res, "err", "") or getattr(res, "out", "") or str(exc or "")).strip()
+                self.toast(f"Install failed: {err[:140] or 'see /var/log/lindos/helper.log'}")
+            self._refresh_pending()
+            self._refresh_browsers()
+
+        run_async(lambda: self.backend.install_setup_item(item), _done, name="install-setup-" + str(item.get("id")))
+
+    # ------------------------------------------------------------------ web browsers and shortcuts
     def build_extra_bottom(self) -> None:
         # -- web browsers (helper install-browser; Edge/Chrome are never on the ISO)
         self._browser_cards: dict[str, ButtonCard] = {}
@@ -66,6 +136,7 @@ class AppsPage(DelegatePage):
 
     def on_show(self) -> None:
         super().on_show()
+        self._refresh_pending()
         self._refresh_browsers()
 
     # ------------------------------------------------------------------ browsers
