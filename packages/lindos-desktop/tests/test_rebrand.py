@@ -236,14 +236,16 @@ def test_menu_duplicates_are_hidden_inside_the_main_group(tmp_path):
     assert rb.get_key(install, "Exec") == "mintinstall %U"
 
 
-def test_mint_tools_that_stay_only_change_their_icon(tmp_path):
+def test_mint_tools_that_stay_get_lindos_names_and_icons_but_keep_their_command(tmp_path):
     _seed_base(tmp_path)
     _sweep(tmp_path)
     upd = _get(tmp_path, "usr/share/applications/mintupdate.desktop")
     drv = _get(tmp_path, "usr/share/applications/mintdrivers.desktop")
     assert rb.get_key(upd, "Icon") == "lindos-update" and "NoDisplay" not in upd
     assert rb.get_key(drv, "Icon") == "lindos-drivers" and "NoDisplay" not in drv
-    assert rb.get_key(upd, "Exec") == "mintupdate-launcher" and "Name[de]=Aktualisierungsverwaltung" in upd
+    assert rb.get_key(upd, "Name") == "Lindos Updates" and rb.get_key(drv, "Name") == "Lindos Drivers"
+    assert "Name[de]" not in upd, "a stale translation would still say Update Manager"
+    assert rb.get_key(upd, "Exec") == "mintupdate-launcher"
     assert rb.get_key(drv, "Exec") == "pkexec mintdrivers"
 
 
@@ -256,7 +258,8 @@ def test_linux_mint_text_becomes_lindos_in_every_locale_and_group(tmp_path):
     assert "Comment=Back up your Lindos home folder" in text
     assert "Keywords=backup;Lindos;" in text
     assert "Name=Restore a Lindos backup" in text                       # inside the [Desktop Action] group too
-    assert "Exec=mintbackup --restore" in text and "Icon=mintbackup" in text     # names of tools are not text
+    assert "Exec=mintbackup --restore" in text                            # names of tools are not text
+    assert "NoDisplay=true" in text and "Icon=lindos-settings" in text     # the tool is hidden and its icon is not Mint's
 
 
 def test_entries_that_only_open_linux_mint_pages_are_hidden(tmp_path):
@@ -572,6 +575,8 @@ def test_apply_branding_runs_the_sweep_the_way_the_postinst_and_the_apt_hook_do(
     osr = _get(root, "etc/os-release")
     assert 'NAME="Lindos"' in osr and 'PRETTY_NAME="Lindos 1.0 (Aurora)"' in osr
     assert "ID=linuxmint" in osr and 'ID_LIKE="ubuntu debian"' in osr and "VERSION_CODENAME=zara" in osr
+    # the display version no longer says "22.2 (Zara)"; VERSION_ID stays because tools read it
+    assert 'VERSION="1.0 (Aurora)"' in osr and 'VERSION_ID="22.2"' in osr and "(Zara)" not in osr
     assert 'SUPPORT_URL="https://github.com/hardcoregamingsyle/lindos/issues"' in osr
     assert "linuxmint.com" not in osr and "readthedocs" not in osr
     assert _get(root, "etc/issue").startswith("Lindos 1.0.0 (Aurora) ")
@@ -662,12 +667,13 @@ def test_store_shim_is_named_honestly():
 def test_new_icons_exist_and_are_the_icons_the_rules_ask_for():
     data = json.loads(DATA.read_text(encoding="utf-8"))
     icons = ROOT / "usr" / "share" / "icons" / "hicolor" / "scalable" / "apps"
-    wanted = {v["Icon"] for v in data["applications"]["set"].values()} | {"lindos-store"}
-    assert wanted == {"lindos-update", "lindos-drivers", "lindos-store"}
+    wanted = set(data["applications"]["icons"].values()) | {data["applications"]["icon_fallback"]}
+    assert wanted == {"lindos-update", "lindos-drivers", "lindos-store", "lindos-settings"}
     for name in wanted:
         root = ET.parse(str(icons / (name + ".svg"))).getroot()
         assert root.get("viewBox") == "0 0 48 48"
-        assert "Not derived from any Microsoft or Linux Mint artwork" in (icons / (name + ".svg")).read_text(encoding="utf-8")
+        if name != "lindos-settings":          # the older settings icon has its own header
+            assert "Not derived from any Microsoft or Linux Mint artwork" in (icons / (name + ".svg")).read_text(encoding="utf-8")
 
 
 def test_skel_autostart_override_masks_mint_welcome_for_new_users():
@@ -685,14 +691,14 @@ def test_apt_hook_reapplies_branding_but_never_touches_alternatives_or_fails_apt
 
 
 def test_grub_drop_in_renames_the_boot_menu_only():
-    text = (ROOT / "etc" / "default" / "grub.d" / "49-lindos-distributor.cfg").read_text(encoding="utf-8")
+    text = (ROOT / "etc" / "default" / "grub.d" / "60-lindos-distributor.cfg").read_text(encoding="utf-8")
     assignments = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
     assert assignments == ['GRUB_DISTRIBUTOR="Lindos"']
 
 
 def test_new_config_files_are_conffiles_and_the_sweep_is_wired_into_the_maintainer_scripts():
     conffiles = (DEBIAN / "conffiles").read_text(encoding="utf-8").split()
-    for c in ("/etc/apt/apt.conf.d/99lindos-branding", "/etc/default/grub.d/49-lindos-distributor.cfg", "/etc/skel/.config/autostart/mintwelcome.desktop"):
+    for c in ("/etc/apt/apt.conf.d/99lindos-branding", "/etc/default/grub.d/60-lindos-distributor.cfg", "/etc/skel/.config/autostart/mintwelcome.desktop"):
         assert c in conffiles
     postinst = (DEBIAN / "postinst").read_text(encoding="utf-8")
     assert "/usr/libexec/lindos/rebrand-base.py" in postinst and "apply-branding.sh --quiet" in postinst
@@ -706,7 +712,7 @@ def test_script_conventions():
     assert raw.startswith(b"#!/usr/bin/env python3\n") and b"\r" not in raw
     text = raw.decode("utf-8")
     assert re.search(r"^\s*(sudo|pkexec)\s", text, flags=re.M) is None
-    stdlib_only = {"argparse", "json", "os", "re", "shutil", "sys", "urllib", "typing", "__future__"}
+    stdlib_only = {"argparse", "fnmatch", "json", "os", "re", "shutil", "sys", "urllib", "typing", "__future__"}
     imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z_]+)", text, flags=re.M))
     assert imported <= stdlib_only, imported - stdlib_only
     compile(text, str(SCRIPT), "exec")

@@ -24,7 +24,10 @@
 #      killed mid-transaction), then ALWAYS a repair pass (dpkg --configure -a, apt-get -f install,
 #      dpkg --audit): Ubiquity's later python-apt steps skip everything or abort when dpkg is broken;
 #    * the kernel, the boot loader and the Ubiquity/oem-config/casper packages are held (apt-mark) and
-#      pinned for the whole hook and released again on EVERY exit path (trap);
+#      pinned for the whole hook and released again on EVERY exit path (trap); what Ubiquity removes anyway is
+#      held only while the updates step runs (a held package blocks an install that needs it to change);
+#    * an extras install is simulated first: one that would remove an installed package that has to stay (or
+#      that apt cannot resolve) is not run, and the package is recorded as not installed, with the reason;
 #    * no proc/sys/dev/run mounts are left behind: every command enters the target through a private
 #      mount namespace, policy-rc.d and resolv.conf are restored by the exit trap;
 #    * each step records its result in /var/lib/lindos/install-state.json (python3 -m
@@ -229,13 +232,20 @@ li_step_drivers() {
     if [ "${#LI_X_FIRMWARE[@]}" -gt 0 ]; then
         if li_candidates "${LI_X_FIRMWARE[@]}"; then
             if [ "${#LI_CAND[@]}" -gt 0 ]; then
-                if li_dl 600 apt-get -y -q -d install --no-install-recommends "${LI_CAND[@]}"; then
-                    if ! li_inst 900 apt-get -y -q --no-download install --no-install-recommends "${LI_CAND[@]}"; then
-                        failed="the firmware install"
-                        LI_DIRTY=1
+                li_guard "${LI_CAND[@]}"
+                case $? in
+                    0) ;;
+                    *) failed="the firmware install (${LI_GUARD_WHY})" ;;
+                esac
+                if [ -z "${failed}" ]; then
+                    if li_dl 600 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "${LI_CAND[@]}"; then
+                        if ! li_inst 900 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "${LI_CAND[@]}"; then
+                            failed="the firmware install"
+                            LI_DIRTY=1
+                        fi
+                    else
+                        failed="the firmware download"
                     fi
-                else
-                    failed="the firmware download"
                 fi
             fi
         else
@@ -245,7 +255,7 @@ li_step_drivers() {
     # free drivers: never anything proprietary here
     if [ -e "${TGT}/usr/bin/ubuntu-drivers" ]; then
         # "nothing to install" is not a failure (whether a given ubuntu-drivers version says it with exit 1 is not verified)
-        li_inst 900 sh -c 'out="$(ubuntu-drivers install --free-only 2>&1)"; rc=$?; printf "%s\n" "${out}"; [ "${rc}" -eq 0 ] && exit 0; case "${out}" in *"No drivers found"*|*"already installed"*) exit 0 ;; esac; exit "${rc}"'
+        li_inst 900 "${LI_APTENV[@]}" sh -c 'out="$(ubuntu-drivers install --free-only 2>&1)"; rc=$?; printf "%s\n" "${out}"; [ "${rc}" -eq 0 ] && exit 0; case "${out}" in *"No drivers found"*|*"already installed"*) exit 0 ;; esac; exit "${rc}"'
         rc=$?
         if [ "${rc}" -ne 0 ]; then
             failed="${failed:+${failed}; }ubuntu-drivers install --free-only (exit ${rc})"
@@ -272,7 +282,7 @@ li_step_drivers() {
     fi
     if [ "${proprietary}" = 1 ] && [ -z "${failed}" ]; then
         li_say "Installing graphics drivers..."
-        li_inst 1500 lindos-drivers install --auto
+        li_inst 1500 "${LI_APTENV[@]}" lindos-drivers install --auto
         rc=$?
         if [ "${rc}" -ne 0 ]; then
             failed="lindos-drivers install --auto (exit ${rc})"
@@ -321,12 +331,11 @@ li_updates_done() {
 }
 
 # --- updates: 'apt-get upgrade', never a dist-upgrade; kernel, boot loader and Ubiquity stay --------
-# li_hold has held those families (and what the installer removes anyway), so a plain 'upgrade' is safe:
-# apt keeps back whatever cannot be upgraded next to a held package.  The simulation is checked first - if a
-# held family shows up in it the holds did not take effect and nothing is upgraded at all.
+# li_hold has held those families, so a plain 'upgrade' is safe: apt keeps back whatever cannot be upgraded next
+# to a held package.  What the installer removes anyway is held too, but only while this step runs (li_hold_removable):
+# held at any other time it blocks the extras.  The simulation is checked first - if a held family shows up in it
+# the holds did not take effect and nothing is upgraded at all.
 li_step_updates() {
-    local sim rc name bad=""
-    local -a pkgs
     if [ "${LI_HOLD_OK}" != 1 ]; then
         li_mark updates pending "the installer, kernel and boot-loader packages could not be held, so nothing is upgraded now"
         return 0
@@ -335,8 +344,17 @@ li_step_updates() {
         li_mark updates pending "not enough disk space for the system updates"
         return 0
     fi
+    li_hold_removable
+    li_updates_run
+    li_unhold_removable
+    return 0
+}
+
+li_updates_run() {
+    local sim rc name bad=""
+    local -a pkgs
     li_say "Checking for system updates..."
-    sim="$(li_run_out 180 apt-get -q -s upgrade)"
+    sim="$(li_run_out 180 apt-get "${LI_APTC[@]}" -q -s upgrade)"
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         li_mark updates failed "could not list the available updates (exit ${rc})"
@@ -357,14 +375,14 @@ li_step_updates() {
         return 0
     fi
     li_say "Downloading ${#pkgs[@]} system updates..."
-    li_dl 1500 apt-get -y -q -d upgrade
+    li_dl 1500 apt-get "${LI_APTC[@]}" -y -q -d upgrade
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         li_download_failed updates "${rc}" "the update download"
         return 0
     fi
     li_say "Installing system updates..."
-    li_inst 2400 apt-get -y -q --no-download upgrade
+    li_inst 2400 apt-get "${LI_APTC[@]}" -y -q --no-download upgrade
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         LI_DIRTY=1
@@ -421,9 +439,73 @@ li_step_gaming() {
 }
 
 # --- mode_extras: the union of every Mode's apt packages ------------------------------------
+LI_DONE_PKGS=()   # what the step installed / what it could not (LI_BAD_WHY: "pkg: why", same order)
+LI_BAD_PKGS=()
+LI_BAD_WHY=()
+LI_XRC=0          # the exit status of the download that timed out (li_extras_install returns 4)
+
+# li_group_of PKG - the Mode PKG belongs to for grouping ('other' for one that no Mode names).
+li_group_of() {
+    local m="${LI_X_MODES[$1]:-}"
+    m="${m%% *}"
+    printf '%s\n' "${m:-other}"
+}
+
+# li_extras_install PKG... - install these apt packages: as ONE transaction when apt agrees, package by package
+# when it does not, so one unresolvable package never takes the others along.  Every transaction is simulated
+# first (li_guard): one that would REMOVE an installed package (Valve's steam-launcher for steam-devices) or that
+# apt cannot resolve (a held package in the way) is not run; the packages then say why they were left out.
+# Fills LI_DONE_PKGS / LI_BAD_PKGS / LI_BAD_WHY.  Returns 0, 3 (the connection was lost: stop and stay pending)
+# or 4 (a download timed out or the budget is used up: LI_XRC has the exit status).
+li_extras_install() {
+    local n
+    if [ "$#" -gt 1 ]; then
+        li_guard "$@"
+        if [ $? -eq 0 ]; then
+            li_say "Downloading extra apps..."
+            if li_dl 1500 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "$@"; then
+                li_say "Installing extra apps..."
+                if li_inst 2400 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "$@"; then
+                    LI_DONE_PKGS+=("$@")
+                    return 0
+                fi
+                LI_DIRTY=1
+            else
+                case "${LI_RC}" in
+                    124|137|125) LI_XRC="${LI_RC}"; return 4 ;;
+                esac
+                # a lost connection would make the one-by-one fallback below wait for every single package
+                li_online || return 3
+            fi
+            [ "${LI_DIRTY}" = 0 ] || { LI_DIRTY=0; li_repair; }
+        else
+            li_log "extra apps (${*}): ${LI_GUARD_WHY} - one package at a time"
+        fi
+    fi
+    for n in "$@"; do
+        li_guard "${n}"
+        if [ $? -ne 0 ]; then
+            LI_BAD_PKGS+=("${n}")
+            LI_BAD_WHY+=("${n}: ${LI_GUARD_WHY}")
+            continue
+        fi
+        li_say "Installing ${n}..."
+        if li_dl 600 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "${n}" \
+                && li_inst 900 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "${n}"; then
+            LI_DONE_PKGS+=("${n}")
+        else
+            LI_BAD_PKGS+=("${n}")
+            LI_BAD_WHY+=("${n}: the install failed")
+            LI_DIRTY=1
+        fi
+    done
+    return 0
+}
+
 li_step_mode_extras() {
-    local rc n
-    local -a want avail missing done_pkgs bad
+    local rc n g why
+    local -a want avail missing groups gpk
+    local -A gmap=()
     want=("${LI_X_APT[@]}")
     if [ "${#want[@]}" -eq 0 ]; then
         li_mark mode_extras "done" "no extra packages defined"
@@ -453,49 +535,38 @@ li_step_mode_extras() {
         fi
         return 0
     fi
-    li_say "Downloading extra apps..."
-    done_pkgs=()
-    bad=()
-    li_dl 1500 apt-get -y -q -d install --no-install-recommends "${avail[@]}"
-    rc=$?
-    case "${rc}" in
-        124|137|125)
-            li_download_failed mode_extras "${rc}" "the download of the extra apps"
-            return 0 ;;
-    esac
-    if [ "${rc}" -eq 0 ]; then
-        li_say "Installing extra apps..."
-        if li_inst 2400 apt-get -y -q --no-download install --no-install-recommends "${avail[@]}"; then
-            done_pkgs=("${avail[@]}")
-        else
-            LI_DIRTY=1
-        fi
-    elif ! li_online; then
-        # a lost connection would make the one-by-one fallback below wait for every single package
-        li_mark mode_extras pending "the connection was lost during the download"
-        return 0
-    fi
-    if [ "${#done_pkgs[@]}" -eq 0 ]; then
-        # the whole group did not work: one package at a time, so one bad package cannot take the rest along
-        [ "${LI_DIRTY}" = 0 ] || { LI_DIRTY=0; li_repair; }
-        for n in "${avail[@]}"; do
-            if li_dl 600 apt-get -y -q -d install --no-install-recommends "${n}" \
-                    && li_inst 900 apt-get -y -q --no-download install --no-install-recommends "${n}"; then
-                done_pkgs+=("${n}")
-            else
-                bad+=("${n}")
-                LI_DIRTY=1
-            fi
-        done
-    fi
-    if [ "${#bad[@]}" -gt 0 ] || { [ "${#done_pkgs[@]}" -eq 0 ] && [ "${#avail[@]}" -gt 0 ]; }; then
-        li_mark mode_extras failed "not installed: ${bad[*]:-${avail[*]}}"
+    LI_DONE_PKGS=()
+    LI_BAD_PKGS=()
+    LI_BAD_WHY=()
+    # One Mode's apps at a time (the Modes' packages are independent): whatever one group cannot do never takes the
+    # other groups along, and inside a group apt decides - a package apt cannot install goes on its own.
+    for n in "${avail[@]}"; do
+        g="$(li_group_of "${n}")"
+        [ -n "${gmap[${g}]:-}" ] || groups+=("${g}")
+        gmap["${g}"]="${gmap[${g}]:-} ${n}"
+    done
+    for g in "${groups[@]}"; do
+        read -r -a gpk <<<"${gmap[${g}]}"
+        li_extras_install "${gpk[@]}"
+        case $? in
+            3)
+                li_mark mode_extras pending "${#LI_DONE_PKGS[@]} packages installed; the connection was lost during the download of the rest"
+                return 0 ;;
+            4)
+                li_download_failed mode_extras "${LI_XRC}" "the download of the extra apps"
+                return 0 ;;
+        esac
+    done
+    if [ "${#LI_BAD_PKGS[@]}" -gt 0 ]; then
+        # the names first (Settings shows them; the state file keeps the first 200 characters), then why
+        why="$(printf '%s; ' "${LI_BAD_WHY[@]}")"
+        li_mark mode_extras failed "not installed: ${LI_BAD_PKGS[*]}; ${why%; }"
     elif [ "${#missing[@]}" -gt 0 ] && [ "${LI_LISTS_PARTIAL}" = 1 ]; then
-        li_mark mode_extras pending "${#done_pkgs[@]} packages installed; the package lists were only partly refreshed, so not found: ${missing[*]}"
+        li_mark mode_extras pending "${#LI_DONE_PKGS[@]} packages installed; the package lists were only partly refreshed, so not found: ${missing[*]}"
     elif [ "${#missing[@]}" -gt 0 ]; then
-        li_mark mode_extras "done" "${#done_pkgs[@]} packages installed; not in the archives: ${missing[*]}"
+        li_mark mode_extras "done" "${#LI_DONE_PKGS[@]} packages installed; not in the archives: ${missing[*]}"
     else
-        li_mark mode_extras "done" "${#done_pkgs[@]} packages installed"
+        li_mark mode_extras "done" "${#LI_DONE_PKGS[@]} packages installed"
     fi
     return 0
 }
@@ -649,6 +720,8 @@ li_main() {
 
     li_say "Finishing up..."
     li_repair
+    # a later step can undo an earlier one: what each 'done' promised is looked at again, once, at the very end
+    li_verify_steps
     li_mark_missing pending "the installer hook ended before this step"
     li_log "finished in $(( $(date +%s) - LI_T0 ))s"
     return 0

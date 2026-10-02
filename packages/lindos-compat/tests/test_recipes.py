@@ -93,6 +93,22 @@ def test_broken_recipes_have_alternatives_and_honest_notes(repo_recipes_dir: Pat
     assert "GPU" in loaded["photoshop-cc-2021"].notes or "Graphics Processor" in loaded["photoshop-cc-2021"].notes
 
 
+def test_anticheat_recipes_say_not_supported_yet_and_who_decides(repo_recipes_dir: Path):
+    """SPEC 0.1: every sentence that says a title does not run also says 'not supported yet' and that the publisher
+    decides; never a date, never 'coming soon'."""
+    loaded = recipes.load_recipes(repo_recipes_dir, strict=True)
+    riot, epic = loaded["riot-client"], loaded["epic-games-launcher"]
+    riot_how = next(a["how"] for a in riot.alternatives if a["name"] == "Not supported yet")
+    epic_note = next(p for p in epic.notes.split("\n") if p.startswith("Anti-cheat note"))
+    for text in (riot.summary, riot.notes.split("\n")[0], riot_how, epic_note):
+        low = text.lower()
+        assert "not supported on lindos yet" in low or "not supported yet" in low, text
+        assert "publisher" in low and "no date" in low, text
+        assert "cannot run on lindos or any linux" not in low and "coming soon" not in low, text
+    assert "Vanguard" in riot.notes and "Windows-only" in riot.summary and "Not possible" in riot_how
+    assert "Fortnite" in epic_note
+
+
 def test_spec_examples_of_verbs(repo_recipes_dir: Path):
     loaded = recipes.load_recipes(repo_recipes_dir, strict=True)
     ps = loaded["photoshop-cc-2021"].winetricks

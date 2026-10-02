@@ -397,7 +397,9 @@ def test_core_does_not_depend_on_other_lindos_packages():
     depends = next(ln for ln in control.splitlines() if ln.startswith("Depends:"))
     assert "lindos-" not in depends
     for pkg in os.listdir(PKGS):
-        if pkg in ("lindos-core", "lindos-meta"):
+        # lindos-archive-keyring is self-contained on purpose: unpacked with an unmet Depends it would leave apt
+        # refusing every install in the image build (build/tests/test_archive_keyring_wiring.py)
+        if pkg in ("lindos-core", "lindos-meta", "lindos-archive-keyring"):
             continue
         ctl = _read(os.path.join(PKGS, pkg, "DEBIAN", "control"))
         dep_line = next((ln for ln in ctl.splitlines() if ln.startswith("Depends:")), "")

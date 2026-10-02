@@ -1,0 +1,18 @@
+[Unit]
+Description=Lindos: finish an update that was interrupted (dpkg --configure -a, apt-get -f install)
+Documentation=man:lindos-update(1)
+# apt-full-upgrade (lindos-helper) writes /var/lib/lindos/update-in-progress before dpkg runs and
+# removes it after its own repair pass. If the machine lost power in between, the marker is still
+# here at the next start and this repairs the half-finished upgrade. It does nothing otherwise.
+ConditionPathExists=/var/lib/lindos/update-in-progress
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lindos/update-repair
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

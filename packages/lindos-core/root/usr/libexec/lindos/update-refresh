@@ -1,0 +1,45 @@
+#!/bin/bash
+# update-refresh - the body of lindos-update-refresh.service (SPEC-UPDATE.md §39).
+#
+# Twice a day (and a few minutes after start-up) Lindos refreshes the package lists and writes what
+# it found - which updates exist, their sizes, whether a restart is needed - to
+# /var/lib/lindos/update-state.json, so the Settings page and the notifier need neither a password
+# nor apt. It runs as root, on a timer, because the stock apt-daily timers are switched off on
+# Lindos. It NEVER installs anything: it refreshes the lists and simulates (apt-get -s); applying
+# an update is always a separate, confirmed step (lindos-update apply).
+#
+# Steps: not while an update is in progress or waiting for repair (update-in-progress marker);
+# wait (bounded) for the network with wait-for-network - NetworkManager-wait-online is masked
+# here, so network-online.target comes before Wi-Fi is up; take turns behind every other Lindos apt
+# job (apt-serialise); then `python3 -m lindos.updatestate refresh`. Offline is not a failure: the
+# state is still written from the lists apt already has, marked "not refreshed".
+# Test seams: LINDOS_ROOT, LINDOS_PYTHON, LINDOS_WAIT_FOR_NETWORK, LINDOS_APT_SERIALISE, LINDOS_NETWORK_WAIT.
+set -Eeuo pipefail
+
+ROOT="${LINDOS_ROOT:-}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="${LINDOS_PYTHON:-python3}"
+MARKER="${ROOT}/var/lib/lindos/update-in-progress"
+
+WAIT_FOR_NETWORK="${LINDOS_WAIT_FOR_NETWORK:-/usr/libexec/lindos/wait-for-network}"
+[ -f "${WAIT_FOR_NETWORK}" ] || WAIT_FOR_NETWORK="${SELF_DIR}/wait-for-network"
+APT_SERIALISE="${LINDOS_APT_SERIALISE:-/usr/libexec/lindos/apt-serialise}"
+[ -f "${APT_SERIALISE}" ] || APT_SERIALISE="${SELF_DIR}/apt-serialise"
+
+note() { printf 'lindos update-refresh: %s\n' "$*"; }
+
+if [ -f "${MARKER}" ]; then
+    note "an update is in progress or waiting for repair - not refreshing now"
+    exit 0
+fi
+
+args=(refresh)
+if [ -f "${WAIT_FOR_NETWORK}" ] && ! bash "${WAIT_FOR_NETWORK}" "${LINDOS_NETWORK_WAIT:-90}"; then
+    note "no network - the package lists were not refreshed"
+    args+=(--offline)
+fi
+
+if [ -f "${APT_SERIALISE}" ]; then
+    exec bash "${APT_SERIALISE}" -- "${PY}" -m lindos.updatestate "${args[@]}"
+fi
+exec "${PY}" -m lindos.updatestate "${args[@]}"

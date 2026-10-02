@@ -172,22 +172,24 @@ eltorito-report.txt,mkisofs-opts.txt}`.
 
 All hooks are `#!/bin/bash`, `set -Eeuo pipefail`, idempotent, and source
 `/tmp/lindos/hooks/lib.sh` (`log warn die apt_install apt_try_install apt_purge pkg_installed
-pkg_available svc_disable svc_mask svc_enable fetch online`).
+pkg_available pkgs_installed_matching mark_manual_installed mark_meta_deps_manual svc_disable svc_mask svc_enable fetch online`; test seam `LINDOS_HOOK_PATH_PREFIX` puts fake apt-get/dpkg-query/apt-mark first in `PATH`).
 
 | Hook | What it does |
 |---|---|
 | `00-repos.sh` | `dpkg --add-architecture i386`; WineHQ deb822 `.sources` + key (`/etc/apt/keyrings/winehq-archive.key`, `/etc/apt/sources.list.d/winehq-noble.sources`); Valve Steam repo (`/usr/share/keyrings/steam.gpg`, `/etc/apt/sources.list.d/lindos-steam.list` — same paths as `install-gaming.sh`); Flathub system remote; optional Kisak Mesa (`KISAK_MESA=1`, key from Launchpad API + keyserver); optional Mozilla repo (`ADD_MOZILLA_REPO=1`, pinned 1000 — off by default because Mint pins its own firefox); optional `APT_MIRROR` rewrite; `apt-get update` |
-| `10-debloat.sh` | purge `DEBLOAT_PURGE` one package at a time (safety net refuses network/printing basics); `safe_autoremove` (lib.sh: simulates first, marks xfce/mint/lightdm/network-manager/linux-/grub… candidates manual, refuses when > 60 packages would go); disable `DEBLOAT_DISABLE_SERVICES` (bluetooth stays enabled — see the table above); hide `mintwelcome` / `mintreport` / `update-notifier` autostarts; mintwelcome stays installed (Mint's metapackages need it) but is never shown — lindos-tune and the Mint sweep hide it as well, the sweep also its menu entry |
-| `20-base.sh` | required set in one transaction (unavailable packages skipped with a loud warning): `xfce4-docklike-plugin xfce4-panel-profiles xfce4-clipman-plugin xfce4-notifyd xfce4-whiskermenu-plugin xfce4-pulseaudio-plugin xfce4-power-manager xfce4-screenshooter xfce4-taskmanager xfce4-appfinder picom systemd-zram-generator earlyoom power-profiles-daemon lm-sensors fancontrol gamemode mangohud python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 gir1.2-glib-2.0 polkitd pkexec flatpak xdg-desktop-portal-gtk xdg-utils desktop-file-utils shared-mime-info fonts-noto-color-emoji winbind cabextract icoutils zenity librsvg2-bin curl wget gpg ca-certificates zstd` + `EXTRA_PACKAGES`; nice-to-have set best effort per package (`fonts-noto-core fonts-inter fonts-jetbrains-mono fonts-liberation libnotify-bin xdotool wmctrl x11-xserver-utils mesa-utils vulkan-tools libvulkan1 mesa-vulkan-drivers pciutils usbutils hdparm nvme-cli smartmontools inxi yad emote baobab gnome-disk-utility pavucontrol gufw timeshift mugshot plymouth-themes plymouth-label`); then `LAPTOP_ESSENTIALS` best effort (firmware, audio UCM configs, Bluetooth, driver metadata, fwupd, a print driver — see the config.env table above and docs/RAM-BUDGET.md); everything `--no-install-recommends` |
+| `10-debloat.sh` | purge `DEBLOAT_PURGE` one package at a time (safety net refuses network/printing basics); first `mark_meta_deps_manual` (everything `mint-meta-*` depends on becomes manual, purging `hexchat` drags the metapackage out), then `safe_autoremove` (lib.sh: simulates first, marks xfce/lightdm/network-manager/linux-/grub… and the named Mint keepers manual, refuses when > 60 packages would go); disable `DEBLOAT_DISABLE_SERVICES` (bluetooth stays enabled — see the table above); hide `mintwelcome` / `mintreport` / `update-notifier` autostarts (76 purges mintwelcome; lindos-tune and the Mint sweep hide it as well should that be skipped) |
+| `20-base.sh` | required set in one transaction (unavailable packages skipped with a loud warning): `xfce4-docklike-plugin xfce4-panel-profiles xfce4-clipman-plugin xfce4-notifyd xfce4-whiskermenu-plugin xfce4-pulseaudio-plugin xfce4-power-manager xfce4-screenshooter xfce4-taskmanager xfce4-appfinder picom systemd-zram-generator earlyoom power-profiles-daemon lm-sensors fancontrol gamemode mangohud python3 python3-gi gir1.2-gtk-3.0 gir1.2-gdkpixbuf-2.0 gir1.2-glib-2.0 polkitd pkexec flatpak xdg-desktop-portal-gtk xdg-utils desktop-file-utils shared-mime-info fonts-noto-color-emoji winbind cabextract icoutils zenity librsvg2-bin curl wget gpg ca-certificates zstd` + `EXTRA_PACKAGES`; nice-to-have set best effort per package (`fonts-noto-core fonts-inter fonts-jetbrains-mono fonts-liberation libnotify-bin xdotool wmctrl x11-xserver-utils mesa-utils vulkan-tools libvulkan1 mesa-vulkan-drivers pciutils usbutils hdparm nvme-cli smartmontools inxi yad emote baobab gnome-disk-utility pavucontrol gufw timeshift mugshot plymouth-themes plymouth-label mousepad ristretto evince vlc`); then `LAPTOP_ESSENTIALS` best effort (firmware, audio UCM configs, Bluetooth, driver metadata, fwupd, a print driver — see the config.env table above and docs/RAM-BUDGET.md); everything `--no-install-recommends` |
 | `30-lindos-debs.sh` | one `apt-get install --no-install-recommends ./…deb` transaction in `LINDOS_DEB_ORDER` (fallback `dpkg -i` + `apt-get -f install`) — the heavy Recommends of lindos-compat/gaming/meta (Wine, Steam, Lutris, …) are *not* pulled onto the ISO; `INCLUDE_WINE` / `INCLUDE_STEAM` / 20-base.sh decide the optional stacks; optional mode packages; `lindos-tune status --json` smoke test |
 | `40-theme.sh` | `/tmp/lindos/assets/install-into-chroot.sh` (Fluent → `Lindos-Dark`/`Lindos-Light`, icons `Lindos`, cursors, fonts); `/usr/libexec/lindos/apply-branding.sh` (os-release sed keeping `ID=linuxmint`, `/etc/issue`, `/etc/lindos-release`, plymouth + wallpaper alternatives, and the Mint sweep — see below); `/usr/libexec/lindos/build-panel-profiles.sh` (`panel.tar.bz2` per mode); `fc-cache`, icon caches, glib schemas, desktop/mime databases; `plymouth-set-default-theme lindos && update-initramfs -u -k all` |
 | `50-tune.sh` | `lindos-tune apply --mode ${TUNE_MODE} --system --offline` (presets, sysctl, zram, journald, tmpfiles, earlyoom); honest minimum (preset + fstrim.timer) with a loud warning if lindos-tune is missing |
 | `60-compat.sh` | `INCLUDE_WINE=1` → `/usr/libexec/lindos/install-compat.sh --minimal --from-chroot --no-update` (Ubuntu `wine` + `wine32:i386`, winetricks, cabextract, 32-bit GL/Vulkan; WineHQ *staging* and umu-launcher are installed by the installer, step `compat`, to keep the ISO small); always: MIME/desktop database refresh + `lindos-compat doctor` report |
 | `70-gaming.sh` | always: `mesa-vulkan-drivers:i386 libgl1-mesa-dri:i386 libvulkan1:i386 steam-devices vulkan-tools mesa-utils` (+ `mangohud:i386` best effort); `INCLUDE_STEAM=1` → `install-gaming.sh --from-chroot ${GAMING_ITEMS}`; `INCLUDE_FLATPAK_LAUNCHERS=1` → Flatpaks. NVIDIA drivers are **not** preinstalled (the installer's `drivers` step installs proprietary GPU drivers only with consent and never when Secure Boot would need a key enrolment; otherwise mintdrivers / `lindos-drivers` on demand) |
+| `76-mint-purge.sh` | takes Mint's own apps and artwork out of the image behind `apt-get -s purge` allow-lists (a group that would remove anything outside itself is skipped with `MINT-PURGE-SKIPPED`, never a build failure) — see *Unrecognisable* below |
 | `77-mint-sweep.sh` | last pass over what still says "Linux Mint" — see *Mint sweep* below: re-runs `apply-branding.sh --files-only` over the final image, checks Mint Welcome cannot autostart, purges `mint-backgrounds-*` only when `apt-get -s purge` shows nothing else would go with them, prints an audit of everything left; every step guarded, idempotent, never fails the build |
 | `78-installer-brand.sh` | rebrands the live installer (Ubiquity): product name, launcher, artwork, slideshow, GTK skin — see *Installer branding* below; every step guarded (a missing file is a warning), idempotent |
 | `79-installer-flow.sh` | wires the installer flow into Ubiquity — see *Installer flow* below: refuses a host outside the chroot; **dies** if Chrome/Edge is installed in the image (SPEC §0.1), if the `lindos-installer` files or `/usr/lib/ubiquity` are missing, or if the deployed hook would be skipped by Ubiquity (a `.` in the name, not executable, a symlink, a syntax error, `set -e`); `install -m 0755` of `target-config.sh` as `/usr/lib/ubiquity/target-config/50lindos-install`; `install -m 0755` of `dm-noblank.sh` as `/usr/lib/ubiquity/dm-scripts/install/50lindos-noblank` (the ubiquity-dm hook that runs `xset s off s noblank -dpms` in the `only-ubiquity` session; the build **dies** if `xset` is not in the image, if the file would be skipped by ubiquity-dm — a `.` in the name, not executable, a symlink, CRs, not `#!/bin/sh`, a syntax error, `set -e` — or if it does not really set the three things); `debconf-set-selections` of `lindos.seed` and a read-back of `ubiquity/success_command`; logs the target-config directory and the ubiquity version; idempotent. Test seams `LINDOS_INSTALLER_ROOT`, `LINDOS_DEBCONF_SET`, `LINDOS_DEBCONF_COMMUNICATE`, `LINDOS_DPKG_QUERY` |
 | `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists (**on purpose, still**: the base ISO's lists are stale by install time and cost ~100 MB in the squashfs; the installer hook refreshes the new system's lists as its first step), machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
+| `81-unrecognisable-gate.sh` | read-only report of what still makes the image recognisable as Linux Mint (`out/hooks/81-unrecognisable-gate.log`); report-only unless `LINDOS_STRICT_UNRECOGNISABLE=1` — see *Unrecognisable* below |
 
 ### Installer branding (Ubiquity)
 
@@ -419,16 +421,16 @@ the final image). What a user sees, and what is done about it:
 | Menu: **Welcome Screen** ("Welcome to Linux Mint") | hidden (`NoDisplay=true`); Lindos Setup is the welcome experience. The package stays (Mint's metapackages depend on it) |
 | Login: the Mint Welcome window next to Lindos Setup | hidden three ways: `Hidden=true` in the system autostart entry (`10-debloat.sh` and the sweep — found by `Exec`, not by file name), `NotShowIn=XFCE` by lindos-tune, and a per-user off switch `/etc/skel/.config/autostart/mintwelcome.desktop` (the same override XFCE's *Session and Startup* dialog writes) |
 | Menu: **Software Manager** | hidden; `lindos-store.desktop` (**Lindos Store**, Lindos icon, "Find, install and remove apps (system packages and Flatpak)") starts the same `mintinstall`. It is not, and is never described as, the Microsoft Store. The window title inside is still upstream's "Software Manager" |
-| Menu: **Update Manager**, **Driver Manager** | kept — Lindos has no replacement for the OS-update and driver GUIs (`lindos-update` only handles `lindos-*` packages, `lindos-drivers` wraps Driver Manager); they get Lindos icons (`lindos-update`, `lindos-drivers`). Their tray icon and window icon are upstream's |
+| Menu: **Update Manager**, **Driver Manager**, Software Sources, System Reports, Languages | kept for now — Lindos has no replacement for the OS-update and driver GUIs yet; they are renamed (*Lindos Updates*, *Lindos Drivers*, ...) and get Lindos icons (`lindos-update`, `lindos-drivers`, `lindos-settings`), see *Unrecognisable*. Their tray icon and window contents are upstream's |
 | Any other entry with "Linux Mint" in Name/GenericName/Comment/Keywords | the text says "Lindos"; an entry whose `Exec` only opens linuxmint.com is hidden. `lindos-*` and `ubiquity*` entries are never touched (the installer hook owns those) |
 | `lsb_release -d`, the MOTD header, other systems' boot menus (os-prober) | `/etc/lsb-release` `DISTRIB_DESCRIPTION` = "Lindos 1.0 (Aurora)" |
 | `/etc/linuxmint/info` (read by Mint's tools) | `DESCRIPTION` and `GRUB_TITLE` say Lindos; `RELEASE`, `CODENAME`, `EDITION`, the URLs stay |
-| Boot menu of the installed system | `/etc/default/grub.d/49-lindos-distributor.cfg`: `GRUB_DISTRIBUTOR="Lindos"` (entries read "Lindos GNU/Linux"; update-grub sources the drop-in after `/etc/default/grub`) |
+| Boot menu of the installed system | `/etc/default/grub.d/60-lindos-distributor.cfg`: `GRUB_DISTRIBUTOR="Lindos"` (entries read "Lindos GNU/Linux"; update-grub sources the drop-ins in name order after `/etc/default/grub`, so it has to sort after Mint's `50_linuxmint.cfg`) |
 | `/etc/os-release` | as before plus `SUPPORT_URL`, `BUG_REPORT_URL`, `PRIVACY_POLICY_URL` of the project |
 | Live session prompt (`mint@mint`) | `username=liveuser hostname=lindos` on the GRUB command lines and in `/etc/casper.conf` (also `FLAVOUR`) — `casper.conf` is copied into the initrd, so it must change before `40-theme.sh` rebuilds it (the postinst does) |
 | Firefox: Linux Mint start page, welcome page, bookmarks, search engine | the homepage prefs, `policies.json` and `distribution.ini` in `/usr/lib/firefox*` and `/etc/firefox` are pointed at `about:home` / cleaned where they name linuxmint.com; anything else is only listed by the audit |
-| Desktop background picker | `mint-backgrounds-*` are purged when `apt-get -s purge` shows nothing but them would be removed; otherwise they stay and the hook says which packages would have gone too |
-| Settings → About | "Based on: Ubuntu 24.04 LTS (noble) · Linux Mint 22.2" — provenance is kept on purpose; the hero line no longer calls Lindos a Mint remaster |
+| Desktop background picker | the Mint wallpapers go with the artwork stack in `76-mint-purge.sh`; `77-mint-sweep.sh` still purges `mint-backgrounds-*` when that group was skipped and apt says nothing else would go with them |
+| Settings → About | "Based on: Ubuntu 24.04 LTS"; the Debian/Mint provenance is in the *Legal and open-source notices* screen (`/usr/share/lindos/legal/open-source-notices.txt`); the hero line no longer calls Lindos a Mint remaster |
 
 **Kept on purpose (identity — decided, not forgotten).** `ID=linuxmint`, `ID_LIKE`, `VERSION_CODENAME`,
 `UBUNTU_CODENAME` in `/etc/os-release`; `DISTRIB_ID=LinuxMint`, `DISTRIB_RELEASE`, `DISTRIB_CODENAME` in
@@ -463,6 +465,176 @@ confirm: which of these entries the real Mint 22.2 image actually has (the file 
 what is known of Mint's packages, not from a real image — the audit shows what really is there), that Mint
 Welcome no longer appears, the Lindos Store / Update / Driver icons,
 the GRUB titles after `update-grub`, `casper.conf` reaching the initrd, and Firefox's first-run page.
+
+### Unrecognisable (Mint only as the base system)
+
+Owner direction: Linux Mint provides the kernel and the base system (apt, casper, Ubiquity, the Mint-built
+Firefox/Thunar/... packages); everything a user sees must be Lindos's own or thoroughly re-skinned, and an
+installed system must stay updatable without a reinstall. This first layer is build-side and configuration only:
+the Lindos Update, Store and Settings replacements are a later round, so Mint's update, driver, store and report
+tools stay **installed** and are re-skinned (Lindos names and icons, see below) rather than removed — hiding them now
+would leave the system without update information. Nothing here changes `ID` / `ID_LIKE` / `DISTRIB_ID` / codenames
+(see *Kept on purpose* above).
+
+**1. The precedence bug (P0).** On the Mint base `/etc/xdg/xdg-xfce`, `/etc/xdg/xdg-default` and
+`/etc/xdg/xdg-default.desktop` are symlinks to `/usr/share/mint-artwork/xfce`, and Debian's
+`60x11-common_xdg_path` puts `/etc/xdg/xdg-$DESKTOP_SESSION` in front of `XDG_CONFIG_DIRS`. xfconfd lets earlier
+directories win per property, so Mint's defaults (theme, font, panel, Start menu favourites, desktop icons, notifyd
+theme, shortcuts, Thunar actions) outranked every Lindos default in `/etc/xdg/xfce4`. (Inferred from the stock ISO's
+file tree and xfconf's source; nothing was booted — check `echo $XDG_CONFIG_DIRS` and
+`xfconf-query -c xsettings -p /Net/ThemeName` in a live session.) Fixed three ways:
+
+* structurally, `76-mint-purge.sh` purges the artwork stack (`mint-artwork*` and its themes/icons/cursors/wallpapers);
+* `lindos-desktop`'s preinst diverts the three symlinks (`dpkg-divert`, suffix `.lindos-orig`, undone by the postrm)
+  and ships a real `/etc/xdg/xdg-xfce/README` (no `xfce4/` tree) in their place, so the defaults win even when a Mint
+  package comes back;
+* `/etc/X11/Xsession.d/61lindos-xdg-config-dirs` drops any `/etc/xdg/xdg-*` entry that still resolves into
+  `mint-artwork` from `XDG_CONFIG_DIRS`, and 76 moves a leftover symlink aside itself (`MINT-XDG-FIXED`).
+
+Expect a visible change on the first boot after this: the Lindos panel, Start menu, desktop icons, notification theme and
+shortcuts that were written but shadowed now really apply — re-test them in QEMU. `xfce4-docklike-plugin` is still not
+packaged for noble, so the taskbar's window list is xfce4-panel's own task list there (item 9 below).
+
+**2. mint-adjust.** `mintsystem` runs `mint-adjust` at every boot and copies
+`/usr/share/ubuntu-system-adjustments/firefox/distribution.ini` over Firefox's whenever they differ, which reverted the
+Lindos edit. Two guards: `/usr/share/linuxmint/adjustments/99-lindos.preserve` (one destination per line:
+`distribution.ini`, the system `mimeapps.list`) and the sweep also brands the *source* copy in
+`/usr/share/ubuntu-system-adjustments` (`firefox.dirs` in `base-sweep.json`), so source and destination agree even if the
+`.preserve` format guess is wrong. (`mint-adjust` also deletes the `oem` account and `/oem` when `/oem/done.flag` exists:
+unchanged, `mintsystem` stays.)
+
+**3. GRUB.** `/etc/default/grub.d/50_linuxmint.cfg` sets `GRUB_DISTRIBUTOR=Ubuntu` and sorts after the old
+`49-lindos-distributor.cfg`, so the Lindos file never won. It is now `60-lindos-distributor.cfg` (the postinst removes
+the old one; it takes effect at the next `update-grub`). The titles seen at boot are additionally rewritten by
+`ubuntu-system-adjustments` from `GRUB_TITLE` in `/etc/linuxmint/info`, which the sweep sets — so neither
+`ubuntu-system-adjustments` nor `mint-info-xfce` is purged. **Unverified:** upstream `grub-install` derives its default
+bootloader-id (the ESP folder / UEFI entry name) from `GRUB_DISTRIBUTOR` when none is passed; the installer and the
+signed-grub postinst pass their own, but a later grub-efi upgrade may create an `EFI/lindos` folder — check on real
+UEFI + Secure Boot hardware before shipping.
+
+**4. `76-mint-purge.sh`** (after `75-vm.sh`, before the sweep; never fails the build, only the host guard dies).
+
+* *Keep-set*: `apt-mark manual` for the apt-trust and mintsystem chain (`linuxmint-keyring mint-info-xfce mintsystem
+  mint-common mint-translations mint-mirrors aptkit ubuntu-system-adjustments aptitude ...`), the interim tools
+  (`mintupdate mintinstall mintdrivers mintsources mintreport timeshift`), the XApp plumbing, Thunar and the panel
+  parts, the installer (`casper ubiquity*`), the default apps, and everything `mint-meta-*` depends on (`lib.sh
+  mark_meta_deps_manual`, also called first thing by `10-debloat.sh`: purging `hexchat` takes the metapackage along).
+* *Groups*, each behind `apt-get -s purge`: the metapackages (`mint-meta-core`, `mint-meta-xfce`; not
+  `mint-meta-codecs`, its codecs would be orphaned), the artwork stack, `mintwelcome captain`, `mintbackup`,
+  `mintdesktop`, `mintstick`, `lightdm-settings`, `fingwit libpam-fingwit`, `mint-upgrade-info`, `mintchat
+  webapp-manager`, `warpinator`, `sticky`, `hypnotix`, `neofetch`, the seven Xfce toy plugins Mint adds; and, only when
+  the replacement is installed, `xed`→`mousepad`, `xviewer*`/`pix`→`ristretto`, `thingy`+`xreader*`→`evince`,
+  `celluloid`→`vlc`.
+* *Skip rule*: a group is purged only when the simulation names nothing outside the group. Otherwise it is skipped and
+  the log says `MINT-PURGE-SKIPPED group '<name>': <why>` (would also remove …, replacement missing, no answer from apt);
+  a failed purge says `MINT-PURGE-FAILED`, `dpkg --audit` problems `MINT-PURGE-DPKG-AUDIT`, and the last line is
+  `MINT-PURGE-RESULT purged=N skipped=M failed=K`. The sweep hides everything that was skipped.
+* *Deliberately kept* (and why): `mintupdate mintinstall mintdrivers mintsources mintreport` — no Lindos replacement yet;
+  `mintlocale` — Ubiquity's language-pack step may call it (unverified); `mintsystem mint-common mint-info-xfce
+  mint-translations ubuntu-system-adjustments linuxmint-keyring` — Mint's `firefox` pre-depends
+  `ubuntu-system-adjustments`, which depends on `mintsystem`; the GRUB title comes from them; apt trusts the key;
+  `libxapp1 gir1.2-xapp python3-xapp xdg-desktop-portal-xapp`, `libadwaita`, `packagekit`, `network-manager-gnome`,
+  `blueman` (depends on `papirus-icon-theme`), `thunar`, `xfce4-session`, `gnome-calculator`, `file-roller`, Firefox and
+  Thunderbird. Moving Firefox to Mozilla's repo (`ADD_MOZILLA_REPO=1`) is what would free the whole mintsystem chain.
+* `lib.sh`'s `AUTOREMOVE_PROTECT_RE` no longer shields every `mint*`, `gnome-*` and `mate-*` package: it names the
+  keepers above (and `gnome-keyring`, `gnome-calculator`, `mate-polkit`, ...), so the artwork and apps 76 removes are
+  not protected by the autoremove sweep.
+
+**5. Default apps (owner decision).** `20-base.sh` installs `mousepad` (text), `ristretto` (images), `evince` (PDF) and
+`vlc` (audio/video) — best effort, so the build stays green if one is missing (the Mint counterpart then stays).
+`lindos-desktop` ships `/usr/share/lindos/mimeapps-desktop.list` and its postinst merges it into
+`/etc/xdg/mimeapps.list` (`/usr/libexec/lindos/merge-mimeapps.py`: adds keys, never replaces a default somebody else
+set, unions *Added Associations*). That file outranks the base's `/usr/share/applications/mimeapps.list`. The Everyday
+Start favourites and taskbar pins never contained a Mint app, so they are unchanged. Cost: `vlc` pulls a Qt stack —
+expect the ISO to grow (docs/RAM-BUDGET.md has not been re-estimated).
+
+**6. Interim hiding and re-skinning** (`base-sweep.json`, applied by `rebrand-base.py` after every apt run, revertible):
+
+* menu entries are hidden by name or glob: Mint's extras (`mintbackup`, `mintstick`, `mintdesktop`, `warpinator`, Notes,
+  Hypnotix, Library, Web Apps, ...), the apps Lindos replaces (`xed`, `xviewer`, `xreader`, `pix`, Celluloid), the Xfce/Thunar
+  duplicates (`thunar*`, `xfce4-terminal*`, the *Settings Manager* and every `xfce*-settings` entry, `xfwm4-*`, Application
+  Finder, ...) and anything whose command is `mintchat`, `webapp-manager` or `mint-meta-codecs`. `NoDisplay` only: the
+  commands still work from Lindos Settings, shortcuts and file associations. Task Manager and Screenshot stay.
+* the update, driver, sources, report and language tools are renamed (*Lindos Updates*, *Lindos Drivers*, *Lindos Update
+  Sources*, *Lindos System Reports*, *Language and Region*) and get Lindos icons; any other `Icon=mint...` becomes
+  `lindos-settings`. The window a running tool opens uses its own icon name: the asset installer
+  (`fetch-assets.sh`) makes the Lindos icon theme answer to `mintupdate`, `mintdrivers`, `mintinstall`, ... with Lindos artwork.
+  Their tray icons and window contents are still upstream's until the Lindos replacements ship.
+* the file-sharing and notes daemons (`warpinator`, `sticky`) and Mint Welcome do not autostart; the Update Manager tray
+  stays (it tells users about updates).
+* theme packs: `index.theme` of `Mint-*`, `Yaru*`, `Papirus*`, `Humanity*`, `ubuntu-mono-*`, `Bibata*`, `GoogleDot*`,
+  `XCursor-Pro*`, `DMZ-*` gets `Hidden=true` (kept as fallbacks; `blueman` depends on Papirus, `adwaita-icon-theme` on
+  `ubuntu-mono`). That Xfce's Appearance and Mouse dialogs honour it is remembered, not verified; GTK theme directories cannot
+  be hidden.
+* the cursor themes are `Lindos-Cursors` and `Lindos-Cursors-Dark`; `Fluent-cursors` / `Fluent-dark-cursors` remain as hidden
+  themes that only inherit them (user configs written by older releases still name those; `lindos.theme` and Lindos Settings
+  write and show the Lindos names and map a stored Fluent name to the theme it aliases), the `index.theme` names of the Lindos
+  GTK and icon themes are the Lindos names, and the xfwm4 fallback to Mint's theme is gone.
+
+**7. Smaller pieces.** `/usr/local/bin/apt` (Mint's wrapper, "This is the Linux Mint apt command"), `search`,
+`highlight-mint`, `/usr/bin/rtfm` and the `apt-linux-mint` completion are diverted by the preinst when present; the Matrix
+web app in `/etc/skel` goes with `mintchat` (and 76 deletes the entry if the purge was skipped); Settings › About shows
+*Based on: Ubuntu 24.04 LTS* and has a **Legal and open-source notices** button whose text is
+`/usr/share/lindos/legal/open-source-notices.txt` (what Lindos is built on, licences, trademarks; `/usr/share/doc/*/copyright`
+stays intact); the accent `Mint Green` is `Meadow Green`.
+
+**8. `81-unrecognisable-gate.sh`** (last hook, read-only) reports what still makes the image recognisable in
+`out/hooks/81-unrecognisable-gate.log`: `UNRECOGNISABLE-FINDING [category] ...` lines (packages that should be gone, visible
+menu/autostart entries that show Mint or start a denied app, theme packs not hidden, `/etc/xdg/xdg-*` into `mint-artwork`,
+Mint's wrappers, "Linux Mint" in `/etc`, `/usr/local`, the menu and `/usr/share/lindos` outside an allow-list, the GRUB
+drop-in order, a missing `.preserve`, the skel web app), `UNRECOGNISABLE-NOTE` lines for what is kept on purpose or hidden, and
+`UNRECOGNISABLE-GATE findings=N notes=M mode=...`. It is report-only; `LINDOS_STRICT_UNRECOGNISABLE=1` makes any finding fail the
+build. The hooks run under `env -i`, so the variable reaches the gate only when it is listed in `LINDOS_PASSTHRU_VARS`
+(`build/config.env`). The deny lists live at the top of the hook and are kept in step with 76 by a test.
+
+**9. The taskbar without Docklike, and the BIOS boot path.**
+
+* *Taskbar.* Every panel layout puts Docklike (open windows + pinned apps) in slot `plugin-2`. Ubuntu 24.04 does not package
+  it (25.10+ and Debian trixie+ do; upstream's current release also needs a newer `libxfce4windowing` than noble has; the first
+  CI install's dpkg list shows `xfce4-panel` 4.18.4 and `xfce4-panel-profiles` 1.0.14 but no Docklike), and once
+  the precedence bug above was fixed the Lindos panel — which has no other window list — became the effective one, so a
+  fresh session would have had no window buttons and no pinned apps. `/usr/libexec/lindos/taskbar-fallback.py` (pure stdlib)
+  rewrites a layout for that case: the Docklike slot becomes xfce4-panel's own `tasklist` (icon-only, flat buttons), the
+  pinned apps of the mode's `docklike-2.rc` that are installed become one `launcher` plugin each (ids 11 and up, desktop-ids,
+  placed before the task list), and the expanding separators go (the task list expands by itself, so this taskbar is
+  left-aligned and Settings says so). `first-login-panel.sh` seeds that layout for a user who has no panel layout yet —
+  everyday mode too — and records `taskbar=tasklist` in `~/.config/lindos/panel-init.done`; a stamp written before this
+  existed is redone once, but a user's existing `xfce4-panel.xml` is never touched. `build-panel-profiles.sh` packs the
+  per-mode `panel.tar.bz2` from the same variant (kind recorded in `<mode>/.panel-taskbar`, rebuilt when it changes), so
+  `lindos-mode set` loads a layout with a window list. When the plugin does get packaged (`docklike.desktop` under
+  `/usr/share/xfce4/panel/plugins`) nothing needs changing: `taskbar-fallback.py status` says `docklike` and the shipped
+  layouts are used as they are. `LINDOS_TASKBAR=docklike|tasklist` overrides the detection (a launcher for an app that is
+  not installed would show as a blank button, hence the filter). Known gaps, both for `lindos.modes` (lindos-core) to close by
+  running `taskbar-fallback.py convert` when a mode is applied: a packed profile lists only the pins whose apps are installed
+  when it is built (ISO build), so Steam and the other apps the installer adds later are missing from a Gaming layout loaded by
+  `lindos-mode set` until `build-panel-profiles.sh --force` runs; and `lindos.modes`' own XML fallback (no
+  `xfce4-panel-profiles`) still copies the Docklike layout.
+* *BIOS boot menu.* `build-iso.sh` (`lindos_bios_boot_art`) removes `/.disk/mint_iso` ("unique to Mint ISO images") and the
+  unused `boot/grub/{theme.cfg,live-theme}`, draws `isolinux/splash.png` with `build/lib/boot_splash.py` from the Lindos logo
+  SVG (640x480, dark, the mark where the base's ring logo was; pure stdlib, deterministic, no third-party artwork; a picture
+  the owner puts at `build/overlay/isolinux/splash.png` is used instead), titles
+  the menu `Lindos <version> (<codename>)` and gives the selection bar the Lindos accent (black on `#60CDFF`). The build dies
+  if the base's splash or the marker is still there. Not verified: how ISOLINUX/vesamenu draws it (needs a BIOS boot).
+* *Installed system.* From the first CI install (`installed-logs/`): `/etc/os-release` said `NAME="Lindos"`, `PRETTY_NAME`
+  Lindos, but `VERSION="22.2 (Zara)"` — now `VERSION="1.0 (Aurora)"` (`VERSION_ID`, `ID`, `VERSION_CODENAME` stay, see above);
+  the GRUB entries were titled `Lindos 1.0` with `--class linuxmint` (the base's boot-time rewrite of `Ubuntu`; the class is
+  invisible in the text menu); `lightdm.conf` was the empty `[Seat:*]` oem-config leaves, with the Lindos greeter settings in
+  `lightdm.conf.d`. With the `60-` drop-in winning, the next `update-grub` should title the entries `Lindos GNU/Linux` with
+  `--class lindos` — read `/boot/grub/grub.cfg` after an install to confirm.
+
+**Checking a build.** `out/hooks/76-mint-purge.log` (grep `MINT-`), `out/hooks/81-unrecognisable-gate.log`, then a boot:
+`echo $XDG_CONFIG_DIRS`, `xfconf-query -c xsettings -p /Net/ThemeName` (Lindos-Dark), `/Gtk/FontName` (Selawik),
+`/Gtk/CursorThemeName`, `dpkg -l | grep -i mint`, `apt` (plain apt), no Update Manager wording apart from *Lindos Updates*,
+`cat /usr/lib/firefox/distribution/distribution.ini` after a reboot, the Appearance/Mouse pickers, `lsb_release -a`.
+Hermetic tests: `build/tests/test_mint_purge_hook.py` (fake apt/dpkg), `build/tests/test_unrecognisable_gate_hook.py`,
+`build/tests/test_fetch_assets_install.py`, `packages/lindos-desktop/tests/test_unrecognisable.py` and
+`tests/test_no_mint_leftovers.py`. **Not verified (needs a real image):** every effect above on a booted system, the
+`.preserve` file format, that Ubiquity does not need any purged package (only `mintlocale` was flagged and is kept), the
+real `apt-get -s purge` output on the Mint image (the parser expects `Purg name [version]` lines), the desktop-file names
+of Mint's apps (the rules use globs; the gate lists what is left), Xcursor following `Inherits`, and the size change from `vlc`.
+Also unverified (item 9): that xfce4-panel 4.18 shows the generated task list and launchers as intended (property names and
+desktop-id items were read from its source, not run), the resulting GRUB titles, and the BIOS splash on screen.
+`build/tests/test_bios_boot_art.py` and `packages/lindos-desktop/tests/test_taskbar_fallback.py` cover the rest hermetically.
 
 ## 6. `build/mkdeb.sh`
 

@@ -24,8 +24,8 @@ THEME_DARK = "Lindos-Dark"
 THEME_LIGHT = "Lindos-Light"
 ICON_THEME_DARK = "Lindos-dark"
 ICON_THEME_LIGHT = "Lindos"
-CURSOR_DARK = "Fluent-dark-cursors"
-CURSOR_LIGHT = "Fluent-cursors"
+CURSOR_DARK = "Lindos-Cursors-Dark"
+CURSOR_LIGHT = "Lindos-Cursors"
 XFWM_DARK = "Lindos-Dark"
 XFWM_LIGHT = "Lindos-Light"
 ACCENT_DARK = "#60CDFF"
@@ -39,7 +39,7 @@ SYSTEM_GTK_CSS = "/usr/share/lindos/gtk-3.0/lindos.css"
 ACCENTS: List[Tuple[str, str]] = [
     ("Aurora Blue", "#60CDFF"),
     ("Windows Blue", "#0067C0"),
-    ("Mint Green", "#3EB489"),
+    ("Meadow Green", "#6CCB5F"),
     ("Violet", "#B4A0FF"),
     ("Rose", "#FF99A4"),
     ("Amber", "#FFB900"),
@@ -334,7 +334,10 @@ def set_taskbar_alignment(align: str) -> bool:
     if xfconf_available():
         ids = _panel_plugin_ids()
         first_sep = next((pid for pid in ids if _plugin_type(pid) == "separator"), None)
-        if first_sep is None:
+        if any(_plugin_type(pid) == "tasklist" for pid in ids):
+            # the stand-in for Docklike (lindos-desktop's taskbar-fallback.py) fills the bar, so there is nothing to centre
+            log.info("taskbar uses the task list plugin; alignment '%s' is remembered but not applied", align)
+        elif first_sep is None:
             log.warning("no separator plugin found on panel-1; cannot change alignment")
             ok = False
         else:

@@ -5,9 +5,22 @@
 # Diverted originals get the suffix ".lindos-orig" (never "*.xml"/"*.conf"/"*.desktop",
 # so xfconfd, fontconfig, lightdm and the autostart parser ignore them).  Idempotent;
 # postrm removes the diversions again.
+#
+# Besides the config files this also diverts
+#   * /etc/xdg/xdg-xfce, /etc/xdg/xdg-default, /etc/xdg/xdg-default.desktop: on the Mint base they are
+#     symlinks into mint-artwork.  The session scripts put /etc/xdg/xdg-$DESKTOP_SESSION in front of
+#     XDG_CONFIG_DIRS, so Mint's xfconf defaults (theme, panel, Start menu, shortcuts) outranked the
+#     Lindos ones in /etc/xdg.  dpkg-divert is not guaranteed to accept a symlink to a directory, so a link
+#     that is still there afterwards is moved aside by hand (divert_link).  The postinst creates Lindos's
+#     own /etc/xdg/xdg-xfce (a directory is not packaged: dpkg would refuse to unpack one over Mint's link).
+#   * Mint's command wrappers ("This is the Linux Mint apt command", search, highlight-mint, rtfm and
+#     the apt-linux-mint completion) - only when they exist.
+# The list is kept in sync with postrm (a test compares them).
+# LINDOS_ROOT prefixes the paths this script touches itself (test seam; unset on a real system).
 set -e
 
 PKG=lindos-desktop
+R="${LINDOS_ROOT:-}"
 
 DIVERT_FILES="
 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
@@ -24,17 +37,54 @@ DIVERT_FILES="
 /etc/xdg/xfce4/panel/docklike-2.rc
 /etc/xdg/gtk-3.0/settings.ini
 /etc/lightdm/slick-greeter.conf
+/etc/xdg/xdg-xfce
+/etc/xdg/xdg-default
+/etc/xdg/xdg-default.desktop
 "
+
+MINT_WRAPPERS="
+/usr/local/bin/apt
+/usr/local/bin/search
+/usr/local/bin/highlight-mint
+/usr/bin/rtfm
+/usr/share/bash-completion/completions/apt-linux-mint
+/etc/bash_completion.d/apt-linux-mint
+"
+
+divert_one() {
+    # only add when not already diverted by us (dpkg-divert --add is idempotent
+    # for identical diversions, but be explicit and quiet)
+    if ! dpkg-divert --list "$1" 2>/dev/null | grep -q "by $PKG\$"; then
+        dpkg-divert --package "$PKG" --add --rename --quiet \
+            --divert "$1.lindos-orig" "$1" || true
+    fi
+}
+
+divert_link() {
+    divert_one "$1"
+    # still a symlink into mint-artwork (dpkg-divert refused it): move it aside by hand
+    if [ -L "$R$1" ]; then
+        case "$(readlink -f "$R$1" 2>/dev/null)" in
+            *mint-artwork*)
+                rm -f "$R$1.lindos-orig"
+                mv "$R$1" "$R$1.lindos-orig" || true
+                ;;
+        esac
+    fi
+}
 
 case "${1:-}" in
     install|upgrade)
         if command -v dpkg-divert >/dev/null 2>&1; then
             for f in $DIVERT_FILES; do
-                # only add when not already diverted by us (dpkg-divert --add is idempotent
-                # for identical diversions, but be explicit and quiet)
-                if ! dpkg-divert --list "$f" 2>/dev/null | grep -q "by $PKG\$"; then
-                    dpkg-divert --package "$PKG" --add --rename --quiet \
-                        --divert "$f.lindos-orig" "$f" || true
+                case "$f" in
+                    /etc/xdg/xdg-*) divert_link "$f" ;;
+                    *) divert_one "$f" ;;
+                esac
+            done
+            for f in $MINT_WRAPPERS; do
+                if [ -e "$R$f" ] || [ -L "$R$f" ]; then
+                    divert_one "$f"
                 fi
             done
         fi

@@ -447,27 +447,26 @@ def check_menus(files: Mapping[str, str], listing: Set[str], *, grub_script_chec
 #  reading the ISO (xorriso) and the command line
 # ============================================================================================
 def iso_listing(iso: Path, *, which=shutil.which, run=subprocess.run) -> Optional[Set[str]]:
-    """Every regular file below the boot directories of the ISO ('/casper/vmlinuz', ...), or None when xorriso fails.
+    """Every regular file below the boot directories of the ISO ('/casper/vmlinuz', ...), or None when xorriso lists none.
 
-    One xorriso run with several -find commands (the same command shape install_test.py already uses); the paths
-    come back single-quoted, one per line."""
+    One xorriso run PER directory, in the command shape install_test.py's iso_find uses: ``-find`` takes every following
+    word as one of its own tests until '--' or the end of the arguments, so a second ``-find`` in the same run is an
+    unknown test and xorriso lists nothing at all (the first real install test: 'xorriso could not list the ISO's boot
+    files').  A directory the ISO does not have (Mint 22 has no /isolinux) is an error of its own run and only leaves it
+    empty.  The paths come back single-quoted, one per line."""
     xorriso = which("xorriso")
     if not xorriso:
         return None
-    argv = [xorriso, "-indev", str(iso)]
-    for top in LISTED_DIRS:
-        argv += ["-find", top, "-type", "f"]
-    proc = run(argv, capture_output=True, text=True)
-    if getattr(proc, "returncode", 1) != 0 and not (proc.stdout or "").strip():
-        return None
     files: Set[str] = set()
-    for line in (proc.stdout or "").splitlines():
-        line = line.strip()
-        if len(line) >= 2 and line[0] == "'" and line[-1] == "'":
-            line = line[1:-1]
-        if line.startswith("/") and not line.startswith("/dev/"):
-            files.add(line)
-    return files
+    for top in LISTED_DIRS:
+        proc = run([xorriso, "-indev", str(iso), "-find", top, "-type", "f"], capture_output=True, text=True)
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if len(line) >= 2 and line[0] == "'" and line[-1] == "'":
+                line = line[1:-1]
+            if line.startswith("/") and not line.startswith("/dev/"):
+                files.add(line)
+    return files or None
 
 
 def iso_extract_text(iso: Path, iso_path: str, dest: Path, *, which=shutil.which, run=subprocess.run) -> Optional[str]:

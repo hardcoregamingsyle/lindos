@@ -2,19 +2,27 @@
 """rebrand-base.py - keep the Linux Mint base from showing through the Lindos desktop.
 
 Lindos is a remaster of Linux Mint, so the base packages ship menu entries, autostarts, release
-files and browser defaults that say "Linux Mint".  This script (stdlib only, offline, idempotent)
-puts Lindos over the *visible* parts.  It edits files that other packages own, so it runs again
-after every apt run (/etc/apt/apt.conf.d/99lindos-branding -> apply-branding.sh --files-only).
+files, theme packs and browser defaults that say "Linux Mint".  This script (stdlib only, offline,
+idempotent) puts Lindos over the *visible* parts.  It edits files that other packages own, so it
+runs again after every apt run (/etc/apt/apt.conf.d/99lindos-branding -> apply-branding.sh
+--files-only).
 
 Steps, all driven by /usr/share/lindos/branding/base-sweep.json:
-  applications  /usr/share/applications/*.desktop: hide the Mint duplicates of Lindos tools, swap
-                Mint-looking icons, say "Lindos" where a visible text says "Linux Mint", hide
-                entries that only open Linux Mint web pages
-  autostart     /etc/xdg/autostart/*.desktop: hide the Mint Welcome window (lindos-setup replaces it)
+  applications  /usr/share/applications/*.desktop: hide the Mint duplicates of Lindos tools and
+                the apps Lindos replaces (by file name or glob, or by the command they run), give
+                the update/driver tools Lindos names and icons, swap Mint-looking icons, say
+                "Lindos" where a visible text says "Linux Mint", hide the Xfce/Thunar settings
+                entries and entries that only open Linux Mint web pages
+  autostart     /etc/xdg/autostart/*.desktop: hide the Mint Welcome window (lindos-setup replaces
+                it) and the file-sharing / notes daemons
   files         KEY=value files (/etc/lsb-release, /etc/linuxmint/info, /etc/casper.conf): display
                 fields only - IDs, release numbers and codenames are never touched
   firefox       homepage / welcome-page prefs, enterprise policies and distribution.ini that point
-                at Linux Mint's own pages
+                at Linux Mint's own pages - also the copy in /usr/share/ubuntu-system-adjustments
+                that mint-adjust puts back at every boot
+  themes        index.theme of the base's icon / cursor theme packs (Mint-*, Yaru, Papirus,
+                Humanity, ...): Hidden=true keeps them out of the pickers, the themes stay usable
+                as fallbacks
 
 Never touched: ID / ID_LIKE / codenames, apt sources, package and executable names.  Every edit is
 guarded (a missing file is skipped), backed up once under /var/lib/lindos/rebrand/orig and can be
@@ -28,6 +36,7 @@ Env:   LINDOS_ROOT  prefix for every system path (tests); --root wins.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -40,7 +49,7 @@ DATA_PATH = "/usr/share/lindos/branding/base-sweep.json"
 FRAGMENT_PATH = "/usr/share/lindos/os-release.d/lindos.conf"
 BACKUP_DIR = "/var/lib/lindos/rebrand/orig"
 MARKER = "X-Lindos-Rebranded"
-STEPS = ("applications", "autostart", "files", "firefox")
+STEPS = ("applications", "autostart", "files", "firefox", "themes")
 MAX_TEXT_BYTES = 512 * 1024
 
 MINT_RE = re.compile(r"linux[ _-]?mint", re.IGNORECASE)
@@ -240,12 +249,41 @@ def patch_desktop_entry(text: str, *, hide: Optional[str] = None, set_keys: Opti
     return nl.join(lines), changed
 
 
+def _glob_match(name: str, patterns: List[str]) -> bool:
+    """Case-insensitive fnmatch of a file name against any of the globs."""
+    low = name.lower()
+    return any(fnmatch.fnmatchcase(low, p.lower()) for p in patterns)
+
+
+def entry_overrides(text: str, name: str, section: Dict[str, Any]) -> Dict[str, str]:
+    """Keys to set on one entry: explicit per-file rules, then renames by the shown Name, then icon swaps.
+
+    section["set"]            file name -> {key: value}                 (wins over everything below)
+    section["rename"]         shown (English) Name -> new Name          (independent of the file name)
+    section["icons"]          Icon value -> Lindos icon name
+    section["icon_fallback"]  Lindos icon for any other Icon=mint...    (a running window keeps its own icon)
+    """
+    out: Dict[str, str] = {}
+    shown = get_key(text, "Name")
+    new_name = (section.get("rename") or {}).get(shown or "")
+    if new_name:
+        out["Name"] = str(new_name)
+    icon = get_key(text, "Icon") or ""
+    swap = (section.get("icons") or {}).get(icon)
+    if swap:
+        out["Icon"] = str(swap)
+    elif section.get("icon_fallback") and re.match(r"mint", icon, re.IGNORECASE):
+        out["Icon"] = str(section["icon_fallback"])
+    out.update({k: str(v) for k, v in ((section.get("set") or {}).get(name) or {}).items()})
+    return out
+
+
 def sweep_desktop_dir(ctx: Ctx, section: Dict[str, Any], brand: str, kind: str) -> int:
     """Apply the rules of one section ("applications" | "autostart") to every entry in its dirs."""
     hide_key = "Hidden" if kind == "autostart" else "NoDisplay"
     hide_names = set(section.get("hide") or [])
+    hide_globs = [str(g) for g in (section.get("hide_globs") or [])]
     hide_res = [re.compile(p, re.IGNORECASE) for p in (section.get("hide_if_exec_matches") or [])]
-    set_map = section.get("set") or {}
     skip = tuple(section.get("skip_prefixes") or [])
     done = 0
     for d in section.get("dirs") or []:
@@ -261,9 +299,70 @@ def sweep_desktop_dir(ctx: Ctx, section: Dict[str, Any], brand: str, kind: str) 
             if text is None:
                 continue
             exec_line = get_key(text, "Exec") or ""
-            hide = name in hide_names or any(r.search(exec_line) for r in hide_res)
+            hide = name in hide_names or _glob_match(name, hide_globs) or any(r.search(exec_line) for r in hide_res)
             new, changed = patch_desktop_entry(text, hide=hide_key if hide else None,
-                                               set_keys=set_map.get(name), scrub=True, brand=brand)
+                                               set_keys=entry_overrides(text, name, section), scrub=True, brand=brand)
+            if changed and commit(ctx, rel, text, new, backup_refresh=not is_marked(text)):
+                done += 1
+    return done
+
+
+# --------------------------------------------------------------------------- theme packs
+def patch_index_theme(text: str) -> Tuple[str, bool]:
+    """Hidden=true in the [Icon Theme] group (the theme picker skips it; lookups through Inherits / the
+    fallback theme still work).  A file without an [Icon Theme] group is left alone."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.split(nl)
+    start = -1
+    for i, ln in enumerate(lines):
+        if ln.strip() == "[Icon Theme]":
+            start = i
+            break
+    if start < 0:
+        return text, False
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        s = lines[i].strip()
+        if s.startswith("[") and s.endswith("]"):
+            end = i
+            break
+    changed = False
+    hidden_at = -1
+    for i in range(start + 1, end):
+        m = _KEY_RE.match(lines[i])
+        if m and m.group(1) == "Hidden" and not m.group(2):
+            hidden_at = i
+            break
+    if hidden_at >= 0:
+        if lines[hidden_at].split("=", 1)[1].strip().lower() != "true":
+            lines[hidden_at] = "Hidden=true"
+            changed = True
+    else:
+        lines.insert(start + 1, "Hidden=true")
+        end += 1
+        changed = True
+    if changed and not any(re.match(r"^%s\s*=" % re.escape(MARKER), ln) for ln in lines[start + 1:end]):
+        lines.insert(start + 1, "%s=true" % MARKER)
+    return nl.join(lines), changed
+
+
+def sweep_themes(ctx: Ctx, section: Dict[str, Any]) -> int:
+    """Hide the base's icon / cursor theme packs from the pickers (see patch_index_theme)."""
+    globs = [str(g) for g in (section.get("hide_globs") or [])]
+    done = 0
+    for d in section.get("icon_dirs") or []:
+        try:
+            names = sorted(os.listdir(ctx.path(d)))
+        except OSError:
+            continue
+        for name in names:
+            if not _glob_match(name, globs) or os.path.islink(ctx.path(d.rstrip("/") + "/" + name)):
+                continue
+            rel = d.rstrip("/") + "/" + name + "/index.theme"
+            text = read_text(ctx.path(rel))
+            if text is None:
+                continue
+            new, changed = patch_index_theme(text)
             if changed and commit(ctx, rel, text, new, backup_refresh=not is_marked(text)):
                 done += 1
     return done
@@ -519,7 +618,7 @@ def revert(ctx: Ctx) -> int:
         if saved is None:
             continue
         current = read_text(target)
-        ours = current is not None and (not rel.endswith(".desktop") or is_marked(current))
+        ours = current is not None and (not rel.endswith((".desktop", "/index.theme")) or is_marked(current))
         if ours and current != saved:
             if not ctx.dry_run:
                 try:
@@ -604,6 +703,9 @@ def audit(ctx: Ctx, rules: Optional[Dict[str, Any]]) -> int:
             continue
         for n in names:
             if re.search(r"mint", n, re.I):
+                index = read_text(ctx.path(d + "/" + n + "/index.theme")) or ""
+                if re.search(r"^Hidden\s*=\s*true\s*$", index, flags=re.M | re.I):
+                    continue                    # hidden from the pickers by the themes step
                 hit(d + "/" + n, "name mentions mint (art/theme kept on disk)")
     sys.stdout.write("audit: %d item(s) still mention Linux Mint (see docs/BUILDING.md, 'Mint sweep')\n" % found)
     return found
@@ -621,6 +723,8 @@ def run_steps(ctx: Ctx, rules: Dict[str, Any], brand: Dict[str, str], steps: Lis
                 n = sweep_files(ctx, rules, brand)
             elif step == "firefox":
                 n = sweep_firefox(ctx, rules, brand)
+            elif step == "themes":
+                n = sweep_themes(ctx, rules.get("themes") or {})
             else:
                 continue
             ctx.log("%s: %d file(s) %s" % (step, n, "would change" if ctx.dry_run else "changed"))

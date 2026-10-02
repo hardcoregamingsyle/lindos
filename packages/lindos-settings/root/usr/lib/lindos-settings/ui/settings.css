@@ -257,6 +257,12 @@ list.settings-cards row.settings-card:selected {
     color: #FFFFFF;
 }
 
+.badge-not-supported-yet {
+    background-color: alpha(@theme_fg_color, 0.16);
+    color: @theme_fg_color;
+    border: 1px solid alpha(@lindos_warn, 0.85);
+}
+
 .badge-unknown,
 .badge-neutral {
     background-color: alpha(@theme_fg_color, 0.12);

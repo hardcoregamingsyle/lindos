@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 from typing import Any, Optional
 
@@ -16,6 +17,41 @@ else:  # pragma: no cover
     Gtk = None  # type: ignore
 
 log = logging.getLogger("lindos.settings.about")
+
+#: the text behind "Legal and open-source notices" (shipped by lindos-desktop; LINDOS_ROOT prefixes it in tests)
+LEGAL_NOTICES_PATH = "/usr/share/lindos/legal/open-source-notices.txt"
+#: shown when that file is missing (lindos-desktop not installed): what the system is made of, in one paragraph
+LEGAL_FALLBACK = (
+    "Lindos is free software (GPL-3.0-or-later) and comes with no warranty.\n"
+    "Its base system consists of packages from Ubuntu 24.04 LTS, Debian and the Linux Mint 22.x repositories; each "
+    "keeps its own licence (see /usr/share/doc/<package>/copyright). Ubuntu, Linux Mint, Debian, Firefox, Windows and "
+    "the other product names belong to their owners; Lindos is not affiliated with any of them.\n"
+    "Windows programs run through Wine and Proton, a compatibility layer: Lindos is not Windows.\n"
+)
+
+
+def based_on(osr: dict) -> str:
+    """The "Based on" row: the Ubuntu release the packages come from.  The Debian / Linux Mint provenance is in
+    the legal notices (legal_notices_text), not in this row."""
+    codename = str(osr.get("UBUNTU_CODENAME") or "").strip()
+    release = model.UBUNTU_RELEASES.get(codename)
+    if release:
+        return "Ubuntu " + release
+    return "Ubuntu " + codename if codename else "Ubuntu"
+
+
+def legal_notices_path() -> str:
+    return os.environ.get("LINDOS_ROOT", "").rstrip("/\\") + LEGAL_NOTICES_PATH
+
+
+def legal_notices_text() -> str:
+    """The notices text of the running system, or the built-in paragraph when the file is missing."""
+    try:
+        with open(legal_notices_path(), "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return LEGAL_FALLBACK
+    return text if text.strip() else LEGAL_FALLBACK
 
 
 def collect_specs(backend: Any, modes: Optional[dict[str, Any]] = None) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -47,7 +83,7 @@ def collect_specs(backend: Any, modes: Optional[dict[str, Any]] = None) -> tuple
         ("Uptime", model.format_uptime(b.uptime_seconds())),
     ]
 
-    base = model.base_description(osr)
+    base = based_on(osr)
     mode_id = b.effective_mode()
     lindos_rows = [
         ("Edition", b.lindos_release()),
@@ -111,6 +147,7 @@ class AboutPage(PageBase):
         rsec.add(ButtonCard("Bug report", "Generate a Markdown hardware/tuning report (lindos-tune report)", ("dialog-information",), ("bug", "report", "support"), "Generate", self._bug_report))
         rsec.add(ButtonCard("Website", "lindos.dev — documentation, compatibility list and FAQ", ("web-browser",), ("website", "docs", "help"), "Open", lambda: self.backend.open_url("https://lindos.dev")))
         rsec.add(ButtonCard("Licence", "Lindos code is GPL-3.0-or-later; third-party themes, fonts and icons keep their own licences (THIRD_PARTY.md)", ("text-x-generic",), ("licence", "license", "gpl"), "Open", lambda: self.backend.open_url("https://www.gnu.org/licenses/gpl-3.0.html")))
+        rsec.add(ButtonCard("Legal and open-source notices", "What Lindos is built on, third-party components and their licences, trademarks", ("text-x-generic",), ("legal", "notices", "open source", "licences", "trademark", "ubuntu", "debian"), "Open", self._legal))
         self.add_widget(label("Windows programs run through Wine / Proton — a compatibility layer, not Windows and not a virtual machine.", ("dim-label",), wrap=True), 10)
         self._loaded = False
 
@@ -143,6 +180,10 @@ class AboutPage(PageBase):
         clipboard_set(text)
         self.toast("Specifications copied to the clipboard")
 
+    def _legal(self) -> None:
+        # printf shows the text in the same output window as the other reports (no file needed when it is missing)
+        self.app.show_output("Legal and open-source notices", ["printf", "%s\n", legal_notices_text()])
+
     def _ram_report(self) -> None:
         if self.backend.which("lindos-tune"):
             self.app.show_output("Memory report (lindos-tune status)", ["lindos-tune", "status"])
@@ -158,4 +199,4 @@ class AboutPage(PageBase):
             self.toast("lindos-tune is not installed — copy the specifications above instead")
 
 
-__all__ = ["AboutPage", "collect_specs"]
+__all__ = ["AboutPage", "collect_specs", "based_on", "legal_notices_path", "legal_notices_text"]

@@ -1354,8 +1354,8 @@
         {
           "type": "not_possible",
           "id": "riot-client",
-          "label": "valorant: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"valorant\"",
+          "label": "Riot Client (Valorant, League of Legends)",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"valorant\"",
           "anticheat": "Riot Vanguard (kernel driver)"
         }
       ]
@@ -1369,8 +1369,8 @@
         {
           "type": "not_possible",
           "id": "valorant",
-          "label": "valorant: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"valorant\"",
+          "label": "Valorant",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"valorant\"",
           "anticheat": "Riot Vanguard (kernel driver)"
         }
       ]
@@ -1384,8 +1384,8 @@
         {
           "type": "not_possible",
           "id": "league-of-legends",
-          "label": "League of Legends: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"League of Legends\"",
+          "label": "League of Legends",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"League of Legends\"",
           "anticheat": "Riot Vanguard (kernel driver)"
         }
       ]
@@ -1399,8 +1399,8 @@
         {
           "type": "not_possible",
           "id": "fortnite",
-          "label": "Fortnite: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Fortnite\"",
+          "label": "Fortnite",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Fortnite\"",
           "anticheat": "Easy Anti-Cheat + BattlEye (Linux disabled by Epic)"
         }
       ]
@@ -1414,8 +1414,8 @@
         {
           "type": "not_possible",
           "id": "apex-legends",
-          "label": "Apex Legends: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Apex Legends\"",
+          "label": "Apex Legends",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Apex Legends\"",
           "anticheat": "Easy Anti-Cheat (kernel mode on Windows)"
         }
       ]
@@ -1430,8 +1430,8 @@
         {
           "type": "not_possible",
           "id": "rainbow-six-siege",
-          "label": "Rainbow Six Siege: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Rainbow Six Siege\"",
+          "label": "Rainbow Six Siege",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Rainbow Six Siege\"",
           "anticheat": "BattlEye (kernel mode on Windows)"
         }
       ]
@@ -1445,8 +1445,8 @@
         {
           "type": "not_possible",
           "id": "destiny-2",
-          "label": "Destiny 2: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Destiny 2\"",
+          "label": "Destiny 2",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Destiny 2\"",
           "anticheat": "BattlEye (kernel mode on Windows)"
         }
       ]
@@ -1460,8 +1460,8 @@
         {
           "type": "not_possible",
           "id": "pubg",
-          "label": "PUBG: Battlegrounds: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"PUBG: Battlegrounds\"",
+          "label": "PUBG: Battlegrounds",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"PUBG: Battlegrounds\"",
           "anticheat": "BattlEye (kernel mode on Windows)"
         }
       ]
@@ -1475,8 +1475,8 @@
         {
           "type": "not_possible",
           "id": "rust-game",
-          "label": "Rust: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Rust\"",
+          "label": "Rust",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Rust\"",
           "anticheat": "Easy Anti-Cheat (kernel mode on Windows)"
         }
       ],
@@ -1494,8 +1494,8 @@
         {
           "type": "not_possible",
           "id": "escape-from-tarkov",
-          "label": "Escape from Tarkov: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Escape from Tarkov\"",
+          "label": "Escape from Tarkov",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Escape from Tarkov\"",
           "anticheat": "BattlEye (kernel mode on Windows)"
         }
       ]
@@ -1509,8 +1509,8 @@
         {
           "type": "not_possible",
           "id": "call-of-duty",
-          "label": "Call of Duty: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Call of Duty\"",
+          "label": "Call of Duty",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Call of Duty\"",
           "anticheat": "Ricochet (kernel mode on Windows)"
         }
       ]
@@ -1524,8 +1524,8 @@
         {
           "type": "not_possible",
           "id": "delta-force",
-          "label": "Delta Force: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Delta Force\"",
+          "label": "Delta Force",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Delta Force\"",
           "anticheat": "kernel-mode anti-cheat (Windows only)"
         }
       ]
@@ -1539,8 +1539,8 @@
         {
           "type": "not_possible",
           "id": "battlefield-2042",
-          "label": "Battlefield 2042: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Battlefield 2042\"",
+          "label": "Battlefield 2042",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Battlefield 2042\"",
           "anticheat": "Javelin (kernel mode on Windows)"
         }
       ]
@@ -1554,8 +1554,8 @@
         {
           "type": "not_possible",
           "id": "battlefield-6",
-          "label": "Battlefield 6: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Battlefield 6\"",
+          "label": "Battlefield 6",
+          "note": "Not supported on Lindos yet - the game's anti-cheat does not run on Linux today, and whether that changes is up to its publisher, with no date. See other ways to play: lindos-game route \"Battlefield 6\"",
           "anticheat": "Javelin (kernel mode on Windows)"
         }
       ]
@@ -1571,8 +1571,8 @@
         {
           "type": "not_possible",
           "id": "xbox-app",
-          "label": "Xbox app / PC Game Pass: does not run on Linux",
-          "note": "Blocked by a Windows-only kernel-mode anti-cheat with no Linux support - this is not something Lindos (or any Linux distribution) can fix. See other ways to play: lindos-game route \"Xbox app / PC Game Pass\"",
+          "label": "Xbox app / PC Game Pass",
+          "note": "Not supported on Linux: the Xbox app and Microsoft Store games are Windows-only (Store licensing), which is Microsoft's decision. Xbox Cloud Gaming streams in Chrome or Edge. See other ways to play: lindos-game route \"Xbox app / PC Game Pass\"",
           "anticheat": "Xbox Play Anywhere DRM/services (Windows only)"
         }
       ]

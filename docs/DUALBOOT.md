@@ -125,7 +125,8 @@ alternative where one exists (`lindos-game route <title>` — see [GAMING.md](GA
 [COMPATIBILITY.md](COMPATIBILITY.md)): GeForce NOW's native Linux app plays several of them
 (Valorant is the notable exception — it is on no cloud service) without touching Windows at all.
 Dual-boot is for the titles, or the modes (Ranked, tournaments), that cloud streaming does not
-cover.
+cover. On Lindos itself these games are marked **Not supported yet**: whether that ever changes is
+up to their publishers, and Lindos gives no date — restarting into Windows is how you play them today.
 
 ## 6. See also
 

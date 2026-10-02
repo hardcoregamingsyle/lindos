@@ -68,6 +68,8 @@ st="${FAKE_STATE}"
 installed="${st}/installed"
 held="${st}/held"
 touch "${installed}" "${held}"
+# what each command inherited: the hook must not hand the installer's apt configuration to dpkg's maintainer scripts
+echo "${name} APT_CONFIG=${APT_CONFIG:-}" >>"${st}/apt-config-seen"
 [ -f "${FAKE_TARGET}/var/lib/lindos/installer-apt.conf" ] && cp -f "${FAKE_TARGET}/var/lib/lindos/installer-apt.conf" "${st}/apt.conf.seen"
 
 if [ "${FAKE_ALL_FAIL:-0}" = 1 ]; then
@@ -83,7 +85,7 @@ pkgs_from_args() {
     for a in "$@"; do
         if [ "${skip}" = 1 ]; then skip=0; continue; fi
         case "${a}" in
-            -o) skip=1 ;;
+            -o|-c) skip=1 ;;
             -*) ;;
             install|update|upgrade|clean|remove|purge|hold|unhold|policy) ;;
             *) printf '%s\n' "${a}" ;;
@@ -213,6 +215,11 @@ case "${name}" in
             *'${binary:Package} ${db:Status-Want}'*)
                 while read -r p; do [ -n "${p}" ] && echo "${p} install installed"; done <"${installed}"
                 exit 0 ;;
+            *'${binary:Package} ${db:Status-Status}'*)
+                # the final check of the steps: every installed package, 'name installed' (FAKE_DPKG_QUERY_FAIL: cannot read)
+                [ "${FAKE_DPKG_QUERY_FAIL:-0}" = 1 ] && exit 2
+                while read -r p; do [ -n "${p}" ] && echo "${p} installed"; done <"${installed}"
+                exit 0 ;;
             *'${Package}'*)
                 cat "${installed}"
                 exit 0 ;;
@@ -249,6 +256,11 @@ case "${name}" in
                 -f) fix=1 ;;
             esac
         done
+        # which packages were held while apt worked (FAKE_HELD_LOG): one block per real download/install/upgrade call
+        case "${verb}" in
+            install|upgrade)
+                [ "${sim}" = 1 ] || [ "${fix}" = 1 ] || { echo "== ${verb} dl=${dl} $*"; cat "${held}"; } >>"${st}/held-log" ;;
+        esac
         case "${verb}" in
             update)
                 # every call is counted; FAKE_UPDATE_OUT_FILE is what apt printed (only on the first call with
@@ -288,8 +300,39 @@ case "${name}" in
                 fi
                 exit "${rc}" ;;
             install)
-                if [ "${fix}" = 1 ]; then exit "${FAKE_FIX_RC:-0}"; fi
+                if [ "${fix}" = 1 ]; then
+                    # FAKE_REPAIR_REMOVES="pkg ...": the repair pass (apt-get -f install) removes those - a later step undoing an earlier one
+                    for p in ${FAKE_REPAIR_REMOVES:-}; do grep -vxF "${p}" "${installed}" >"${installed}.tmp"; mv -f "${installed}.tmp" "${installed}"; done
+                    exit "${FAKE_FIX_RC:-0}"
+                fi
                 list="$(pkgs_from_args "$@")"
+                # FAKE_BLOCKED_BY_HOLD="pkg=heldpkg ...": pkg cannot be installed while heldpkg is held (an exact-version
+                # dependency of a held package: what stopped every libreoffice extra in the first real install)
+                for p in ${list}; do
+                    for pair in ${FAKE_BLOCKED_BY_HOLD:-}; do
+                        if [ "${pair%%=*}" = "${p}" ] && grep -qxF "${pair#*=}" "${held}"; then
+                            echo "E: Error, pkgProblemResolver::Resolve generated breaks, this may be caused by held packages." >&2
+                            exit 100
+                        fi
+                    done
+                done
+                if [ "${sim}" = 1 ]; then
+                    # the simulation the hook makes before it installs extras (li_guard): what it would REMOVE
+                    # (FAKE_REMOVES="pkg=gone1,gone2 ...": installing pkg removes gone1 and gone2), or no solution at all
+                    # (FAKE_UNRESOLVABLE="pkg ...": what a held package that breaks the request looks like)
+                    for p in ${list}; do
+                        case " ${FAKE_UNRESOLVABLE:-} " in
+                            *" ${p} "*) echo "E: Unable to correct problems, you have held broken packages." >&2; exit 100 ;;
+                        esac
+                        for pair in ${FAKE_REMOVES:-}; do
+                            if [ "${pair%%=*}" = "${p}" ]; then
+                                for gone in $(printf '%s' "${pair#*=}" | tr ',' ' '); do echo "Remv ${gone} [1.0]"; done
+                            fi
+                        done
+                        echo "Inst ${p} (1.0 Ubuntu:24.04/noble [amd64])"
+                    done
+                    exit 0
+                fi
                 for p in ${list}; do
                     case " ${FAKE_FAIL_PKGS:-} " in *" ${p} "*) exit 100 ;; esac
                 done
@@ -308,6 +351,15 @@ case "${name}" in
                 rc="${FAKE_INST_RC:-0}"
                 if [ "${rc}" = 0 ]; then
                     for p in ${list}; do grep -qxF "${p}" "${installed}" || echo "${p}" >>"${installed}"; done
+                    # what installing really removes (FAKE_REMOVES, as in the simulation)
+                    for p in ${list}; do
+                        for pair in ${FAKE_REMOVES:-}; do
+                            [ "${pair%%=*}" = "${p}" ] || continue
+                            for gone in $(printf '%s' "${pair#*=}" | tr ',' ' '); do
+                                grep -vxF "${gone}" "${installed}" >"${installed}.tmp"; mv -f "${installed}.tmp" "${installed}"
+                            done
+                        done
+                    done
                 fi
                 exit "${rc}" ;;
         esac
@@ -346,8 +398,20 @@ for a in "$@"; do
 done
 rc_var="FAKE_${key}_${phase^^}_RC"
 rc="${!rc_var:-0}"
-if [ "${phase}" = inst ] && [ "${rc}" = 0 ] && [ "${name}" = install-browser.sh ]; then
-    echo google-chrome-stable >>"${FAKE_STATE}/installed"
+if [ "${phase}" = inst ] && [ "${rc}" = 0 ]; then
+    # what the real script leaves installed (the hook's final check looks for it); FAKE_NO_EVIDENCE="install-gaming.sh ..."
+    # plays a script that says it worked and did not
+    case " ${FAKE_NO_EVIDENCE:-} " in
+        *" ${name} "*) ;;
+        *)
+            case "${name}" in
+                install-browser.sh) pk="google-chrome-stable" ;;
+                install-compat.sh) pk="winehq-staging winetricks umu-launcher" ;;
+                install-gaming.sh) pk="steam-launcher lutris" ;;
+                *) pk="" ;;
+            esac
+            for p in ${pk}; do echo "${p}" >>"${FAKE_STATE}/installed"; done ;;
+    esac
 fi
 exit "${rc}"
 '''
@@ -456,6 +520,12 @@ class Sandbox:
         (t / "etc" / "lightdm" / "lightdm.conf").write_text("".join(lines), encoding="utf-8", newline="\n")
         write_exec(t / "usr" / "lib" / "ubiquity" / "target-config" / "50lindos-install", "#!/bin/sh\n")
         write_exec(t / "usr" / "lib" / "ubiquity" / "dm-scripts" / "install" / "50lindos-noblank", "#!/bin/sh\n")
+        # what the image carries for the look of the installer (79-installer-flow.sh, 78-installer-brand.sh)
+        (t / "etc" / "systemd" / "system" / "ubiquity.service.d").mkdir(parents=True, exist_ok=True)
+        (t / "etc" / "systemd" / "system" / "ubiquity.service.d" / "10-lindos.conf").write_text(
+            "[Service]\nEnvironment=GTK_THEME=Lindos-Setup\n", encoding="utf-8", newline="\n")
+        (t / "usr" / "share" / "themes" / "Lindos-Setup" / "gtk-3.0").mkdir(parents=True, exist_ok=True)
+        (t / "usr" / "share" / "themes" / "Lindos-Setup" / "gtk-3.0" / "gtk.css").write_text("/* skin */\n", encoding="utf-8", newline="\n")
 
     # -- environment -------------------------------------------------------------------------
     def env(self, **over: str) -> Dict[str, str]:
@@ -487,7 +557,7 @@ class Sandbox:
         env.update(over)
         return env
 
-    def run(self, script: Path, *args: str, timeout: int = 240, **over: str) -> "subprocess.CompletedProcess[str]":
+    def run(self, script: Path, *args: str, timeout: int = 900, **over: str) -> "subprocess.CompletedProcess[str]":
         assert BASH is not None
         return subprocess.run([BASH, str(script), *args], capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout, env=self.env(**over), stdin=subprocess.DEVNULL)
@@ -499,8 +569,17 @@ class Sandbox:
         return self.run(LIBEXEC / "finalize.sh", **over)
 
     # -- observations --------------------------------------------------------------------------
-    def call_log(self) -> List[str]:
+    #: how the hook hands its apt configuration to apt (li_apt_conf_write): '-c FILE' on the command line
+    APT_C = " -c /var/lib/lindos/installer-apt.conf"
+
+    def raw_call_log(self) -> List[str]:
+        """Every recorded call exactly as the fake command saw it."""
         return [ln.rstrip("\r") for ln in self.calls.read_text(encoding="utf-8", errors="replace").splitlines()]
+
+    def call_log(self) -> List[str]:
+        """The recorded calls with the hook's own '-c FILE' apt option taken out (the tests read the verbs and packages;
+        ``test_the_hooks_own_apt_calls_carry_the_installer_config`` looks at the raw log)."""
+        return [ln.replace(self.APT_C, "", 1) if ln.startswith(("apt-get", "apt-cache")) else ln for ln in self.raw_call_log()]
 
     def calls_of(self, name: str) -> List[str]:
         return [ln for ln in self.call_log() if ln == name or ln.startswith(name + " ")]

@@ -13,7 +13,7 @@ Licence files found in the upstream archives are copied next to the installed fi
 | Asset | Upstream | Pinned ref (default) | Licence | Used as |
 |---|---|---|---|---|
 | Fluent-gtk-theme | https://github.com/vinceliuice/Fluent-gtk-theme | `master` (commit recorded in `assets.lock`; `FLUENT_GTK_REF` overrides) | GPL-3.0 | GTK 2/3/4 + xfwm4 themes, installed as `Lindos-Dark` / `Lindos-Light` (`install.sh -n Lindos -t default -c dark light --tweaks round`) |
-| Fluent-icon-theme (incl. `cursors/`) | https://github.com/vinceliuice/Fluent-icon-theme | `master` (commit recorded; `FLUENT_ICON_REF` overrides) | GPL-3.0 | icon theme `Lindos`, `Lindos-dark`, `Lindos-light`; cursor themes `Fluent-cursors`, `Fluent-dark-cursors` |
+| Fluent-icon-theme (incl. `cursors/`) | https://github.com/vinceliuice/Fluent-icon-theme | `master` (commit recorded; `FLUENT_ICON_REF` overrides) | GPL-3.0 | icon theme `Lindos`, `Lindos-dark`, `Lindos-light`; cursor themes `Lindos-Cursors`, `Lindos-Cursors-Dark` (the old names `Fluent-cursors` / `Fluent-dark-cursors` remain only as hidden compatibility themes that inherit them); the display names in `index.theme` are the Lindos names, the upstream `LICENSE` files stay next to the files |
 | Selawik | https://github.com/microsoft/Selawik | release `1.01` (`Selawik_Release.zip`; `SELAWIK_URL` / `SELAWIK_SHA256`) | SIL Open Font License 1.1 | default UI font (`Selawik 10`), fontconfig alias target for "Segoe UI" (`/etc/fonts/conf.d/60-lindos-ui.conf`) → `/usr/share/fonts/truetype/selawik` |
 | Inter | https://github.com/rsms/inter | release `v4.1` (`Inter-4.1.zip`, fallback `v4.0`; `INTER_URL` / `INTER_SHA256`) | SIL Open Font License 1.1 | fallback UI font → `/usr/share/fonts/truetype/inter` |
 
@@ -27,12 +27,20 @@ Notes
 
 ## 2. Packages taken from the Linux Mint / Ubuntu archives (on the ISO)
 
-The base image is **Linux Mint 22.x XFCE** (Ubuntu 24.04 "noble"), used under the Linux Mint /
-Ubuntu / Debian licences of the respective packages. `build/chroot/20-base.sh` adds, among
-others: `xfce4-docklike-plugin`, `xfce4-panel-profiles`, `xfce4-clipman-plugin`,
-`xfce4-whiskermenu-plugin`, `picom`, `systemd-zram-generator`, `earlyoom`,
+The base system of the ISO is built from **Linux Mint 22.x XFCE** (Ubuntu 24.04 "noble"): packages from the Ubuntu
+and Debian archives and from the Linux Mint repositories, used under the licences of the respective packages (source
+for every one of them: `apt source <package>`). **What is removed again:** Mint's own artwork and applications do not
+ship in the Lindos image - `build/chroot/76-mint-purge.sh` purges `mint-artwork`, `mint-themes`, `mint-*-icons`,
+`mint-cursor-themes`, `mint-backgrounds-*`, the `mint-meta-*` metapackages and Mint's own apps (backup, USB writer,
+web apps, notes, file sharing, text/image/PDF viewers, media player, ...), so Mint's branded artwork and wallpapers
+(a trademark and licensing matter) are not redistributed. The update, driver, store and report tools and the
+packages Mint's Firefox depends on stay for now, re-skinned; Settings > About > *Legal and open-source notices*
+(`/usr/share/lindos/legal/open-source-notices.txt`) names them, and `/usr/share/doc/*/copyright` stays intact.
+`build/chroot/20-base.sh` adds, among others: `xfce4-docklike-plugin`, `xfce4-panel-profiles`,
+`xfce4-clipman-plugin`, `xfce4-whiskermenu-plugin`, `picom`, `systemd-zram-generator`, `earlyoom`,
 `power-profiles-daemon`, `lm-sensors`, `fancontrol`, `gamemode`, `mangohud`, `python3-gi`,
-`flatpak`, `winbind`, `cabextract`, `icoutils`, `zenity`, `librsvg2-bin` and, best effort,
+`flatpak`, `winbind`, `cabextract`, `icoutils`, `zenity`, `librsvg2-bin`, the default apps `mousepad`
+(GPL-2.0+), `ristretto` (GPL-2.0+), `evince` (GPL-2.0+) and `vlc` (GPL-2.0+; libvlc LGPL-2.1+), and, best effort,
 `fonts-inter` (OFL-1.1), `fonts-jetbrains-mono` (OFL-1.1, monospace fallback), `fonts-noto-*`
 (OFL-1.1), `fonts-liberation`. Each package's licence is in `/usr/share/doc/<pkg>/copyright`
 on the installed system.

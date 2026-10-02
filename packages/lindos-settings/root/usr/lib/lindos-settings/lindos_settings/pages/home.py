@@ -58,7 +58,7 @@ class HomePage(PageBase):
             toggles.add(card)
         self.taskbar_card = ComboCard(
             "Taskbar alignment",
-            "Centre the Start button and pinned apps (Windows 11) or align left (Windows 10)",
+            model.taskbar_alignment_hint(b.taskbar_can_centre()),
             ("view-list-details",),
             ("taskbar", "panel", "center", "left", "start"),
             options=[("center", "Center"), ("left", "Left")],

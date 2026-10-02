@@ -16,7 +16,8 @@ Description: Windows Easy Transfer for Lindos — bring your files and settings 
  Wi-Fi networks, Steam game installs and a list of your Windows programs with
  a Lindos way to get each one back (apt/Flatpak/native browser, a Wine recipe
  or winget install, a web-app shortcut, WinApps/the Windows VM, or an honest
- "does not run on Linux" note with the lindos-game route for anti-cheat games).
+ "not supported on Lindos yet" note with the lindos-game route for anti-cheat
+ games, whose publishers decide whether they ever run on Linux).
  .
  Two ways in: the Windows partition of this same PC, mounted strictly
  read-only (never written to, moved or deleted), or a "transfer folder" made

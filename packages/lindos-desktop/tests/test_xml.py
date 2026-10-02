@@ -311,7 +311,7 @@ def test_xsettings_defaults() -> None:
     assert value(xs["/Net/ThemeName"]) == "Lindos-Dark"
     # default session is dark → dark-panel icon variant, same as lindos.theme.set_dark(True)
     assert value(xs["/Net/IconThemeName"]) == "Lindos-dark"
-    assert value(xs["/Gtk/CursorThemeName"]) == "Fluent-dark-cursors"
+    assert value(xs["/Gtk/CursorThemeName"]) == "Lindos-Cursors-Dark"
     assert value(xs["/Gtk/FontName"]) == "Selawik 10"
     assert value(xs["/Gtk/DecorationLayout"]) == "menu:minimize,maximize,close"
     assert value(xs["/Gtk/DialogsUseHeader"]) == "false"
@@ -513,8 +513,9 @@ def test_branding_files() -> None:
     assert pairs["HOME_URL"] == '"https://lindos.dev"'
     assert pairs["LINDOS_VERSION"] == "1.0.0"
     assert pairs["LINDOS_CODENAME"] == "Aurora"
-    for forbidden in ("ID", "ID_LIKE", "VERSION_CODENAME", "UBUNTU_CODENAME"):
+    for forbidden in ("ID", "ID_LIKE", "VERSION_CODENAME", "UBUNTU_CODENAME", "VERSION_ID"):
         assert forbidden not in pairs, forbidden
+    assert pairs["VERSION"] == '"1.0 (Aurora)"'          # the display string; the base's "22.2 (Zara)" is a Mint tell
     ply = (ROOT / "usr/share/plymouth/themes/lindos/lindos.plymouth").read_text(encoding="utf-8")
     assert "ModuleName=script" in ply and "lindos.script" in ply
     greeter = (ROOT / "etc/lightdm/slick-greeter.conf").read_text(encoding="utf-8")
@@ -570,8 +571,8 @@ def test_debian_metadata() -> None:
     # xfce4-docklike-plugin is deliberately NOT a hard Depends: it is not packaged for Ubuntu
     # 24.04 "noble" (only Ubuntu 25.10+ / Debian trixie+ carry it as of this writing), so a hard
     # Depends would make lindos-desktop uninstallable on the very base Lindos targets. It is a
-    # Recommends instead — apt still tries to install it, and xfce4-panel just leaves that panel
-    # slot empty if it is genuinely absent.
+    # Recommends instead — apt still tries to install it, and without it taskbar-fallback.py
+    # gives the taskbar xfce4-panel's own task list and launchers (test_taskbar_fallback.py).
     assert "xfce4-docklike-plugin" not in depends
     recommends = {d.strip().split()[0] for d in fields["Recommends"].split(",")}
     for pkg in ("xfce4-docklike-plugin", "xfce4-pulseaudio-plugin", "xfce4-power-manager",

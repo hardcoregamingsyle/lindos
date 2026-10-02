@@ -7,7 +7,7 @@
 #    * vinceliuice/Fluent-gtk-theme   → GTK 2/3/4 + xfwm4 theme, built as
 #                                       Lindos-Dark / Lindos-Light (-n Lindos --tweaks round)
 #    * vinceliuice/Fluent-icon-theme  → icon theme "Lindos" / "Lindos-dark" / "Lindos-light"
-#                                       and its cursors/ dir → Fluent-cursors, Fluent-dark-cursors
+#                                       and its cursors/ dir → Lindos-Cursors, Lindos-Cursors-Dark
 #    * microsoft/Selawik (release zip)→ /usr/share/fonts/truetype/selawik   (OFL-1.1)
 #    * rsms/inter (release zip)       → /usr/share/fonts/truetype/inter     (OFL-1.1)
 #
@@ -298,7 +298,12 @@ write_installer() {
 #   * xfwm4 themes      → ensures /usr/share/themes/Lindos-Dark/xfwm4 + Lindos-Light/xfwm4
 #                         exist (Fluent's xfwm4 assets, renamed/copied when needed)
 #   * Fluent-icon-theme → /usr/share/icons/Lindos, Lindos-dark, Lindos-light (-n Lindos)
-#   * cursors           → /usr/share/icons/Fluent-cursors, Fluent-dark-cursors
+#   * cursors           → /usr/share/icons/Lindos-Cursors, Lindos-Cursors-Dark (+ hidden compatibility
+#                         themes Fluent-cursors / Fluent-dark-cursors that inherit them: user configs written
+#                         by older releases still name those)
+#   * theme names       → index.theme Name= of the Lindos themes is the Lindos name (no upstream name in pickers)
+#   * icon aliases      → the Lindos icon theme answers to the icon names of the base's update/driver/store
+#                         tools, so their windows do not show the base's icons
 #   * fonts             → /usr/share/fonts/truetype/selawik, /usr/share/fonts/truetype/inter
 #   * caches            → fc-cache -f, gtk-update-icon-cache
 # Idempotent; never downloads theme sources; exit 0 when the mandatory parts succeeded.
@@ -381,7 +386,8 @@ install_gtk_theme() {
 install_xfwm_themes() {
     # SPEC: xfwm4 themes Lindos-Dark / Lindos-Light = Fluent xfwm themes renamed.  Fluent's
     # install.sh already drops an xfwm4/ dir into each theme; make sure both exist, copying
-    # from any Fluent/Lindos variant that has one, else fall back to Mint's dark xfwm theme.
+    # from any Fluent/Lindos variant that has one, else fall back to the stock Default xfwm theme
+    # (never to a Mint one: the Mint theme packs are purged from the image by 76-mint-purge.sh).
     local variant target cand src=""
     for variant in Dark Light; do
         target="${THEMES_DEST}/${THEME_NAME}-${variant}/xfwm4"
@@ -401,11 +407,7 @@ install_xfwm_themes() {
             fi
         done
         if [ -z "${src}" ]; then
-            if [ "${variant}" = "Dark" ] && [ -d "${THEMES_DEST}/Mint-Y-Dark/xfwm4" ]; then
-                src="${THEMES_DEST}/Mint-Y-Dark/xfwm4"
-            elif [ -d "${THEMES_DEST}/Mint-Y/xfwm4" ]; then
-                src="${THEMES_DEST}/Mint-Y/xfwm4"
-            elif [ -d "${THEMES_DEST}/Default/xfwm4" ]; then
+            if [ -d "${THEMES_DEST}/Default/xfwm4" ]; then
                 src="${THEMES_DEST}/Default/xfwm4"
             fi
             [ -n "${src}" ] && warn "no Fluent xfwm4 assets for ${variant}; using $(basename "$(dirname "${src}")") as ${THEME_NAME}-${variant}/xfwm4"
@@ -470,32 +472,104 @@ install_icon_theme() {
     fi
 }
 
+# write_cursor_index DIR LABEL - the pointer theme carries the Lindos name, not upstream's
+write_cursor_index() {
+    local dir="$1" label="$2"
+    printf '[Icon Theme]\nName=%s\nComment=Lindos pointer theme\n' "${label}" > "${dir}/index.theme"
+    if [ -f "${dir}/cursor.theme" ]; then
+        cp -f "${dir}/index.theme" "${dir}/cursor.theme"
+    fi
+}
+
+# write_cursor_alias OLD NEW - a hidden theme under the old name that only inherits the new one
+# (libXcursor follows Inherits); it has no cursors/ dir, so no picker lists it
+write_cursor_alias() {
+    local old="$1" new="$2"
+    [ -d "${ICONS_DEST}/${new}/cursors" ] || return 0
+    rm -rf "${ICONS_DEST:?}/${old}"
+    mkdir -p "${ICONS_DEST}/${old}"
+    printf '[Icon Theme]\nName=%s\nComment=Compatibility name of %s\nInherits=%s\nHidden=true\n' \
+        "${old}" "${new}" "${new}" > "${ICONS_DEST}/${old}/index.theme"
+    log "cursor compatibility theme ${old} -> ${new}"
+}
+
 install_cursors() {
     local base="${ASSETS}/themes/Fluent-icon-theme/cursors"
     if [ ! -d "${base}" ]; then
         base="${ASSETS}/themes/Fluent-cursors"
     fi
-    local pair src dest ok=0
-    for pair in "dist:Fluent-cursors" "dist-dark:Fluent-dark-cursors"; do
-        src="${base}/${pair%%:*}"
-        dest="${ICONS_DEST}/${pair##*:}"
-        if [ -d "${src}/cursors" ]; then
-            rm -rf "${dest}"
-            mkdir -p "${dest}"
-            cp -a "${src}/." "${dest}/"
-            log "cursor theme ${pair##*:} installed"
+    local row from name label old ok=0
+    # "upstream dir : Lindos name : label : old name"
+    for row in "dist:Lindos-Cursors:Lindos Cursors:Fluent-cursors" "dist-dark:Lindos-Cursors-Dark:Lindos Cursors (Dark):Fluent-dark-cursors"; do
+        IFS=: read -r from name label old <<< "${row}"
+        if [ -d "${base}/${from}/cursors" ]; then
+            rm -rf "${ICONS_DEST:?}/${name}"
+            mkdir -p "${ICONS_DEST}/${name}"
+            cp -a "${base}/${from}/." "${ICONS_DEST}/${name}/"
+            write_cursor_index "${ICONS_DEST}/${name}" "${label}"
+            write_cursor_alias "${old}" "${name}"
+            log "cursor theme ${name} installed"
             ok=$((ok + 1))
         fi
     done
     if [ "${ok}" -eq 0 ] && [ -f "${base}/install.sh" ]; then
-        # prebuilt dist/ missing: try the upstream installer (needs xcursorgen for build.sh)
+        # prebuilt dist/ missing: try the upstream installer (needs xcursorgen for build.sh); it installs
+        # under upstream's names, which are then renamed
         if bash "${base}/install.sh" >/tmp/fluent-cursors.log 2>&1; then
-            ok=1
+            for row in "Lindos-Cursors:Lindos Cursors:Fluent-cursors" "Lindos-Cursors-Dark:Lindos Cursors (Dark):Fluent-dark-cursors"; do
+                IFS=: read -r name label old <<< "${row}"
+                if [ -d "${ICONS_DEST}/${old}/cursors" ]; then
+                    rm -rf "${ICONS_DEST:?}/${name}"
+                    mv "${ICONS_DEST}/${old}" "${ICONS_DEST}/${name}"
+                    write_cursor_index "${ICONS_DEST}/${name}" "${label}"
+                    write_cursor_alias "${old}" "${name}"
+                    ok=$((ok + 1))
+                fi
+            done
         fi
     fi
     if [ "${ok}" -eq 0 ]; then
-        warn "Fluent cursors not installed (missing ${base}/dist*); xsettings falls back to the default cursor"
+        warn "Lindos cursors not installed (missing ${base}/dist*); xsettings falls back to the default cursor"
     fi
+}
+
+# scrub_theme_names - the Fluent install scripts leave upstream's display names (Name=, Comment=) in
+# index.theme; the theme pickers show the Lindos names.  Licence files stay where they are.
+scrub_theme_names() {
+    local d idx name
+    for d in "${THEMES_DEST}/${THEME_NAME}"-* "${ICONS_DEST}/${THEME_NAME}" "${ICONS_DEST}/${THEME_NAME}"-*; do
+        [ -d "${d}" ] || continue
+        idx="${d}/index.theme"
+        [ -f "${idx}" ] || continue
+        name="$(basename "${d}")"
+        sed -i -E "0,/^Name=.*/s//Name=${name}/" "${idx}"
+        sed -i -E '/^Comment=/s/Fluent/Lindos/g' "${idx}"
+    done
+}
+
+# install_icon_aliases - the base's update / driver / store tools open windows with their own icon names;
+# the Lindos icon theme answers to them with Lindos artwork (lindos-desktop ships the SVGs in hicolor)
+install_icon_aliases() {
+    local hicolor="${HICOLOR_DEST:-/usr/share/icons/hicolor}"
+    local pair from to theme sub dir n=0
+    for pair in mintupdate:lindos-update mintsources:lindos-update mintdrivers:lindos-drivers \
+                mintinstall:lindos-store mintreport:lindos-settings mintlocale:lindos-settings; do
+        from="${pair%%:*}"
+        to="${pair##*:}"
+        if [ ! -f "${hicolor}/scalable/apps/${to}.svg" ]; then
+            warn "icon alias ${from}: ${hicolor}/scalable/apps/${to}.svg missing (lindos-desktop not installed?)"
+            continue
+        fi
+        for theme in "${THEME_NAME}" "${THEME_NAME}-dark" "${THEME_NAME}-light"; do
+            for sub in scalable/apps apps/scalable; do
+                dir="${ICONS_DEST}/${theme}/${sub}"
+                [ -d "${dir}" ] || continue
+                ln -sf "${hicolor}/scalable/apps/${to}.svg" "${dir}/${from}.svg"
+                n=$((n + 1))
+            done
+        done
+    done
+    log "icon aliases: ${n} link(s)"
 }
 
 install_fonts() {
@@ -526,6 +600,8 @@ install_fonts() {
 install_gtk_theme
 install_xfwm_themes
 install_icon_theme
+scrub_theme_names
+install_icon_aliases
 install_cursors
 install_fonts
 
@@ -546,7 +622,7 @@ write_licenses() {
 | Asset | Upstream | Licence | Used as |
 |---|---|---|---|
 | Fluent-gtk-theme | https://github.com/vinceliuice/Fluent-gtk-theme | GPL-3.0 | GTK 2/3/4 + xfwm4 themes `Lindos-Dark` / `Lindos-Light` |
-| Fluent-icon-theme (+ cursors) | https://github.com/vinceliuice/Fluent-icon-theme | GPL-3.0 | icon theme `Lindos`, `Lindos-dark`; cursors `Fluent-cursors`, `Fluent-dark-cursors` |
+| Fluent-icon-theme (+ cursors) | https://github.com/vinceliuice/Fluent-icon-theme | GPL-3.0 | icon theme `Lindos`, `Lindos-dark`; cursors `Lindos-Cursors`, `Lindos-Cursors-Dark` |
 | Selawik | https://github.com/microsoft/Selawik | SIL OFL 1.1 | default UI font, alias target for "Segoe UI" |
 | Inter | https://github.com/rsms/inter | SIL OFL 1.1 | fallback UI font |
 

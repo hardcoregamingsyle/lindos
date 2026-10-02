@@ -12,10 +12,14 @@
 #      deliberately NOT disabled here — it is cheap when idle and laptops need
 #      it (Bluetooth headphones/mice); only Lite mode's own tune.d/lite.conf
 #      turns it off (lindos-tune apply --mode lite), see docs/RAM-BUDGET.md.
-#    * mintwelcome is KEPT as a package (Mint's metapackages depend on it) but
-#      never shown: its autostart is hidden here, by lindos-tune's base tune and
-#      by lindos-desktop, and its menu entry by lindos-desktop's Mint sweep
-#      (build/chroot/77-mint-sweep.sh) — Lindos Setup is the welcome experience.
+#    * before anything is purged, everything Mint's mint-meta-* metapackages depend on
+#      is marked manual (lib.sh mark_meta_deps_manual): purging hexchat or rhythmbox
+#      takes the metapackage along, and a plain autoremove would then dismantle
+#      the desktop.  Mint's own apps and artwork are removed later, through the
+#      guarded and simulated purge of build/chroot/76-mint-purge.sh.
+#    * mintwelcome's autostart is hidden here (76 purges the package; lindos-tune and
+#      lindos-desktop's Mint sweep hide it too should the purge be skipped) -
+#      Lindos Setup is the welcome experience.
 #    * never touches network/printing basics.
 #  The list and the estimated savings live in docs/RAM-BUDGET.md.
 # ============================================================================
@@ -28,11 +32,14 @@ hook_begin "debloat"
 : "${DEBLOAT_PURGE:=hexchat rhythmbox hypnotix onboard gnome-calendar}"
 : "${DEBLOAT_DISABLE_SERVICES:=ModemManager.service apport.service whoopsie.service kerneloops.service brltty.service speech-dispatcher.service NetworkManager-wait-online.service}"
 
-# Safety net: refuse to purge anything from this list even if config says so.
+# Safety net: refuse to purge anything from this list even if config says so.  The mint* tools are the
+# interim update/store/driver GUIs (no Lindos replacement yet) and the chain Mint's Firefox pre-depends on;
+# the rest of Mint's apps go through 76-mint-purge.sh, not through this list.
 PROTECTED="network-manager network-manager-gnome cups cups-browsed system-config-printer avahi-daemon \
 xfce4-panel xfwm4 xfdesktop4 xfce4-session lightdm slick-greeter thunar firefox casper ubiquity \
 ubiquity-frontend-gtk ubiquity-casper linux-image-generic grub-efi-amd64-signed grub-pc shim-signed \
-mintinstall mintupdate mintdrivers mintwelcome thunderbird warpinator simple-scan celluloid drawing"
+mintinstall mintupdate mintdrivers mintsources mintreport mintsystem ubuntu-system-adjustments linuxmint-keyring \
+thunderbird simple-scan drawing"
 
 read -r -a PROTECTED_LIST <<< "${PROTECTED}"
 read -r -a PURGE_LIST <<< "${DEBLOAT_PURGE}"
@@ -49,6 +56,9 @@ is_protected() {
 # ---------------------------------------------------------------------------
 # 1. Purge list
 # ---------------------------------------------------------------------------
+# Keep what the mint-meta-* packages pulled in: purging hexchat/rhythmbox below drags the metapackage out.
+mark_meta_deps_manual || warn "could not mark the metapackage dependencies manual (continuing)"
+
 purged=0
 for pkg in "${PURGE_LIST[@]}"; do
     if is_protected "${pkg}"; then
@@ -112,8 +122,8 @@ hide_autostart() {
         log "hidden autostart: ${name}"
     fi
 }
-# Mint Welcome is replaced by lindos-setup (the first-run gate); lindos-tune and
-# lindos-desktop's Mint sweep hide it as well, so a missing file here is fine.
+# Mint Welcome is replaced by lindos-setup (the first-run gate); 76-mint-purge.sh removes the package,
+# lindos-tune and lindos-desktop's Mint sweep hide it as well, so a missing file here is fine.
 # Accessibility (orca) and input-method (im-launch) autostarts are deliberately
 # left alone.
 hide_autostart "mintwelcome"

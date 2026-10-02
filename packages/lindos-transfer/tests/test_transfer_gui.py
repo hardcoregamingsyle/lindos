@@ -635,3 +635,17 @@ def test_run_app_returns_1_when_lindos_transfer_is_not_installed(monkeypatch: py
     cli = gui.TransferCli("lindos-transfer", which=lambda _n: None)
     assert cli.available() is False
     assert gui.run_app(cli=cli) == 1
+
+
+def test_not_possible_summary_says_yet_only_when_the_note_does() -> None:
+    """Anti-cheat games read 'not supported ... yet'; the Xbox app (Store licensing) never gets 'yet' (SPEC 0.1)."""
+    game = {"actions": [{"type": "not_possible", "id": "valorant", "label": "VALORANT",
+                         "note": "Not supported on Lindos yet - up to its publisher, no date. See lindos-game route"}]}
+    xbox = {"actions": [{"type": "not_possible", "id": "xbox-app", "label": "Xbox app",
+                         "note": "Not supported on Linux: Microsoft Store licensing."}]}
+    bare = {"actions": [{"type": "not_possible", "id": "x", "label": "X"}]}
+    assert gui.app_action_summary(game) == "VALORANT - Not supported on Lindos yet (see the game routes in Lindos Settings > Gaming)"
+    for app in (xbox, bare):
+        text = gui.app_action_summary(app)
+        assert "yet" not in text.lower() and "Not supported on Linux" in text, text
+    assert "cannot run" not in gui.action_type_text("not_possible").lower()

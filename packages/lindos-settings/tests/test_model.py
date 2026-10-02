@@ -446,7 +446,10 @@ def test_normalize_game_route():
     assert model.normalize_game_route({"recommended": 99, "routes": []})["recommended"] == 0
     assert model.normalize_game_route(None) == {
         "title": "", "id": "", "status": "", "anticheat": "", "region": "unknown",
-        "routes": [], "recommended": 0, "notes": []}
+        "routes": [], "recommended": 0, "notes": [], "disclaimer": None}
+    dis = {"badge": "Not supported yet", "short": "s", "cause": "c"}
+    assert model.normalize_game_route({"disclaimer": dis})["disclaimer"] == dis
+    assert model.normalize_game_route({"disclaimer": "junk"})["disclaimer"] is None
 
 
 def test_normalize_dualboot_status_and_summary():
@@ -748,3 +751,148 @@ def test_gaming_page_builds_needs_windows_section(tmp_path, monkeypatch):
     assert p.region_card is not None
     assert p.needs_windows_section is not None
     p.on_show()
+
+
+def test_compat_disclaimer_parsing_and_kind_passthrough():
+    data = {"disclaimer": {"badge": "Not supported yet", "short": "s", "long": "l", "via": "v", "kinds": {"a": "b"}},
+            "entries": [{"game": "Valorant", "status": "not_possible", "unsupported_kind": "no-linux-version"},
+                        {"game": "Roblox", "status": "works"}]}
+    assert model.parse_compat_disclaimer(data) == {"badge": "Not supported yet", "short": "s", "long": "l",
+                                                   "via": "v", "kinds": {"a": "b"}}
+    assert model.parse_compat_disclaimer({"entries": []}) == {}
+    assert model.parse_compat_disclaimer(None) == {}
+    rows = {e["name"]: e for e in model.parse_compat_matrix(data)}
+    assert rows["Valorant"]["kind"] == "no-linux-version" and rows["Valorant"]["status"] == "not-possible"
+    assert rows["Roblox"]["kind"] == ""
+    assert model.BADGE_NOT_SUPPORTED_YET == "not-supported-yet"
+
+
+def test_backend_compat_disclaimer_reads_the_shipped_matrix(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    b = be.Backend()
+    assert b.compat_disclaimer() == {}                       # no matrix installed: honest empty, no crash
+    dest = tmp_path / "root" / "usr" / "share" / "lindos" / "compat-matrix.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps({"disclaimer": {"badge": "Not supported yet", "short": "s"}, "entries": []}),
+                    encoding="utf-8")
+    assert b.compat_disclaimer()["badge"] == "Not supported yet"
+
+
+# --------------------------------------------------------------------------- "Not supported yet" (SPEC 0.1)
+_SHIPPED_MATRIX = os.path.normpath(os.path.join(
+    HERE, "..", "..", "lindos-gaming", "root", "usr", "share", "lindos", "compat-matrix.json"))
+
+
+def test_shipped_matrix_disclaimer_reaches_settings_intact():
+    if not os.path.isfile(_SHIPPED_MATRIX):
+        pytest.skip("lindos-gaming not present in this checkout")
+    with open(_SHIPPED_MATRIX, encoding="utf-8") as fh:
+        data = json.load(fh)
+    dis = model.parse_compat_disclaimer(data)
+    assert dis["badge"] == "Not supported yet" and dis["long"] == data["disclaimer"]["long"]
+    assert dis["short"] == data["disclaimer"]["short"] and set(dis["kinds"]) == {"no-linux-version", "publisher-disabled"}
+    rows = model.parse_compat_matrix(data)
+    tagged = [r["name"] for r in rows if r["kind"]]
+    assert len(tagged) == 14 and all(r["status"] == "not-possible" for r in rows if r["kind"])
+    # the Xbox app is blocked by Store licensing, not an anti-cheat: it keeps a plain "Not possible" badge
+    assert next(r for r in rows if r["name"] == "Xbox app / PC Game Pass")["kind"] == ""
+
+
+def test_anticheat_text_pairs_not_supported_yet_with_the_publisher():
+    low = model.ANTICHEAT_TEXT.lower()
+    assert "not supported on lindos yet" in low and "publishers" in low and "cannot promise when" in low
+    for phrase in ("coming soon", "will be supported", "will be coming"):
+        assert phrase not in low
+
+
+def test_not_supported_yet_badge_has_a_css_rule_and_the_page_is_searchable():
+    css = open(os.path.join(PKG_ROOT, "usr", "lib", "lindos-settings", "ui", "settings.css"), encoding="utf-8").read()
+    assert ".badge-" + model.BADGE_NOT_SUPPORTED_YET in css
+    gaming = model.pages_by_id(model.builtin_pages())["gaming"]
+    assert "not supported yet" in gaming.keywords
+    assert "gaming" in model.page_ids(model.filter_pages(model.builtin_pages(), "not supported yet"))
+
+
+def test_badge_takes_a_text_override_and_a_tooltip(monkeypatch):
+    import types
+
+    from lindos_settings import widgets
+
+    class FakeLabel:
+        def __init__(self, label=""):
+            self.label, self.tip, self.classes = label, None, ()
+
+        def set_valign(self, _v):
+            pass
+
+        def set_tooltip_text(self, tip):
+            self.tip = tip
+
+    monkeypatch.setattr(widgets, "Gtk", types.SimpleNamespace(Label=FakeLabel, Align=types.SimpleNamespace(CENTER=0)))
+    monkeypatch.setattr(widgets, "add_class", lambda w, *c: setattr(w, "classes", c))
+    lbl = widgets.badge("not-supported-yet", "Not supported yet", "publisher decides")
+    assert (lbl.label, lbl.tip) == ("Not supported yet", "publisher decides")
+    assert "badge-not-supported-yet" in lbl.classes
+    assert widgets.badge("not-possible").label == "Not possible"          # other users of badge() are unchanged
+    assert widgets.badge("works").tip is None
+
+
+class _Rec:
+    """Records the widget constructors the Gaming page calls (no GTK needed)."""
+
+    def __init__(self, *args, **kwargs):
+        self.args, self.controls = args, []
+
+    def set_control(self, ctl):
+        self.controls.append(ctl)
+
+    add_control = set_control
+
+
+class _Section:
+    def __init__(self):
+        self.items = []
+
+    def clear(self):
+        self.items = []
+
+    def add(self, item):
+        self.items.append(item)
+
+    def show_all(self):
+        pass
+
+
+def test_gaming_page_marks_only_disclaimed_games_and_never_shows_the_badge_bare(tmp_path, monkeypatch):
+    from lindos_settings import backend as be
+    from lindos_settings.pages import gaming
+
+    monkeypatch.setenv("LINDOS_HOME", str(tmp_path))
+    monkeypatch.setenv("LINDOS_ROOT", str(tmp_path / "root"))
+    matrix = {"disclaimer": {"badge": "Not supported yet", "short": "publisher decides, no date", "long": "LONG TEXT"},
+              "entries": [{"game": "Valorant", "status": "not_possible", "unsupported_kind": "no-linux-version"},
+                          {"game": "Xbox app / PC Game Pass", "status": "not_possible"},
+                          {"game": "Elden Ring", "status": "works"}]}
+    dest = tmp_path / "root" / "usr" / "share" / "lindos" / "compat-matrix.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps(matrix), encoding="utf-8")
+
+    monkeypatch.setattr(gaming, "run_async", lambda fn, done=None, name="": done(fn(), None))
+    monkeypatch.setattr(gaming, "Card", _Rec)
+    monkeypatch.setattr(gaming, "InfoCard", _Rec)
+    monkeypatch.setattr(gaming, "button", lambda *a, **k: ("button", a))
+    monkeypatch.setattr(gaming, "badge", lambda *a: ("badge",) + a)
+    page = gaming.GamingPage.__new__(gaming.GamingPage)
+    page.backend = be.Backend()
+    page.needs_windows_section = _Section()
+    page._refresh_needs_windows()
+
+    first, valorant, xbox = page.needs_windows_section.items
+    assert first.args[:2] == ("Not supported yet", "LONG TEXT")          # the disclaimer paragraph leads the section
+    assert valorant.args[0] == "Valorant" and xbox.args[0] == "Xbox app / PC Game Pass"
+    # the badge carries the publisher-decides sentence as its tooltip; the Xbox app gets none
+    assert ("badge", "not-supported-yet", "Not supported yet", "publisher decides, no date") in valorant.controls
+    assert not any(isinstance(c, tuple) and c[:1] == ("badge",) for c in xbox.controls)

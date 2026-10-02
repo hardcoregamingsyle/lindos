@@ -1,0 +1,22 @@
+Package: lindos-archive-keyring
+Version: 1.0.0
+Section: misc
+Priority: optional
+Architecture: all
+Maintainer: Lindos Team <team@lindos.dev>
+Homepage: https://lindos.dev
+Description: Lindos package repository source and signing key
+ Ships what apt needs to fetch Lindos's own updates: the public signing keyring
+ (/usr/share/keyrings/lindos-archive-keyring.gpg) and the repository source
+ (/etc/apt/sources.list.d/lindos.sources). The source is a configuration file
+ and the only place the repository address and suites are written, so the
+ repository can move to another server by a package update.
+ .
+ The source stays switched off ("Enabled: no") until a real signing key and a
+ real server exist. A build never ships a placeholder key and refuses to ship
+ a switched-on source without a real, pinned key. Only the public key is
+ included; the private key is never on a Lindos system.
+ .
+ It depends on nothing: it ships two files and a small clean-up, so it can be
+ installed on its own and in any order without ever leaving apt with an unmet
+ dependency.

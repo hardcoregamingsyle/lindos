@@ -173,9 +173,13 @@ def test_helper_dry_run_system_upgrade_with_kernel_allowed(core_env, run_cli) ->
 
 
 def test_helper_dry_run_cleanup_old_packages(core_env, run_cli) -> None:
+    """The bare `apt-get autoremove --purge -y` is gone: cleanup only simulates first (the safe version is
+    covered in test_helper_apt_upgrade.py)."""
     proc = run_cli("lindos-helper", "cleanup-old-packages", "{}")
     assert proc.returncode == 0, (proc.stdout, proc.stderr)
-    assert "apt-get autoremove --purge -y -q" in _unquoted(proc.stdout)
+    out = _unquoted(proc.stdout)
+    assert "apt-get -q -s autoremove --purge" in out
+    assert "autoremove --purge -y" not in out
 
 
 def test_helper_dry_run_install_local_debs(core_env, run_cli, tmp_path: Path) -> None:
@@ -208,7 +212,7 @@ def test_helper_update_actions_appear_in_list(core_env, run_cli) -> None:
     lst = run_cli("lindos-helper", "--list")
     assert lst.returncode == 0
     actions = lst.stdout.split()
-    for action in ("apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs"):
+    for action in ("apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs", "apt-full-upgrade"):
         assert action in actions
 
 

@@ -12,7 +12,8 @@
 #        the menu (Lindos Setup / Lindos Store replace them), Mint Welcome hidden
 #        from autostart, display fields of /etc/lsb-release, /etc/linuxmint/info
 #        and /etc/casper.conf, Firefox's Linux Mint start page
-#    /etc/default/grub.d/49-lindos-distributor.cfg       boot menu title on the installed system
+#    /etc/default/grub.d/60-lindos-distributor.cfg       boot menu title on the installed system (sorts after
+#        Mint's 50_linuxmint.cfg, which would otherwise win)
 #    /etc/skel/.config/autostart/mintwelcome.desktop   per-user off switch
 #
 #  This hook does what only a build can do:
@@ -20,7 +21,9 @@
 #    2. check that Mint Welcome really is out of autostart (any file name)
 #    3. purge the Mint wallpaper packs (mint-backgrounds-*) — only when apt
 #       says that removes nothing else (a metapackage that depends on them
-#       would take the desktop along; then they stay and are listed)
+#       would take the desktop along; then they stay and are listed).  Normally
+#       76-mint-purge.sh has already removed them with the rest of the artwork
+#       stack; this is the fallback when that group was skipped
 #    4. audit: list, in out/hooks/77-mint-sweep.log, everything that still says
 #       Linux Mint, so a real boot can be checked against it
 #
@@ -86,8 +89,8 @@ step_welcome_check() {
     if [ ! -f "${ROOT}/etc/skel/.config/autostart/mintwelcome.desktop" ]; then
         warn "/etc/skel/.config/autostart/mintwelcome.desktop missing (lindos-desktop too old?) — new users rely on the system-wide hide only"
     fi
-    if [ ! -f "${ROOT}/etc/default/grub.d/49-lindos-distributor.cfg" ]; then
-        warn "/etc/default/grub.d/49-lindos-distributor.cfg missing — the installed system's boot menu keeps the base's title"
+    if [ ! -f "${ROOT}/etc/default/grub.d/60-lindos-distributor.cfg" ]; then
+        warn "/etc/default/grub.d/60-lindos-distributor.cfg missing — the installed system's boot menu keeps the base's title"
     fi
     return 0
 }

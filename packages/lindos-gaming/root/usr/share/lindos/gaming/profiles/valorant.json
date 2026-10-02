@@ -9,6 +9,6 @@
   "env": {},
   "dxvk_async": false,
   "mangohud": false,
-  "notes": "Documentation only — Valorant will NOT run on Lindos or any Linux. Riot Vanguard is a Windows kernel-mode anti-cheat driver with no Linux build, and Riot has stated it will not support Linux. This profile exists purely to explain that and to fake nothing: it sets no Proton tricks, no environment overrides, no attestation/TPM/HWID spoofing (such a thing cannot produce hardware-rooted signatures Riot would accept and only gets the account hardware-banned). There is no workaround; only Riot can change this. See https://areweanticheatyet.com/game/valorant .",
+  "notes": "Documentation only — Valorant does not run on Lindos or any Linux today, so it is not supported on Lindos yet: that is up to its publisher, Riot, and no date can be promised. Riot Vanguard is a Windows kernel-mode anti-cheat driver with no Linux build, and Riot has stated it will not support Linux. This profile exists purely to explain that and to fake nothing: it sets no Proton tricks, no environment overrides, no attestation/TPM/HWID spoofing (such a thing cannot produce hardware-rooted signatures Riot would accept and only gets the account hardware-banned). There is no workaround; only Riot can change this. See https://areweanticheatyet.com/game/valorant .",
   "status": "not_possible"
 }

@@ -1,18 +1,96 @@
 /*
- * Lindos-Setup -- Windows-Setup-style accents for the live installer (Ubiquity).
+ * Lindos-Setup -- the look of the Lindos installer and of the first-boot account wizard (Ubiquity).
  *
- * Installed to /usr/share/themes/Lindos-Setup/ by build/chroot/78-installer-brand.sh and used
- * only by the "Install Lindos" launcher (GTK_THEME=Lindos-Setup, set inside its sh -c).  It is
- * Lindos-Dark plus colour/button rules; no sizes or paddings that could change the layout.
+ * Installed to /usr/share/themes/Lindos-Setup/ by build/chroot/78-installer-brand.sh (and by 79-installer-flow.sh when
+ * 78 did not).  Used through GTK_THEME=Lindos-Setup:
+ *   * the "Install Lindos" launcher of the live desktop (set inside its sh -c),
+ *   * ubiquity.service (the "Install Lindos" boot entries: no desktop session, ubiquity-dm starts its own X server) -
+ *     a systemd drop-in written into the image by 79-installer-flow.sh,
+ *   * oem-config.service (the first-boot account wizard) - a drop-in written by finalize.sh.
+ * GTK honours GTK_THEME over xsettings and settings.ini.  Ubiquity's window manager is metacity (the base image has it,
+ * and ubiquity-dm prefers it to xfwm4): a GTK program too, so the window frame follows the wm_* colours below.
  *
- * Palette (SPEC section 2, same as the first-boot Setup): dark #202020, card #2B2B2B,
- * accent #60CDFF.  Hooks are the CSS classes Ubiquity itself puts on its widgets:
- * .ubiquity-menubar (title bar, step dots row, details expander) and .ubiquity-next (Continue).
+ * It is Lindos-Dark (Fluent) plus a base layer that keeps the pages dark and readable even where Lindos-Dark is missing,
+ * and colour/button rules - no sizes or paddings that could change Ubiquity's layout.  79-installer-flow.sh swaps the
+ * @import for GTK's built-in dark Adwaita when the image has no Lindos-Dark.
+ *
+ * Palette (SPEC section 2, the same as the first-boot Setup's oobe.css): dark #202020, card #2B2B2B (hover #323232), accent
+ * #60CDFF, secondary text #C8C8C8.  Hooks are the
+ * CSS classes Ubiquity itself puts on its widgets: .ubiquity-menubar (title bar, step dots row, details expander) and
+ * .ubiquity-next (Continue).
  */
 
 @import url("../../Lindos-Dark/gtk-3.0/gtk.css");
 
 @define-color lindos_accent #60CDFF;
+@define-color lindos_bg #202020;
+@define-color lindos_card #2B2B2B;
+@define-color lindos_card_hover #323232;
+@define-color lindos_line #454545;
+@define-color lindos_dim #C8C8C8;
+
+/* the colour names Adwaita-derived CSS and metacity's frame themes look up */
+@define-color theme_bg_color #202020;
+@define-color theme_fg_color #FFFFFF;
+@define-color theme_base_color #2B2B2B;
+@define-color theme_text_color #FFFFFF;
+@define-color theme_selected_bg_color #60CDFF;
+@define-color theme_selected_fg_color #000000;
+@define-color theme_unfocused_bg_color #202020;
+@define-color theme_unfocused_fg_color #9A9A9A;
+@define-color theme_unfocused_base_color #2B2B2B;
+@define-color theme_unfocused_text_color #FFFFFF;
+@define-color theme_unfocused_selected_bg_color #60CDFF;
+@define-color theme_unfocused_selected_fg_color #000000;
+@define-color insensitive_bg_color #2B2B2B;
+@define-color insensitive_fg_color #6F6F6F;
+@define-color insensitive_base_color #2B2B2B;
+@define-color borders #454545;
+@define-color unfocused_borders #3A3A3A;
+@define-color wm_title #FFFFFF;
+@define-color wm_unfocused_title #9A9A9A;
+@define-color wm_bg_a #2B2B2B;
+@define-color wm_bg_b #202020;
+@define-color wm_shadow alpha(black, 0.5);
+@define-color wm_border #3A3A3A;
+@define-color wm_border_unfocused #3A3A3A;
+@define-color wm_highlight alpha(white, 0.06);
+@define-color wm_button_hover_color_a #454545;
+@define-color wm_button_hover_color_b #3A3A3A;
+@define-color wm_button_active_color_a #2B2B2B;
+@define-color wm_button_active_color_b #202020;
+@define-color wm_button_border_color #454545;
+@define-color wm_icon_bg_color #FFFFFF;
+@define-color wm_icon_unfocused_bg_color #9A9A9A;
+@define-color wm_icon_hover_bg_color #FFFFFF;
+@define-color wm_icon_active_bg_color #60CDFF;
+
+/* the Windows 11 typeface of the desktop, then what is on every PC */
+* {
+    font-family: "Selawik", "Segoe UI", "Inter", "Noto Sans", "DejaVu Sans", sans-serif;
+}
+
+/* pages and dialogs */
+window,
+dialog,
+.background {
+    background-color: @lindos_bg;
+    color: @theme_fg_color;
+}
+
+/* (no rule for plain 'label': a label takes the colour of what it sits in - white on the pages, black on the accent
+   Continue button; a rule of its own would override that) */
+.dim-label {
+    color: @lindos_dim;
+}
+
+selection,
+label selection,
+entry selection,
+textview text selection {
+    background-color: @lindos_accent;
+    color: #000000;
+}
 
 /* page title strip and the row that holds the step dots */
 .ubiquity-menubar {
@@ -23,6 +101,105 @@
 
 .ubiquity-menubar label {
     color: #FFFFFF;
+}
+
+/* lists (the language list, the time-zone and keyboard lists), text fields */
+.view,
+iconview,
+treeview.view,
+textview,
+textview text,
+list,
+row {
+    background-color: @lindos_card;
+    background-image: none;
+    color: @theme_fg_color;
+}
+
+.view:hover,
+iconview:hover,
+treeview.view:hover,
+row:hover {
+    background-color: @lindos_card_hover;
+}
+
+.view:selected,
+.view:selected:focus,
+iconview:selected,
+treeview.view:selected,
+treeview.view:selected:focus,
+.cell:selected,
+row:selected,
+row:selected:focus {
+    background-color: @lindos_accent;
+    color: #000000;
+}
+
+entry,
+spinbutton {
+    background-image: none;
+    background-color: @lindos_card;
+    color: @theme_fg_color;
+    border: 1px solid @lindos_line;
+    border-radius: 4px;
+    box-shadow: none;
+}
+
+entry:focus,
+spinbutton:focus {
+    border-color: @lindos_accent;
+    box-shadow: inset 0 -2px 0 0 @lindos_accent;
+}
+
+entry:disabled,
+spinbutton:disabled {
+    color: #6F6F6F;
+}
+
+scrolledwindow.frame,
+frame > border {
+    border-color: @lindos_line;
+}
+
+scrollbar {
+    background-color: transparent;
+}
+
+scrollbar slider {
+    background-color: #6F6F6F;
+}
+
+scrollbar slider:hover {
+    background-color: #8A8A8A;
+}
+
+separator {
+    background-color: #3A3A3A;
+}
+
+/* buttons: Back / the small ones; Continue is the accent rule below */
+button {
+    background-image: none;
+    background-color: #333333;
+    color: @theme_fg_color;
+    border: 1px solid @lindos_line;
+    border-radius: 4px;
+    text-shadow: none;
+    box-shadow: none;
+}
+
+button:hover {
+    background-color: #3D3D3D;
+}
+
+button:active,
+button:checked {
+    background-color: #2B2B2B;
+}
+
+button:disabled {
+    background-color: #2B2B2B;
+    color: #6F6F6F;
 }
 
 /* Continue / Install: the Windows Setup "Next" button */
@@ -56,6 +233,68 @@ button.suggested-action:disabled {
     background-color: #4A4A4A;
     border-color: #4A4A4A;
     color: #8A8A8A;
+}
+
+/* check boxes and radio buttons ("Log in automatically", "what to install") */
+checkbutton,
+radiobutton {
+    color: @theme_fg_color;
+}
+
+check,
+radio {
+    background-image: none;
+    background-color: @lindos_card;
+    color: #000000;
+    border: 1px solid #8A8A8A;
+    box-shadow: none;
+}
+
+check:checked,
+radio:checked,
+check:indeterminate,
+radio:indeterminate {
+    background-color: @lindos_accent;
+    border-color: @lindos_accent;
+    color: #000000;
+}
+
+/* menus, pop-overs, tool tips, notices */
+menu,
+.menu,
+.popup,
+popover,
+tooltip {
+    background-color: @lindos_card;
+    color: @theme_fg_color;
+    border: 1px solid @lindos_line;
+}
+
+menuitem:hover {
+    background-color: #3D3D3D;
+}
+
+infobar {
+    background-color: #333333;
+    color: @theme_fg_color;
+}
+
+infobar.warning {
+    background-color: #433519;
+}
+
+infobar.error {
+    background-color: #442726;
+}
+
+/* a client-side title bar, should a window ever draw one */
+headerbar,
+.titlebar {
+    background-image: none;
+    background-color: @lindos_card;
+    color: @theme_fg_color;
+    border-color: #3A3A3A;
+    box-shadow: none;
 }
 
 /* copy progress bar and the step dots (Ubiquity draws the dots as tiny progress bars) */

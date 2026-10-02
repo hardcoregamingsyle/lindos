@@ -1,0 +1,83 @@
+# Lindos default applications: the apps that replace Mint's xed / xviewer / pix / xreader / celluloid.
+# Merged into /etc/xdg/mimeapps.list by lindos-desktop's postinst (/usr/libexec/lindos/merge-mimeapps.py): a default
+# the administrator (or lindos-compat / Lindos Setup) already set is never replaced, users can change every entry in
+# Settings > Default apps.  /etc/xdg/mimeapps.list outranks the base's /usr/share/applications/mimeapps.list, which
+# Mint's mint-adjust rewrites at every boot.  Each value lists the current desktop id first and the older one after
+# it: the first installed app wins.
+#   text editor  Mousepad   image viewer  Ristretto   PDF / documents  Evince   audio and video  VLC
+[Default Applications]
+text/plain=org.xfce.mousepad.desktop;mousepad.desktop;
+text/markdown=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-markdown=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-log=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-readme=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-python=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-csrc=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-chdr=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-c++src=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-c++hdr=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-java=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-makefile=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-diff=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-patch=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-sql=org.xfce.mousepad.desktop;mousepad.desktop;
+text/x-tex=org.xfce.mousepad.desktop;mousepad.desktop;
+application/x-shellscript=org.xfce.mousepad.desktop;mousepad.desktop;
+application/json=org.xfce.mousepad.desktop;mousepad.desktop;
+application/x-yaml=org.xfce.mousepad.desktop;mousepad.desktop;
+application/x-desktop=org.xfce.mousepad.desktop;mousepad.desktop;
+image/png=org.xfce.ristretto.desktop;ristretto.desktop;
+image/jpeg=org.xfce.ristretto.desktop;ristretto.desktop;
+image/gif=org.xfce.ristretto.desktop;ristretto.desktop;
+image/bmp=org.xfce.ristretto.desktop;ristretto.desktop;
+image/webp=org.xfce.ristretto.desktop;ristretto.desktop;
+image/tiff=org.xfce.ristretto.desktop;ristretto.desktop;
+image/svg+xml=org.xfce.ristretto.desktop;ristretto.desktop;
+image/avif=org.xfce.ristretto.desktop;ristretto.desktop;
+image/heif=org.xfce.ristretto.desktop;ristretto.desktop;
+image/x-icon=org.xfce.ristretto.desktop;ristretto.desktop;
+image/vnd.microsoft.icon=org.xfce.ristretto.desktop;ristretto.desktop;
+image/x-tga=org.xfce.ristretto.desktop;ristretto.desktop;
+application/pdf=org.gnome.Evince.desktop;evince.desktop;
+application/x-pdf=org.gnome.Evince.desktop;evince.desktop;
+application/postscript=org.gnome.Evince.desktop;evince.desktop;
+application/x-cbz=org.gnome.Evince.desktop;evince.desktop;
+application/x-cbr=org.gnome.Evince.desktop;evince.desktop;
+application/x-cb7=org.gnome.Evince.desktop;evince.desktop;
+application/x-cbt=org.gnome.Evince.desktop;evince.desktop;
+image/vnd.djvu=org.gnome.Evince.desktop;evince.desktop;
+application/x-dvi=org.gnome.Evince.desktop;evince.desktop;
+application/oxps=org.gnome.Evince.desktop;evince.desktop;
+application/vnd.ms-xpsdocument=org.gnome.Evince.desktop;evince.desktop;
+video/mp4=vlc.desktop;
+video/x-matroska=vlc.desktop;
+video/webm=vlc.desktop;
+video/mpeg=vlc.desktop;
+video/quicktime=vlc.desktop;
+video/x-msvideo=vlc.desktop;
+video/x-flv=vlc.desktop;
+video/ogg=vlc.desktop;
+video/x-ms-wmv=vlc.desktop;
+video/3gpp=vlc.desktop;
+video/mp2t=vlc.desktop;
+audio/mpeg=vlc.desktop;
+audio/x-mp3=vlc.desktop;
+audio/ogg=vlc.desktop;
+audio/flac=vlc.desktop;
+audio/x-flac=vlc.desktop;
+audio/mp4=vlc.desktop;
+audio/x-wav=vlc.desktop;
+audio/aac=vlc.desktop;
+audio/opus=vlc.desktop;
+audio/x-ms-wma=vlc.desktop;
+audio/x-vorbis+ogg=vlc.desktop;
+audio/x-mpegurl=vlc.desktop;
+audio/x-scpls=vlc.desktop;
+
+[Added Associations]
+text/plain=org.xfce.mousepad.desktop;
+image/png=org.xfce.ristretto.desktop;
+image/jpeg=org.xfce.ristretto.desktop;
+application/pdf=org.gnome.Evince.desktop;
+video/mp4=vlc.desktop;
+audio/mpeg=vlc.desktop;

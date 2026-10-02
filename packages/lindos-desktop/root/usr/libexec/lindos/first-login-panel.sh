@@ -11,10 +11,14 @@
 #   * if ~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml does not exist and the
 #     mode is not "everyday" (whose layout *is* the /etc/xdg default), copy
 #     /usr/share/lindos/modes/<mode>/panel/xfce4-panel.xml there;
+#   * without xfce4-docklike-plugin (not packaged for Ubuntu 24.04) every layout - everyday
+#     too - is first rewritten by taskbar-fallback.py to xfce4-panel's own task list plus
+#     launchers for the installed pins, so the taskbar always has a window list;
 #   * copy the mode's plugin rc files (whiskermenu-1.rc, docklike-2.rc …) into
 #     ~/.config/xfce4/panel/ when they do not exist yet (pins per mode, SPEC §3);
-#   * write ~/.config/lindos/panel-init.done (mode + date) so this never runs twice; a
-#     later `lindos-mode set` re-applies layouts through xfce4-panel-profiles anyway;
+#   * write ~/.config/lindos/panel-init.done (mode + taskbar kind + date) so this never runs
+#     twice for the same kind of taskbar; a later `lindos-mode set` re-applies layouts
+#     through xfce4-panel-profiles anyway;
 #   * if the panel is somehow already running (session manager without autostart phases)
 #     it is stopped before seeding and started again afterwards.
 #
@@ -32,9 +36,12 @@ STAMP="${CONF_HOME}/lindos/panel-init.done"
 XFCONF_DIR="${CONF_HOME}/xfce4/xfconf/xfce-perchannel-xml"
 PANEL_DIR="${CONF_HOME}/xfce4/panel"
 LOG_FILE="${STATE_HOME}/lindos/first-login-panel.log"
+FALLBACK="${LINDOS_TASKBAR_FALLBACK:-$(dirname "$(readlink -f "$0")")/taskbar-fallback.py}"
 FORCE=0
 DRY_RUN=0
 MODE_OVERRIDE=""
+STAGED=""
+trap '[ -z "${STAGED}" ] || rm -rf "${STAGED}"' EXIT
 
 log() {
     local line
@@ -52,7 +59,7 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --mode) [ $# -ge 2 ] || die "--mode needs an argument"; MODE_OVERRIDE="$2"; shift 2 ;;
         --mode=*) MODE_OVERRIDE="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -86,8 +93,28 @@ effective_mode() {
     printf '%s\n' "${m}"
 }
 
+# "docklike" when xfce4-docklike-plugin is installed, "tasklist" when xfce4-panel's own window list has to stand
+# in for it; "docklike" (the shipped layout) when that cannot be told
+taskbar_kind() {
+    local kind=""
+    if command -v python3 >/dev/null 2>&1 && [ -f "${FALLBACK}" ]; then
+        kind="$(python3 "${FALLBACK}" status 2>/dev/null || true)"
+    fi
+    case "${kind}" in
+        docklike|tasklist) ;;
+        *) kind="docklike" ;;
+    esac
+    printf '%s\n' "${kind}"
+}
+
 main() {
-    if [ "${FORCE}" -eq 0 ] && [ -f "${STAMP}" ]; then
+    local kind stamp_kind=""
+    kind="$(taskbar_kind)"
+    if [ -f "${STAMP}" ]; then
+        stamp_kind="$(sed -n 's/^taskbar=//p' "${STAMP}" | head -n1)"
+        [ -n "${stamp_kind}" ] || stamp_kind="docklike"      # stamps written before the fallback existed
+    fi
+    if [ "${FORCE}" -eq 0 ] && [ -f "${STAMP}" ] && [ "${stamp_kind}" = "${kind}" ]; then
         exit 0
     fi
     local mode
@@ -100,11 +127,22 @@ main() {
     if [ ! -d "${src}" ]; then
         die "no panel layout for mode '${mode}' (${src} missing)"
     fi
+    if [ "${kind}" = "tasklist" ]; then
+        STAGED="$(mktemp -d 2>/dev/null || true)"
+        if [ -n "${STAGED}" ] && python3 "${FALLBACK}" convert "${src}" "${STAGED}" >/dev/null 2>&1; then
+            src="${STAGED}"
+            log "no xfce4-docklike-plugin: the taskbar uses xfce4-panel's task list and launchers"
+        else
+            log "cannot build the task-list layout; keeping the docklike one (tried again at the next login)"
+            kind="docklike"
+        fi
+    fi
 
     # --- what needs seeding? -----------------------------------------------------
     local want_xml=0 rc name
     local -a want_rc=()
-    if [ "${mode}" != "everyday" ] && [ ! -f "${XFCONF_DIR}/xfce4-panel.xml" ] && [ -f "${src}/xfce4-panel.xml" ]; then
+    if { [ "${mode}" != "everyday" ] || [ "${kind}" = "tasklist" ]; } \
+            && [ ! -f "${XFCONF_DIR}/xfce4-panel.xml" ] && [ -f "${src}/xfce4-panel.xml" ]; then
         want_xml=1
     fi
     for rc in "${src}"/*.rc; do
@@ -158,7 +196,7 @@ main() {
 
     if [ "${DRY_RUN}" -eq 0 ]; then
         mkdir -p "$(dirname "${STAMP}")"
-        printf 'mode=%s\ndate=%s\nfiles=%s\n' "${mode}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${copied}" >"${STAMP}"
+        printf 'mode=%s\ntaskbar=%s\ndate=%s\nfiles=%s\n' "${mode}" "${kind}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${copied}" >"${STAMP}"
     fi
     log "done (mode=${mode}, ${copied} file(s) seeded)"
 }

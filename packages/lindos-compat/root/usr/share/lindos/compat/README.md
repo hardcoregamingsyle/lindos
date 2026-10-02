@@ -2,7 +2,9 @@
 
 Windows-program support on Lindos (SPEC §9). Wine/Proton are *translation layers*: no
 virtual machine, near-native speed — but it is not Windows. Anti-cheat titles (Valorant,
-League of Legends, Fortnite, the Windows Roblox client) do not run on any Linux.
+League of Legends, Fortnite) do not run on any Linux today, so they are not supported on
+Lindos yet: that is up to their publishers, and no date is given. The Windows Roblox client
+is blocked on Wine as well; Roblox itself works through Sober.
 
 ## Pieces
 

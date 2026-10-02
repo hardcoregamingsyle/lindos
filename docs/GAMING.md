@@ -4,9 +4,11 @@
 > Wine (Lutris / Bottles) — a translation layer, not Windows. Most single-player titles work at
 > near-native speed. Whether a **multiplayer** game runs is decided by its anti-cheat vendor and
 > the publisher: **Valorant, Fortnite, League of Legends, Apex Legends, Rainbow Six Siege,
-> Destiny 2, PUBG, Rust, Call of Duty, GTA Online, Battlefield do not run on any Linux, including
-> Lindos.** Roblox works through **Sober**, not the Windows client. Minecraft Java is native;
-> Bedrock only via the unofficial `mcpelauncher` (partial). The full, generated list is
+> Destiny 2, PUBG, Rust, Call of Duty, GTA Online, Battlefield do not run on any Linux today,
+> including Lindos**, so Lindos marks them **Not supported yet** — whether that ever changes is up
+> to their publishers, and Lindos gives no date. Roblox works through **Sober**, not the Windows
+> client. Minecraft Java is native; Bedrock only via the unofficial `mcpelauncher` (partial). The
+> full, generated list is
 > [COMPATIBILITY.md](COMPATIBILITY.md); the always-current sources are
 > [ProtonDB](https://www.protondb.com/) and [Are We Anti-Cheat Yet?](https://areweanticheatyet.com/).
 > The full, honest explanation of *why* — and why Lindos ships no anti-cheat spoofer — is in
@@ -148,7 +150,12 @@ generates [COMPATIBILITY.md](COMPATIBILITY.md) from it (CI fails when the docume
 Statuses are a snapshot — a single publisher update can change them; always check ProtonDB and
 Are We Anti-Cheat Yet before buying. Entries that work *because* the publisher enabled EAC/BattlEye
 for Proton (Halo Infinite, Marvel Rivals, Elden Ring, …) carry an `anticheat` note saying so; the
-`not_possible` entries keep the honest reason. [ANTI-CHEAT.md](ANTI-CHEAT.md) is the canonical
+`not_possible` entries keep the honest reason. `not_possible` entries held back by a kernel
+anti-cheat or a publisher's choice also carry `unsupported_kind` (`no-linux-version` |
+`publisher-disabled`) and show the **Not supported yet** badge; the wording of that badge is the
+top-level `disclaimer` object of the same file, read by Settings, `lindos-game` and the document
+generator. A title moves out of `not_possible` only after a maintainer has verified the publisher's
+change and tested it (SPEC-WINDOWS §30.1). [ANTI-CHEAT.md](ANTI-CHEAT.md) is the canonical
 explanation of both columns.
 
 ## 6. Performance: the Lindos kernel, gamescope, DXVK/VKD3D and per-title profiles
@@ -201,8 +208,10 @@ lindos-game shortcut <title> --route cloud|windows [--provider ID] [--region CC]
 lindos-game cloud install geforce-now [--system] [--print] [--json]
 ```
 
-* **`route`** prints (or `--json`s) every honest route for a title: each **cloud** provider that
-  actually carries it, and **restart into Windows** — never the Lindos VM (`type: vm` is always
+* **`route`** prints (or `--json`s) every honest route for a title, starting with the **Not
+  supported yet** line and why, which says the publisher decides and that there is no date
+  (`"disclaimer"` in the JSON, `null` for a title that is not disclaimed): each **cloud** provider that actually carries it, and **restart into Windows** —
+  never the Lindos VM (`type: vm` is always
   `available: false`; kernel-mode anti-cheat blocks virtual machines too, so a VM would only risk a
   hardware ban). Region comes from `--region`, `~/.config/lindos/config.json` `"region"`, the system
   locale (`LC_ALL`/`LANG`) or the timezone (`/etc/timezone`) — **never** IP geolocation. Cloud
@@ -218,7 +227,7 @@ lindos-game cloud install geforce-now [--system] [--print] [--json]
 * **`shortcut`** writes `~/.local/share/applications/lindos-play-<id>-<route>.desktop` (e.g.
   *"Valorant — restarts into Windows"*, *"Fortnite — NVIDIA GeForce NOW"*) that re-runs `lindos-game
   play … --yes` at click time, so it always re-checks region/dual-boot state rather than baking in a
-  stale answer.
+  stale answer. Its comment says the title is not supported on Lindos yet and which route it uses.
 * **`cloud install geforce-now`** installs NVIDIA's own Linux Flatpak (`com.nvidia.geforcenow` from
   NVIDIA's `GeForceNOW` remote, **not Flathub** — Flathub does not carry it). `--system`
   (system-wide, every user) goes through `lindos.helper.install_flatpaks(ids, remote={"name":

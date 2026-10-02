@@ -23,6 +23,9 @@ flow", packages/lindos-installer):
     ``extras.json`` for mode_extras, compat and gaming, the Flatpak app directories, the firmware
     packages for drivers, an ``upgrade`` line in dpkg.log for updates) - a step that swallowed its list
     and recorded "nothing to install" against a non-empty ``extras.json`` fails;
+  * the first-boot account wizard has its Lindos look: the Lindos-Setup skin is on the disk, oem-config.service has a
+    drop-in with GTK_THEME=Lindos-Setup, the window title answer is "Lindos Setup" and the wizard removes the drop-in
+    itself; the installer session's own drop-in is gone (check_wizard_look, HOOK_LEFTOVERS);
   * the answers the image bakes (lindos.seed) had the intended effect on the installed system:
     ``user-setup/allow-password-empty`` is NOT ``true`` in the new debconf database (finalize.sh reset
     it) and the i386 architecture is still enabled in dpkg (Wine and Steam need it);
@@ -550,7 +553,13 @@ HOOK_LEFTOVERS: Tuple[str, ...] = (
     "etc/apt/preferences.d/00lindos-installer.pref",
     "var/cache/lindos-installer",
     "tmp/lindos-oem-debs",
+    "etc/systemd/system/ubiquity.service.d/10-lindos.conf",   # the installer session's GTK_THEME drop-in (79-installer-flow.sh)
 )
+
+# What Ubiquity's own user setup (user-setup-apply: 'mount -t proc' and adduser in a bare chroot, before /run is bound)
+# leaves in the new system's /run.  Harmless - /run is a tmpfs at boot - and tidied by finalize.sh; anything ELSE in it is
+# not Ubiquity's and points at something that wrote into the target outside its mounts.
+RUN_UPSTREAM_LEFTOVERS: Tuple[str, ...] = ("adduser", "mount")
 
 
 def check_leftovers(tree: Tree, pkgs: Mapping[str, Pkg]) -> List[Finding]:
@@ -573,6 +582,14 @@ def check_leftovers(tree: Tree, pkgs: Mapping[str, Pkg]) -> List[Finding]:
     # mount points must be empty directories: a leftover means something wrote into the target while it was not mounted
     for rel in ("proc", "sys", "run", "cdrom"):
         names = tree.listdir(rel)
+        if rel == "run":
+            known = [n for n in names if n in RUN_UPSTREAM_LEFTOVERS]
+            names = [n for n in names if n not in RUN_UPSTREAM_LEFTOVERS]
+            if known and not names:
+                out.append(info("mountpoint-run", "/run holds %s: Ubiquity's own user setup runs mount and adduser in a bare chroot "
+                                                  "(not the installer hook, whose commands see a private tmpfs there); harmless, "
+                                                  "/run is a tmpfs at boot" % ", ".join(known)))
+                continue
         if names:
             out.append(warn("mountpoint-" + rel, "/%s is not empty (%d entries, e.g. %s): something wrote into the target "
                                                  "outside its mounts" % (rel, len(names), ", ".join(names[:5]))))
@@ -962,10 +979,57 @@ def check_branding(tree: Tree, pkgs: Mapping[str, Pkg]) -> List[Finding]:
     return out
 
 
+# ---- the look of the first-boot account wizard -----------------------------------------------------
+WIZARD_SKIN = "usr/share/themes/Lindos-Setup/gtk-3.0/gtk.css"
+WIZARD_DROPIN = "etc/systemd/system/oem-config.service.d/10-lindos.conf"
+WIZARD_TITLE = "Lindos Setup"
+
+
+def check_wizard_look(tree: Tree) -> List[Finding]:
+    """The first boot is Ubiquity's oem-config: its GTK program inherits the environment of oem-config.service, so a
+    drop-in with GTK_THEME=Lindos-Setup (written by finalize.sh) gives it the Lindos skin, and the debconf answer
+    ubiquity/custom_title_text names its window.  The drop-in must also be removable again by the wizard itself
+    (oem-config/late_command).  Whether the skin really LOADS and looks right is judged from the first-boot screenshot
+    and the observer's look at the GTK program's environment (install_test.py)."""
+    out: List[Finding] = []
+    if tree.is_file(WIZARD_SKIN):
+        out.append(ok("wizard-skin", "/%s is on the disk" % WIZARD_SKIN))
+    else:
+        out.append(fail("wizard-skin", "/%s is missing: the account wizard would keep Ubiquity's light default (79-installer-flow.sh "
+                                       "installs it when 78-installer-brand.sh did not)" % WIZARD_SKIN))
+    dropin = tree.read_text(WIZARD_DROPIN)
+    if dropin is None:
+        out.append(fail("wizard-theme-dropin", "/%s does not exist: finalize.sh did not give the account wizard the Lindos skin" % WIZARD_DROPIN))
+    elif re.search(r"^Environment=GTK_THEME=Lindos-Setup\s*$", dropin, re.M):
+        out.append(ok("wizard-theme-dropin", "oem-config.service gets GTK_THEME=Lindos-Setup"))
+    else:
+        out.append(fail("wizard-theme-dropin", "/%s does not set GTK_THEME=Lindos-Setup" % WIZARD_DROPIN))
+    text = tree.read_text(DEBCONF_CONFIG, limit=64 << 20)
+    if text is None:
+        out.append(warn("wizard-title", "/%s is unreadable: the wizard's window title cannot be checked" % DEBCONF_CONFIG))
+        return out
+    db = parse_debconf_db(text)
+    title = db.get("ubiquity/custom_title_text", {}).get("Value", "").strip()
+    if title == WIZARD_TITLE:
+        out.append(ok("wizard-title", "the wizard's window is called %r" % title))
+    else:
+        out.append(warn("wizard-title", "ubiquity/custom_title_text is %r, not %r: the window keeps Ubiquity's 'System Configuration'"
+                        % (title, WIZARD_TITLE)))
+    late = db.get("oem-config/late_command", {}).get("Value", "")
+    if "oem-config.service.d" in late:
+        out.append(ok("wizard-cleanup", "the wizard removes its theme drop-in itself (oem-config/late_command)"))
+    else:
+        out.append(warn("wizard-cleanup", "oem-config/late_command does not remove the theme drop-in: it stays on the installed system"))
+    return out
+
+
 # error signatures in the installer's own logs (Ubiquity copies its syslog to /var/log/installer)
 LOG_SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
     (FAIL, r"target is busy", "the target could not be unmounted: a mount was left behind"),
     (FAIL, r"InstallStepError", "an Ubiquity install step aborted"),
+    (FAIL, r"E: Syntax error /usr/bin/apt-config", "a package's maintainer script ran apt-config with the binary as its configuration file: "
+                                                   "APT_CONFIG leaked into the target (first real install: Chrome's postinst)"),
+    (WARN, r"pkgProblemResolver::Resolve generated breaks", "apt refused an install because of held packages"),
     (WARN, r"Traceback \(most recent call last\)", "a Python traceback in the installer's log"),
     (WARN, r"dpkg: error processing", "dpkg failed while installing a package"),
     (WARN, r"E: Sub-process /usr/bin/dpkg returned an error code", "apt/dpkg reported an error code"),
@@ -1020,6 +1084,7 @@ def run_all_checks(tree: Tree, *, expect_online: Optional[bool], mbr: Optional[b
     findings.extend(check_seed_effects(tree, pkgs, expect_i386=expect_i386))
     findings.extend(check_bootloader(tree, mbr=mbr, firmware=firmware, esp=esp))
     findings.extend(check_branding(tree, pkgs))
+    findings.extend(check_wizard_look(tree))
     texts = {rel: t for rel in LOG_FILES_FOR_SCAN if (t := tree.read_text(rel, limit=16 << 20)) is not None}
     findings.extend(scan_installer_logs(texts))
     return findings

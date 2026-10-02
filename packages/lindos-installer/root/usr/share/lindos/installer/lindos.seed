@@ -16,6 +16,11 @@ ubiquity oem-config/enable boolean true
 # /usr/libexec/lindos/installer/finalize.sh).  Heavy work is NOT done there (it freezes the window).
 ubiquity ubiquity/success_command string /usr/libexec/lindos/installer/finalize.sh
 
+# The window title of the installer (instead of "Install (OEM mode, for manufacturers only)") and of the first-boot
+# account wizard (instead of "System Configuration"): Ubiquity's own answer, it beats both built-in titles.  finalize.sh
+# sets it in the new system's database too.
+ubiquity ubiquity/custom_title_text string Lindos Setup
+
 # The installer's own hook does the updates for real; Ubiquity's pre-download would only be thrown away.
 ubiquity ubiquity/download_updates boolean false
 

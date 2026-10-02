@@ -1,0 +1,4 @@
+# The signing keyring is a binary OpenPGP file (gpg --export, no --armor): never let git
+# normalise line endings inside it. (The placeholder that stands in for it until the owner
+# commits the real one is plain text, but it is stored the same way on purpose.)
+root/usr/share/keyrings/*.gpg binary

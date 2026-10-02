@@ -24,8 +24,12 @@ in **Lindos Settings**.
 - "Runs Windows apps natively" means *without a VM*, through Wine / Proton (translation layer,
   near-native speed). Do not claim it is Windows.
 - Anti-cheat reality: **Valorant (Vanguard) and Fortnite (EAC-Linux disabled by Epic) do NOT run
-  on any Linux, including Lindos.** Say so plainly. Roblox runs through **Sober** (not the Windows
-  client). Minecraft Java runs natively; Bedrock via `mcpelauncher` (unofficial). Steam games
+  on any Linux, including Lindos.** Say so plainly, and present it as **"Not supported yet"** —
+  never "coming soon", never a date: whether a title ever runs on Linux is its publisher's
+  decision, and Lindos lists it as supported only once its publisher enables Linux and it has been
+  tested. The wording is the `disclaimer` object of `compat-matrix.json` (SPEC-WINDOWS §30.1);
+  `docs/ANTI-CHEAT.md` §0 quotes it verbatim (`tests/test_anticheat_disclaimer.py`). Roblox runs
+  through **Sober** (not the Windows client). Minecraft Java runs natively; Bedrock via `mcpelauncher` (unofficial). Steam games
   depend on the developer enabling anti-cheat for Proton — link to areweanticheatyet.com and
   protondb.com. Adobe: CC 2019–2021 era Photoshop/Illustrator work through Wine recipes; newer
   releases are unreliable — mark **partial**.
@@ -485,8 +489,9 @@ configuration; it never downloads, installs or updates anything.
   - `done`: "All set" + "Start using Lindos" (writes `SETUP_DONE`, config `setup_done=true`); a
     read-only recap of what the installer set up (from install-state), a banner if items are still
     waiting (Settings › Apps), and the always-visible §0.1 reality check (Wine and Proton are a
-    translation layer, not Windows; Valorant/Fortnite do not run on any Linux) with a "Learn more
-    about Windows apps" disclosure.
+    translation layer, not Windows; Valorant/Fortnite do not run on any Linux today, so they are
+    "not supported on Lindos yet", up to their publishers, no date) with a "Learn more about
+    Windows apps" disclosure.
 - Pure logic in `lindos_setup/plan.py` (`Plan`, `build_plan(selections) -> Plan`, `Plan.to_json()`,
   `Plan.user_steps()`, `Plan.system_payloads()`), unit-tested without GTK. `build_plan` is the user
   steps (save config, theme, accent, wallpaper, taskbar alignment, default browser) plus
@@ -710,7 +715,8 @@ Chroot hooks (`build/chroot/`), each `#!/bin/bash`, `set -Eeuo pipefail`, idempo
   Destiny 2 (not possible), PUBG (not possible), Overwatch 2 (works via Battle.net in Lutris),
   Sims 4 (works via EA app in Lutris/Heroic — partial), Forza Horizon 5 (works), Hogwarts Legacy
   (works), Halo Infinite (works, EAC enabled), Palworld (works), Helldivers 2 (works, nProtect
-  enabled), Marvel Rivals (works), Warframe (works).
+  enabled), Marvel Rivals (works), Warframe (works). The top-level `disclaimer` object and the
+  per-entry `unsupported_kind` of the anti-cheat-blocked titles are specified in SPEC-WINDOWS §30.1.
 
 ## 11. `lindos-tune` (RAM/perf/hardware)
 

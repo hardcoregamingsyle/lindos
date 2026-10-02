@@ -92,6 +92,18 @@ Template: user-setup/allow-password-empty
 Value: false
 Owners: d-i
 Flags: seen
+
+Name: ubiquity/custom_title_text
+Template: ubiquity/custom_title_text
+Value: Lindos Setup
+Owners: ubiquity
+Flags: seen
+
+Name: oem-config/late_command
+Template: oem-config/late_command
+Value: rm -rf /etc/systemd/system/oem-config.service.d
+Owners: oem-config
+Flags: seen
 """
 
 DPKG_LOG = """\
@@ -144,6 +156,8 @@ def make_good_tree(root: Path) -> None:
     _w(root, ic.DPKG_ARCH, "i386\n")
     _w(root, ic.DPKG_LOG, DPKG_LOG)
     _w(root, "usr/local/bin/umu-run", "#!/usr/bin/env python3\n")
+    _w(root, ic.WIZARD_SKIN, "/* skin */\n")
+    _w(root, ic.WIZARD_DROPIN, "[Service]\nEnvironment=GTK_THEME=Lindos-Setup\n")
     for d in ("proc", "sys", "run", "dev", "cdrom"):
         (root / d).mkdir(parents=True, exist_ok=True)
 
@@ -424,6 +438,26 @@ def test_parse_dpkg_status_keys_foreign_architectures_separately():
     assert set(pkgs) >= {"oem-config", "libc6", "libc6:i386"}
     assert pkgs["oem-config"].version == "24.04.3+mint18" and pkgs["oem-config"].state == "installed"
     assert ic.audit_packages(pkgs) == ([], [])
+
+
+def test_what_ubiquitys_own_user_setup_leaves_in_run_is_not_a_warning(tmp_path, tree):
+    """First real install: 'WARN /run is not empty (adduser, mount)'.  user-setup-apply runs mount and adduser in a bare chroot
+    (its own bind of /run comes later): Ubiquity's doing, not the hook's; harmless on a tmpfs."""
+    (tmp_path / "run" / "adduser").mkdir()
+    (tmp_path / "run" / "mount").mkdir()
+    findings = run(tree)
+    assert fails(findings) == {} and levels(findings, "mountpoint-run") == [ic.INFO]
+    detail = next(f.detail for f in findings if f.name == "mountpoint-run")
+    assert "adduser" in detail and "mount" in detail and "hook" in detail
+
+
+def test_anything_else_in_run_still_warns_and_is_named(tmp_path, tree):
+    for name in ("adduser", "mount", "stray-lock"):
+        (tmp_path / "run" / name).mkdir()
+    findings = run(tree)
+    assert levels(findings, "mountpoint-run") == [ic.WARN]
+    detail = next(f.detail for f in findings if f.name == "mountpoint-run")
+    assert "stray-lock" in detail and "1 entries" in detail and "adduser" not in detail
 
 
 def test_non_empty_mount_points_warn(tmp_path, tree):
@@ -871,3 +905,47 @@ def test_offline_install_with_chrome_on_the_disk_fails(tmp_path):
     _w(tmp_path, "var/lib/dpkg/status", GOOD_STATUS)
     _w(tmp_path, "opt/google/chrome/chrome", "binary")
     assert "chrome-vs-state" in fails(run(tree, expect_online=False, strict_offline=True))
+
+
+# --------------------------------------------------------------------------------------------- the account wizard's look
+def test_a_correct_install_has_the_wizard_skin_the_drop_in_the_title_and_the_cleanup_command(tree):
+    findings = run(tree)
+    for name in ("wizard-skin", "wizard-theme-dropin", "wizard-title", "wizard-cleanup"):
+        assert levels(findings, name) == [ic.OK], name
+
+
+def test_a_missing_skin_or_drop_in_fails_and_names_what_to_fix(tmp_path, tree):
+    (tmp_path / ic.WIZARD_SKIN).unlink()
+    (tmp_path / ic.WIZARD_DROPIN).unlink()
+    got = fails(run(tree))
+    assert "79-installer-flow.sh" in got["wizard-skin"] and "finalize.sh" in got["wizard-theme-dropin"]
+
+
+@pytest.mark.parametrize("text", ["[Service]\nEnvironment=GTK_THEME=Lindos-Dark\n", "[Service]\n# Environment=GTK_THEME=Lindos-Setup\n", ""])
+def test_a_drop_in_for_another_theme_fails(tmp_path, tree, text):
+    _w(tmp_path, ic.WIZARD_DROPIN, text)
+    assert "does not set GTK_THEME=Lindos-Setup" in fails(run(tree))["wizard-theme-dropin"]
+
+
+def test_a_wrong_or_missing_title_and_cleanup_only_warn(tmp_path, tree):
+    _w(tmp_path, ic.DEBCONF_CONFIG, "Name: user-setup/allow-password-empty\nValue: false\n")
+    findings = run(tree)
+    assert fails(findings) == {} and levels(findings, "wizard-title") == [ic.WARN] and levels(findings, "wizard-cleanup") == [ic.WARN]
+    _w(tmp_path, ic.DEBCONF_CONFIG, DEBCONF_CONFIG.replace("Value: Lindos Setup", "Value: System Configuration"))
+    assert "System Configuration" in next(f.detail for f in run(tree) if f.name == "wizard-title")
+    (tmp_path / ic.DEBCONF_CONFIG).unlink()
+    assert levels(run(tree), "wizard-title") == [ic.WARN]
+
+
+def test_the_installer_sessions_theme_drop_in_is_a_leftover_on_the_installed_system(tmp_path, tree):
+    assert "etc/systemd/system/ubiquity.service.d/10-lindos.conf" in ic.HOOK_LEFTOVERS
+    _w(tmp_path, "etc/systemd/system/ubiquity.service.d/10-lindos.conf", "[Service]\n")
+    assert "ubiquity.service.d" in fails(run(tree))["leftovers"]
+
+
+def test_a_leaked_apt_config_in_the_installer_log_fails_the_run(tmp_path, tree):
+    """First real install: four 'E: Syntax error /usr/bin/apt-config:13: Extra junk after value' around the Chrome install."""
+    _w(tmp_path, ic.INSTALLER_LOG, INSTALLER_LOG + "E: Syntax error /usr/bin/apt-config:13: Extra junk after value\n")
+    assert any("APT_CONFIG leaked" in v for v in fails(run(tree)).values())
+    held = ic.scan_installer_logs({"var/log/lindos/installer.log": "E: Error, pkgProblemResolver::Resolve generated breaks, this may be caused by held packages.\n"})
+    assert [f.level for f in held] == [ic.WARN] and "held packages" in held[0].detail

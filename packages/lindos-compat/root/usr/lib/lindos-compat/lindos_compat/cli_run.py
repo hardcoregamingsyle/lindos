@@ -1282,8 +1282,9 @@ def _recipe_for(slug: str, marker: Dict[str, object]) -> Optional[Recipe]:
 
 
 def _refuse_profile(ctx: _Ctx, profile: Profile) -> int:
-    note = profile.notes or "this title uses kernel-level anti-cheat that does not run on Linux"
-    msg = (f"'{profile.title}' cannot run on Lindos: {note}\n"
+    note = profile.notes or "its kernel-level anti-cheat does not run on any Linux today"
+    msg = (f"'{profile.title}' cannot run on Lindos (not supported yet - that is up to its publisher, no date is "
+           f"given): {note}\n"
            "Lindos does not fake anti-cheat or attestation - doing so only gets you hardware-banned. "
            "See docs/ANTI-CHEAT.md.\n"
            f"Other ways to play it (official cloud streaming where offered, or restarting into Windows): "

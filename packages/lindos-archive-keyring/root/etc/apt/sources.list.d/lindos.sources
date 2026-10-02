@@ -1,0 +1,16 @@
+# Lindos's own package repository (updates for the lindos-* packages).
+#
+# This is the ONE place the repository address and suites are written. It is a configuration
+# file: a Lindos update can move the repository to another server by shipping a new version of
+# it (dpkg asks before replacing a copy you edited), and nothing else has to change.
+#
+# "Enabled: no" until a real signing key and a real server exist (docs/RELEASING.md). The
+# address below is a reserved, never-resolving placeholder name, so an image built today cannot
+# talk to, or trust, anything. When the owner sets a real address they flip this to "yes" in the
+# same commit that adds the real public key and its fingerprint; a build refuses to ship a
+# switched-on source without them (build/tools/check-archive-keyring.sh).
+Enabled: no
+Types: deb
+URIs: https://apt.lindos.invalid/stable/
+Suites: ./
+Signed-By: /usr/share/keyrings/lindos-archive-keyring.gpg

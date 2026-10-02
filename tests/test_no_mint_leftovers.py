@@ -10,8 +10,8 @@ What is NOT a finding (so the list stays short and every entry means something):
   * comments (# // <!-- -->) and Python docstrings - they explain the base, users never see them;
   * names of Mint tools and packages: mintinstall, mintupdate, mint-artwork, ... (no word boundary after
     "mint", or "mint-" + package name) and the lowercase identifier "linuxmint" (ID=linuxmint, hostnames of
-    apt repositories, /etc/linuxmint/info);
-  * the colour "Mint Green".
+    apt repositories, /etc/linuxmint/info).
+The accent that used to be called "Mint Green" is now "Meadow Green" and is checked like any other text.
 Anything else needs an ALLOW entry (with the reason) or, while another engineer still owns the fix, a
 KNOWN_LEFTOVERS entry.  ALLOW entries must keep matching something, so the list cannot rot.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import json
 import re
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -33,8 +34,8 @@ SKIP_SUFFIXES = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".gz", ".bz2",
 
 #: a visible "Mint": the word itself (Linux Mint, Mint's ...) or the capitalised identifier LinuxMint
 FINDING = re.compile(r"(?i:\bmint\b)|\bLinuxMint\b")
-#: ... unless it is a colour or the start of a Debian package name (mint-meta-xfce, mint-artwork, Mint-Y)
-NOT_A_FINDING = re.compile(r"(?i)mint[- ]green\b|mint-[a-z0-9]")
+#: ... unless it is the start of a Debian package name (mint-meta-xfce, mint-artwork, Mint-Y)
+NOT_A_FINDING = re.compile(r"(?i)mint-[a-z0-9]")
 
 # (path glob relative to the repo root, regex searched in the offending text, why it is fine)
 ALLOW: List[Tuple[str, str, str]] = [
@@ -42,17 +43,34 @@ ALLOW: List[Tuple[str, str, str]] = [
      r"remaster of Linux Mint|on top of Linux Mint XFCE|stock Mint/Ubuntu kernel|stock Mint 22 XFCE baseline",
      "package descriptions (apt show) say what Lindos is built on - attribution, like THIRD_PARTY.md"),
     ("packages/lindos-settings/root/usr/lib/lindos-settings/lindos_settings/model.py", r"Linux Mint",
-     "About's 'Based on' row states the base system (provenance); built from ID/VERSION_ID, never from the brand fields"),
+     "model.base_description keeps the provenance helper (built from ID/VERSION_ID, never from the brand fields); the About row "
+     "itself now says only 'Ubuntu ...' and the legal notices carry the rest"),
     ("packages/lindos-tune/root/usr/share/lindos/tune/ram-budget.json", r"Mint",
      "the RAM budget compares Lindos with the stock base image it was measured against"),
     ("packages/lindos-desktop/root/usr/libexec/lindos/rebrand-base.py", r"(?i)mint",
      "the sweep script names the strings it removes and prints an audit of what still says Linux Mint"),
     ("packages/lindos-desktop/root/usr/libexec/lindos/apply-branding.sh", r"Mint sweep",
      "log wording for the build/upgrade-time sweep (root's log, not a user-facing screen)"),
+    ("packages/lindos-desktop/DEBIAN/preinst", r"highlight-mint|apt-linux-mint",
+     "file names of Mint's command wrappers that the maintainer script diverts away (never shown to a user)"),
+    ("packages/lindos-desktop/DEBIAN/postrm", r"highlight-mint|apt-linux-mint",
+     "the same file names, restored when lindos-desktop is removed (never shown to a user)"),
+    ("packages/lindos-desktop/root/usr/share/lindos/xdg-xfce-README", r"Linux Mint",
+     "administrator-facing README explaining why the directory exists (the Mint base's xfconf defaults)"),
+    ("packages/lindos-desktop/root/usr/share/lindos/branding/base-sweep.json", r"Mint",
+     "sweep rule data: it names the base's files, themes and docs sections it hides or renames"),
+    ("packages/lindos-desktop/root/usr/share/lindos/legal/open-source-notices.txt", r"Linux Mint",
+     "the legal notices state what Lindos is built on and the trademark notice - attribution, like THIRD_PARTY.md"),
+    ("packages/lindos-settings/root/usr/lib/lindos-settings/lindos_settings/pages/about.py", r"Linux Mint",
+     "the built-in legal notices paragraph (used when lindos-desktop's notices file is missing) names the base's components"),
 ]
 
 # Findings somebody else still has to fix (owner named) - the test tolerates them but they are not hidden.
-KNOWN_LEFTOVERS: List[Tuple[str, str, str]] = []
+KNOWN_LEFTOVERS: List[Tuple[str, str, str]] = [
+    ("packages/lindos-core/root/usr/lib/python3/dist-packages/lindos/updatestate.py", r"mint",
+     "updates stream: package-name regexes and the origin hint 'mint' (not visible text); decide whether installed systems keep the "
+     "blanket 'mint' cleanup protection now that build/chroot/lib.sh names what to protect"),
+]
 
 
 # --------------------------------------------------------------------------- scanning
@@ -211,3 +229,50 @@ def test_the_identity_decision_is_documented(phrase: str) -> None:
     """docs/BUILDING.md must say which Mint identity fields are kept on purpose and why."""
     building = (REPO / "docs" / "BUILDING.md").read_text(encoding="utf-8")
     assert phrase in building
+
+
+# --------------------------------------------------------------------------- the unrecognisable layer (docs/BUILDING.md)
+def _text(rel: str) -> str:
+    return (REPO / rel).read_text(encoding="utf-8")
+
+
+def test_no_accent_is_called_after_mint() -> None:
+    accents = json.loads(_text("packages/lindos-setup/root/usr/share/lindos/setup/accents.json"))["accents"]
+    plan = _text("packages/lindos-setup/root/usr/lib/lindos-setup/lindos_setup/plan.py")
+    fallback = re.search(r"FALLBACK_ACCENTS[^=]*=\s*\[(.*?)\n\]", plan, flags=re.S)
+    assert fallback
+    for a in accents:
+        assert "mint" not in (a["name"] + a["id"]).lower(), a
+        assert '"name": "%s"' % a["name"] in fallback.group(1) and '"id": "%s"' % a["id"] in fallback.group(1), \
+            "plan.py FALLBACK_ACCENTS must agree with accents.json: %s" % a["name"]
+    assert "Meadow Green" in [a["name"] for a in accents]
+
+
+def test_the_purge_and_the_gate_are_hooks_in_the_right_places_and_the_purge_names_the_researched_closed_set() -> None:
+    names = sorted(p.name for p in (REPO / "build" / "chroot").glob("[0-9][0-9]-*.sh"))
+    assert names.index("75-vm.sh") < names.index("76-mint-purge.sh") < names.index("77-mint-sweep.sh")
+    assert names[-1] == "81-unrecognisable-gate.sh" and names.index("80-cleanup.sh") < names.index("81-unrecognisable-gate.sh")
+    purge = _text("build/chroot/76-mint-purge.sh")
+    for pkg in ("mint-meta-*", "mint-artwork*", "mint-themes*", "mint-x-icons", "mint-y-icons", "mint-l-icons", "mint-l-theme",
+                "mint-cursor-themes", "mint-backgrounds-*", "mintbackup", "mintdesktop", "mintchat", "webapp-manager", "thingy",
+                "fingwit", "lightdm-settings", "mintstick", "captain", "mint-upgrade-info", "mintwelcome", "warpinator", "sticky",
+                "hypnotix", "neofetch", "xed", "xviewer*", "xreader*", "pix", "celluloid"):
+        assert pkg in purge, pkg
+    # the interim tools and the chain Mint's Firefox pre-depends on are never purge targets
+    groups = "\n".join(ln for ln in purge.splitlines() if ln.lstrip().startswith("purge_group "))
+    for keep in ("mintupdate", "mintinstall", "mintdrivers", "mintsources", "mintreport", "mintlocale", "mintsystem", "mint-common",
+                 "mint-info-xfce", "ubuntu-system-adjustments", "linuxmint-keyring", "mint-translations"):
+        assert not re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(keep), groups), keep
+    assert "MINT-PURGE-SKIPPED" in purge and "apt-get -s purge" in purge
+
+
+def test_the_docs_describe_the_unrecognisable_layer_and_what_stays_on_purpose() -> None:
+    building = _text("docs/BUILDING.md")
+    assert re.search(r"^### Unrecognisable", building, flags=re.M)
+    section = building.split("### Unrecognisable", 1)[1].split("\n## ", 1)[0]
+    for needle in ("76-mint-purge.sh", "81-unrecognisable-gate.sh", "MINT-PURGE-SKIPPED", "LINDOS_STRICT_UNRECOGNISABLE", "xdg-xfce",
+                   "99-lindos.preserve", "60-lindos-distributor.cfg", "Lindos-Cursors", "mimeapps", "mintupdate",
+                   "Legal and open-source notices"):
+        assert needle in section, needle
+    third = _text("THIRD_PARTY.md")
+    assert "mint-artwork" in third and "Lindos-Cursors" in third

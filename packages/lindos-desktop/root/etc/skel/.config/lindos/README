@@ -28,4 +28,5 @@ Switch mode:      lindos-mode set gaming        Show RAM use:  lindos-tune statu
 Compositor:       lindos-compositor toggle      Settings:      lindos-settings
 
 Lindos runs Windows programs through Wine/Proton (a translation layer, not a VM) - it is not
-Windows.  Games with kernel anti-cheat (Valorant, Fortnite ...) do not run on any Linux.
+Windows.  Games with kernel anti-cheat (Valorant, Fortnite ...) do not run on Linux today, so they
+are not supported on Lindos yet; that is up to each game's publisher, and no date is given.

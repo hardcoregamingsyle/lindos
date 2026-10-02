@@ -25,7 +25,7 @@
       "category": "store",
       "modes_default": ["gaming", "everyday"],
       "homepage": "https://store.steampowered.com/",
-      "note": "Multiplayer titles only work when the developer enabled their anti-cheat for Proton — check areweanticheatyet.com and protondb.com."
+      "note": "Multiplayer titles only work when the developer enabled their anti-cheat for Proton — check areweanticheatyet.com and protondb.com. Some (Apex Legends, Rust, Destiny 2, Call of Duty and others) are not supported on Lindos yet: that is up to their publishers."
     },
     {
       "id": "lutris",
@@ -71,7 +71,7 @@
       "category": "store",
       "modes_default": ["gaming"],
       "homepage": "https://heroicgameslauncher.com/",
-      "note": "Fortnite is NOT playable: Epic keeps Easy Anti-Cheat for Linux disabled. Other Epic titles generally work."
+      "note": "Fortnite is not supported on Lindos yet: Epic keeps Easy Anti-Cheat for Linux disabled, and whether that changes is up to Epic, its publisher. Other Epic titles generally work."
     },
     {
       "id": "prism",

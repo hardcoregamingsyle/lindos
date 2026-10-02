@@ -13,7 +13,8 @@ Linux-specific calls are guarded and executed lazily.  Sub-modules:
 ``compat``    Windows executable analysis, slugs, apps DB, runner choice
 ``ram``       RAM snapshot / report
 ``dualboot``  honest "restart into Windows" (efibootmgr/GRUB one-shot, Secure Boot/TPM facts)
-``update``    Lindos's own apt-repo/sideload updates (SPEC-UPDATE.md §36) -- never mintupdate's job
+``update``    reading update status: the Lindos apt source, upgradable packages, sideload (SPEC-UPDATE.md §36)
+``updatestate``  the root refresh's update-state.json, apt-output parsers, reboot-required, history (§39-§41)
 ``session``   live USB session / installer chroot / temporary ``oem`` account detection
 ``installstate``  what the installer did and what is still pending (/var/lib/lindos/install-state.json)
 """
@@ -29,5 +30,5 @@ PRODUCT = "Lindos"
 __all__ = [
     "__version__", "__codename__", "VERSION", "CODENAME", "PRODUCT",
     "paths", "config", "modes", "browsers", "hardware", "helper", "theme", "compat", "ram", "dualboot",
-    "update", "session", "installstate",
+    "update", "updatestate", "session", "installstate",
 ]

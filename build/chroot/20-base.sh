@@ -15,7 +15,9 @@
 #    best effort: one GUI polkit agent (policykit-1-gnome | mate-polkit | lxpolkit)
 #  Everything is installed with --no-install-recommends (RAM/size budget);
 #  a second best-effort pass installs "nice to have" packages one by one so a
-#  missing package on a mirror can never abort the build.  EXTRA_PACKAGES
+#  missing package on a mirror can never abort the build (it also installs the default apps:
+#  mousepad text editor, ristretto images, evince PDF, vlc media - /etc/xdg/mimeapps.list of
+#  lindos-desktop points at them and 76-mint-purge.sh removes Mint's apps only when they are there).  EXTRA_PACKAGES
 #  from build/config.env is appended to the required list.
 #  A third best-effort pass installs LAPTOP_ESSENTIALS (build/config.env): firmware, audio
 #  UCM configs, Bluetooth, driver metadata, fwupd and a print driver — see the block below and
@@ -141,6 +143,12 @@ NICE=(
     mugshot
     plymouth-themes
     plymouth-label
+    # Lindos's default apps (owner decision): they take over from Mint's xed, xviewer/pix, xreader and
+    # celluloid, which 76-mint-purge.sh removes once these are installed (noble: universe, evince: main)
+    mousepad
+    ristretto
+    evince
+    vlc
 )
 apt_try_install "${NICE[@]}"
 
@@ -208,7 +216,7 @@ fi
 # Small sanity summary
 # ---------------------------------------------------------------------------
 for p in xfce4-docklike-plugin xfce4-panel-profiles picom systemd-zram-generator earlyoom gamemode mangohud flatpak \
-         bluez blueman fwupd ubuntu-drivers-common linux-firmware; do
+         bluez blueman fwupd ubuntu-drivers-common linux-firmware mousepad ristretto evince vlc; do
     if pkg_installed "${p}"; then
         log "ok: ${p} $(dpkg-query -W -f='${Version}' "${p}" 2>/dev/null)"
     else

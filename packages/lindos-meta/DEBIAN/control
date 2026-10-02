@@ -4,7 +4,7 @@ Section: metapackages
 Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
-Depends: lindos-core (= 1.0.0), lindos-desktop (= 1.0.0), lindos-setup (= 1.0.0), lindos-settings (= 1.0.0), lindos-compat (= 1.0.0), lindos-gaming (= 1.0.0), lindos-tune (= 1.0.0), lindos-transfer (= 1.0.0)
+Depends: lindos-core (= 1.0.0), lindos-archive-keyring (= 1.0.0), lindos-desktop (= 1.0.0), lindos-setup (= 1.0.0), lindos-settings (= 1.0.0), lindos-compat (= 1.0.0), lindos-gaming (= 1.0.0), lindos-tune (= 1.0.0), lindos-transfer (= 1.0.0)
 Recommends: lindos-kernel, lindos-vm, lindos-winapps, firefox, steam-launcher | steam-installer, wine-staging | wine, winetricks, gamemode, mangohud, gamescope, flatpak, xfce4-panel-profiles, xfce4-docklike-plugin, picom, earlyoom, power-profiles-daemon
 Suggests: lutris, heroic, umu-launcher, corectrl, openrgb, nbfc-linux, scx
 Homepage: https://lindos.dev
@@ -21,14 +21,15 @@ Description: Lindos 1.0 (Aurora) — complete Windows-11-style desktop remaster 
  .cab, disk images, DOS and 16-bit programs, "./setup.exe" from a terminal)
  and can install packages by id with 'lindos-compat winget install' — hash-
  verified straight from each publisher's own manifest, HTTPS only, no
- override. For games whose kernel-level anti-cheat cannot run on any Linux
- (Valorant, League of Legends, Call of Duty, and the like), lindos-game route
- shows the honest way to actually play them: an official cloud-streaming
- service where one exists, or a one-command restart into the PC's own
- Windows installation (lindos-dualboot, a genuine UEFI/GRUB one-shot boot,
- never a VM trick and never a Windows edit) — never an emulator or spoofer,
- because none can produce the hardware-rooted signature those anti-cheats
- verify.
+ override. Games whose kernel-level anti-cheat does not run on any Linux today
+ (Valorant, League of Legends, Call of Duty, and the like) are not supported
+ on Lindos yet: that is up to their publishers and no date is given. For them
+ lindos-game route shows the honest way to actually play: an official
+ cloud-streaming service where one exists, or a one-command restart into the
+ PC's own Windows installation (lindos-dualboot, a genuine UEFI/GRUB one-shot
+ boot, never a VM trick and never a Windows edit) — never an emulator or
+ spoofer, because none can produce the hardware-rooted signature those
+ anti-cheats verify.
  .
  The Lindos-tuned kernel (lindos-kernel: ntsync, sched_ext, 1000 Hz preempt,
  MGLRU) is Recommended, not required — the stock Mint/Ubuntu kernel stays
@@ -41,10 +42,16 @@ Description: Lindos 1.0 (Aurora) — complete Windows-11-style desktop remaster 
  lindos-winapps, which shows individual Windows programs (Adobe, Office) as
  seamless windows over RDP. Neither ships or performs any VM-detection evasion,
  hardware/SMBIOS spoofing or licence bypass, and neither defeats VM-blocking
- anti-cheat (Vanguard and the like) — that is impossible and is not attempted.
+ anti-cheat (Vanguard and the like): no VM gets past it, and none is attempted.
+ .
+ Every lindos-* package of a release carries the same version and this
+ package pins its parts to exactly that version, so they always update
+ together (lindos-archive-keyring supplies the update source).
  .
  Honesty notes: Windows programs run through Wine/Proton (a translation
  layer, not Windows and not a VM); Valorant and Fortnite do not run on any
- Linux; Roblox runs through Sober; Edge/Chrome are downloaded from the vendor
- while Lindos installs (Firefox ships on the ISO); the idle RAM target is 350-500 MB.
+ Linux today, so they are not supported on Lindos yet: that is up to their
+ publishers and no date is given; Roblox runs through Sober; Edge/Chrome are
+ downloaded from the vendor while Lindos installs (Firefox ships on the ISO);
+ the idle RAM target is 350-500 MB.
  No anti-cheat circumvention of any kind is shipped or possible.

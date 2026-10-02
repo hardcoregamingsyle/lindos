@@ -12,7 +12,7 @@ Description: Lindos core library, privileged helper and command-line tools
  Lindos is a remaster of Linux Mint XFCE with a Windows-11-style desktop.
  This package ships the pure-Python 'lindos' module (paths, config, modes,
  browsers, hardware, helper client, theme, compat, ram, dualboot, update,
- session, installstate), the polkit-guarded helper
+ session, installstate, updatestate), the polkit-guarded helper
  /usr/libexec/lindos/lindos-helper, the vendor browser installer (Edge/Chrome
  are downloaded from Microsoft's/Google's apt repositories — by the Lindos
  installer while it installs, or later on demand; their licences forbid
@@ -28,12 +28,20 @@ Description: Lindos core library, privileged helper and command-line tools
  drivers that need a real Windows kernel — never an emulator, spoofer or VM
  trick, and it never edits Windows, BCD or firmware settings.
  .
- lindos-update checks for and applies updates to Lindos's own lindos-*
- packages: from a real signed apt repository once one is configured
- (LINDOS_APT_REPO_URL), or by sideloading local .deb files today. It never
- touches the base system, which the system Update Manager already updates.
- apt/dpkg are always present on a Debian/Ubuntu system (Priority: required/
- important), so no extra Depends are needed for this.
+ lindos-update keeps Lindos and the system underneath it up to date: it
+ reports what a twice-daily root refresh found (lindos-update-refresh.timer
+ writes /var/lib/lindos/update-state.json - it refreshes the package lists and
+ simulates, and never installs anything), and installs the Lindos components
+ or the whole plan only when asked, through the privileged helper (exact
+ list, or a full upgrade that is checked against the plan you were shown and
+ repaired afterwards; lindos-update-repair.service finishes an interrupted
+ one at the next start). Packages come from the Lindos apt repository once
+ one is configured (its source ships, switched off until a real key exists,
+ in lindos-archive-keyring), or by sideloading local .deb files. An apt hook
+ notes when an update needs a restart (/run/reboot-required); cleanup never
+ removes the desktop or the running kernel. apt/dpkg are always present on a
+ Debian/Ubuntu system (Priority: required/important), so no extra Depends are
+ needed for this.
  .
  The installer records what it did in /var/lib/lindos/install-state.json
  (lindos.installstate, 'lindos-config install-state'); the first-boot units

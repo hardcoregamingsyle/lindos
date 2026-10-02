@@ -14,9 +14,11 @@ case "${1:-}" in
                  /usr/libexec/lindos/build-panel-profiles.sh \
                  /usr/libexec/lindos/first-login-panel.sh \
                  /usr/libexec/lindos/live-session-power.sh \
+                 /usr/libexec/lindos/merge-mimeapps.py \
                  /usr/libexec/lindos/panel-profile-pack.py \
                  /usr/libexec/lindos/plymouth-gen-assets.py \
-                 /usr/libexec/lindos/rebrand-base.py; do
+                 /usr/libexec/lindos/rebrand-base.py \
+                 /usr/libexec/lindos/taskbar-fallback.py; do
             if [ -f "$f" ] && [ ! -x "$f" ]; then
                 chmod 0755 "$f"
             fi
@@ -58,6 +60,35 @@ case "${1:-}" in
         #    script (--files-only) after every later apt run.
         if [ -x /usr/libexec/lindos/apply-branding.sh ]; then
             /usr/libexec/lindos/apply-branding.sh --quiet || log "apply-branding.sh reported a problem (ignored)"
+        fi
+
+        # 5a. Lindos's own /etc/xdg/xdg-xfce (see the preinst): a leftover symlink into mint-artwork goes aside,
+        #     then the directory is created here - it is not a packaged path.  LINDOS_ROOT: test seam.
+        XDG_XFCE="${LINDOS_ROOT:-}/etc/xdg/xdg-xfce"
+        if [ -L "$XDG_XFCE" ]; then
+            case "$(readlink -f "$XDG_XFCE" 2>/dev/null)" in
+                *mint-artwork*)
+                    rm -f "$XDG_XFCE.lindos-orig"
+                    mv "$XDG_XFCE" "$XDG_XFCE.lindos-orig" || true
+                    ;;
+            esac
+        fi
+        if [ ! -e "$XDG_XFCE" ] && [ ! -L "$XDG_XFCE" ]; then
+            mkdir -p "$XDG_XFCE" 2>/dev/null || true
+        fi
+        if [ -d "$XDG_XFCE" ] && [ ! -L "$XDG_XFCE" ] && [ ! -e "$XDG_XFCE/README" ]; then
+            cp "${LINDOS_ROOT:-}/usr/share/lindos/xdg-xfce-README" "$XDG_XFCE/README" 2>/dev/null || true
+        fi
+
+        # 5b. the boot-menu drop-in was renamed 49-... -> 60-... (it must sort after Mint's 50_linuxmint.cfg
+        #     to win); the old conffile is dropped here, the new one takes effect at the next update-grub
+        rm -f "${LINDOS_ROOT:-}/etc/default/grub.d/49-lindos-distributor.cfg"
+
+        # 5c. default applications (Mousepad, Ristretto, Evince, VLC) into /etc/xdg/mimeapps.list; only adds,
+        #     never replaces a default somebody else already set
+        if [ -x /usr/libexec/lindos/merge-mimeapps.py ] && command -v python3 >/dev/null 2>&1; then
+            python3 /usr/libexec/lindos/merge-mimeapps.py \
+                || log "merge-mimeapps.py reported a problem (ignored)"
         fi
 
         # 6. desktop database for the launcher shims

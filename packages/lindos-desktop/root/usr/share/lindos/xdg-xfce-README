@@ -1,0 +1,10 @@
+Lindos: /etc/xdg/xdg-xfce is deliberately (nearly) empty.
+
+The Debian session scripts put /etc/xdg/xdg-$DESKTOP_SESSION in front of XDG_CONFIG_DIRS, so anything in here
+outranks the Lindos defaults in /etc/xdg (xfce4/xfconf/xfce-perchannel-xml, xfce4/panel, Thunar, ...).
+On the Linux Mint base this path is a symlink to /usr/share/mint-artwork/xfce, whose defaults (theme, panel,
+Start menu, desktop icons, shortcuts) would silently replace Lindos's.  lindos-desktop moves that symlink aside
+(dpkg-divert, suffix .lindos-orig) and its postinst creates this directory in its place;
+/etc/X11/Xsession.d/61lindos-xdg-config-dirs drops any /etc/xdg/xdg-* entry that still resolves into mint-artwork.
+
+Put site-wide defaults into /etc/xdg/xfce4/..., not here.

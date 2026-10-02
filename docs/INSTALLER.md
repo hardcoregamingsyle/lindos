@@ -80,7 +80,7 @@ and do not remove the stick until the installer says so.
 | `updates` | `apt-get upgrade` of what is installed (never a `dist-upgrade`); the kernel, the boot loader and the installer's own packages are left alone | *pending* / *failed* |
 | `compat` | Wine (WineHQ staging), winetricks, umu-launcher | *pending* / *failed* |
 | `gaming` | Steam and Lutris | *pending* / *failed* |
-| `mode_extras` | the apt apps of **every** Mode at once (the Mode is only chosen after the install): LibreOffice, Thunderbird, GIMP, Krita, Kdenlive, GameMode, MangoHud and friends | *pending* / *failed* |
+| `mode_extras` | the apt apps of **every** Mode (the Mode is only chosen after the install), one Mode's apps at a time: LibreOffice, Thunderbird, GIMP, Krita, Kdenlive, GameMode, MangoHud and friends | *pending* / *failed*, naming each app that was left out and why |
 | `flatpaks` | Prism Launcher, Sober, Heroic and Bottles from Flathub (best effort) | *pending* |
 
 A step is recorded as **done** only after the result was checked (Chrome really is installed, and so
@@ -88,9 +88,30 @@ on). Anything else is recorded honestly: *pending* (wanted, could not: offline, 
 space left), *failed*, or *skipped* (by choice or policy). OnlyOffice, which some Modes only *suggest*, is
 not installed by the installer.
 
+**A "done" is looked at again at the very end** (once when the hook finishes, once more in the finalisation
+after Ubiquity's own package clean-up): a step whose result is no longer on the disk - the Steam launcher,
+Wine, Chrome or an extra app that a later step or the clean-up removed - is turned into *failed*, and Chrome's
+first-boot marker is taken away so the silent retry installs it again. If the list of installed packages
+cannot be read, nothing is judged.
+
+**Extras never remove what is already installed.** Every extras install is *simulated* first
+(`apt-get -s install`): one that would **remove** an installed package - Valve's `steam-launcher` was removed by
+`apt-get install steam-devices` in the first real install, although the Steam step had just said "done" - or
+that apt cannot resolve at all is not run; that app is recorded as *not installed* with the reason ("would
+remove steam-launcher", or apt's own error line) and the others are still installed. The only removals that are
+accepted are on purpose (Ubuntu's `wine`, which WineHQ staging replaces) or of packages Ubiquity removes from
+the new system anyway. `steam-devices` is no longer in the gaming Mode's package list at all: `steam-launcher`
+ships the udev rules itself.
+
 The hook keeps the machine awake, never touches the kernel or the boot loader, releases everything it
 held when it ends and always repairs the package database before it finishes, so the rest of the install
-continues normally even if a step went wrong.
+continues normally even if a step went wrong. The kernel, the boot loader and the installer's own packages
+are held for the whole hook; the packages Ubiquity removes anyway (language packs, `libreoffice-l10n-*` and so
+on) are held only while the *updates* step runs - held at any other time an exact-version dependency of such a
+pack on `libreoffice-common` made apt refuse every LibreOffice app. apt is given the installer's settings
+(no `cdrom:` source, no list clean-up, waiting for locks) as `-c FILE` on its command line, never as the
+`APT_CONFIG` environment variable: every package's maintainer scripts would inherit that, and Google Chrome's
+own post-install script then ran `apt-config` with the binary as its configuration file.
 
 ## Offline installs and pending items
 
@@ -115,8 +136,10 @@ first boot starts offline until you connect on the account wizard's Wi-Fi page (
 
 1. **Account setup** — Ubiquity's *oem-config* wizard: language, keyboard, Wi-Fi if needed, time zone and
    **your account** (full name, user name, password, computer name, whether to log in automatically). This is
-   where your account is created. It looks like Ubiquity, not like Lindos Setup: it runs on its own screen
-   before the desktop exists, and Lindos' own styling only reaches the windows inside the desktop session.
+   where your account is created. It runs on its own screen before the desktop exists, so the desktop's
+   theme does not reach it; instead the installer gives it the **Lindos-Setup** look (dark, the Lindos accent
+   colour) and calls its window "Lindos Setup" (see [The look of the installer and the account
+   wizard](#the-look-of-the-installer-and-the-account-wizard) - **unverified until a real boot has shown it**).
    When it finishes it removes the temporary account and the installer's own packages, and the login screen or
    your desktop appears.
 2. **Lindos Setup** — full screen on your first login: *mode → browser → personalise → privacy → bring your
@@ -125,6 +148,32 @@ first boot starts offline until you connect on the account wizard's Wi-Fi page (
    **Apply** it asks for your administrator password **once**, to save the system-wide defaults for the Mode
    you chose. The "all set" page shows what the installer did and points to Settings for anything still
    waiting.
+
+## The look of the installer and the account wizard
+
+Both are Ubiquity's GTK program on its **own X server** (`ubiquity-dm`), started by a systemd unit: the *Install
+Lindos* boot entries by `ubiquity.service`, the account wizard at the first boot by `oem-config.service`. Neither
+runs inside the Lindos desktop session, so neither used the desktop's theme (they showed GTK's light default and a
+light title bar, and the wizard was called "System Configuration"). Now:
+
+* **The skin.** `Lindos-Setup` (`build/installer/themes/`, installed by the image build) is dark - surfaces `#202020`
+  and `#2B2B2B`, accent `#60CDFF` - and builds on the `Lindos-Dark` theme; when the image has no `Lindos-Dark` it
+  falls back to GTK's built-in dark Adwaita, so the pages are dark either way. It sets only colours and typography,
+  never sizes.
+* **How it is applied.** `GTK_THEME=Lindos-Setup` in a systemd **drop-in** of the unit: the image build writes
+  `/etc/systemd/system/ubiquity.service.d/10-lindos.conf`, the installer's finalisation writes
+  `/etc/systemd/system/oem-config.service.d/10-lindos.conf` into the new system. The environment of the unit
+  reaches the GTK program (Ubiquity's start scripts and `ubiquity-dm` only *add* to it) and GTK honours
+  `GTK_THEME` over the desktop's settings. The wizard removes its own drop-in when it has finished
+  (`oem-config/late_command`); the installer's is removed by the finalisation. The window frame is drawn by
+  metacity (the base image has it, and `ubiquity-dm` prefers it to xfwm4), which reads the `wm_*` colours of the
+  same skin.
+* **The title.** Ubiquity's own answer `ubiquity/custom_title_text` = "Lindos Setup" replaces "Install (OEM mode,
+  for manufacturers only)" and "System Configuration".
+
+Not done: the temporary-account page still carries Ubiquity's own strings ("OEM Configuration (temporary
+user)", the OEM-id box: Python literals), the wizard's window icon is Ubiquity's fixed "preferences-system", and
+translations of the pages are Ubiquity's.
 
 ## Drivers, proprietary consent and Secure Boot
 
@@ -160,24 +209,34 @@ Logs: while installing, `/var/log/lindos/installer-hook.log` (open a terminal in
 | Updates, drivers or extra apps say *pending* although the PC was online | The package lists could not be refreshed completely (a source timed out or the connection dropped during `apt-get update`): the installer does not trust an "up to date" or "no drivers" answer from incomplete lists, records the step as pending and retries it later. `/var/log/lindos/installer.log` names the failed fetches. |
 | The installer screen goes dark after about ten minutes | Input wakes it. It should not happen: the *Install Lindos* session runs `50lindos-noblank` (`xset s off s noblank -dpms`); `grep lindos-noblank /var/log/installer/dm` in a terminal shows what it did. Please report it. |
 | Chrome or a driver is missing | `lindos-config install-state`; then Settings › Apps › Left to finish from setup. |
+| An extra app is *failed* and the reason says "would remove …" or shows an apt error | The installer did not install it on purpose: installing it would have removed another installed package, or apt could not resolve it (see "Extras never remove what is already installed" above). `/var/log/lindos/installer.log` has the `Remv`/`E:` lines. The rest of the extras were installed. |
+| A step says *failed* although it said done in the installer window | The final check found its result gone again (a later step or Ubiquity's clean-up removed it): `installer.log` says "final check: step … said done but … is not installed". |
 | The first boot starts offline | Connect on the wizard's Wi-Fi page; the retries then run on their own. |
 
 ## Known limitations and what is unverified
 
 Honesty first. **The whole flow was written against the source code of Ubiquity, casper and oem-config and
-unit-tested with fake target systems on a Windows PC. No install has run end to end — not in QEMU, not on
-real hardware.** Where a claim in these docs says "verified", it means "read in upstream source or in the
-real Mint 22.2 ISO's file tree"; nothing below has been *run*. The first QEMU install may find problems, and
-the first real-hardware install will; expect several fix rounds.
+unit-tested with fake target systems on a Windows PC. It has run end to end exactly once, in QEMU on a CI
+runner (`build/qa/install_test.py`, an automated Ubiquity install with real internet, then a boot of the
+installed disk into the account wizard) — never on real hardware.** That run worked (updates, drivers, Chrome,
+Wine, Lutris and the Flatpaks were installed, oem-config was armed, the installed disk booted into the
+wizard) and found the problems this page now describes as fixed: LibreOffice refused because of held
+packages, the Steam launcher was removed by an extra app, Chrome's post-install script complained about
+`APT_CONFIG`, and the installer and the wizard did not have the Lindos look. **Those fixes themselves are
+tested only against fake targets: the next CI install is their first proof.** Where a claim in these docs
+says "verified", it means "read in upstream source, in the real Mint 22.2 ISO's file tree or in the log of
+that one QEMU run". Real hardware will find more; expect several fix rounds.
 
 ### What may surprise you (user-visible)
 
 * **The installer still shows a temporary-account page** and Ubiquity's "OEM mode, for manufacturers
   only" wording (a preseed cannot hide it; the alternative is patching Ubiquity, a maintenance and product
   decision). Leave the password empty and press Continue.
-* **The first-boot account wizard looks like Ubiquity**, not like Lindos Setup, and asks for language,
-  keyboard and time zone again (the installer's answers are carried over as defaults). At its end it
-  may show a small package clean-up window. Lindos-branded styling for it is not done.
+* **The first-boot account wizard is still Ubiquity's**: it asks for language, keyboard and time zone again
+  (the installer's answers are carried over as defaults) and, at its end, may show a small package clean-up
+  window. It has the Lindos-Setup skin and the title "Lindos Setup" now ([above](#the-look-of-the-installer-and-the-account-wizard)),
+  but nobody has seen the result yet: in the one QEMU run it was Ubiquity's light default with the title "System
+  Configuration".
 * **The installer window shows one status line**; the bar barely moves, and the whole download step can
   take most of an hour. It may look frozen.
 * **Everything for every Mode is installed**, because the Mode is chosen after the installation. That is
@@ -271,15 +330,28 @@ These are the unverified assumptions; each one has a check in the QEMU procedure
 * **The boot menus**: `boot_menu.py`'s rewrite of the real Mint 22.2 `isolinux/live.cfg` (its structure is
   known from research; the file was never processed here), the generated BIOS menu, the UEFI menu, and
   `xorriso` including `/lindos/oem-debs`.
+* **The look of the installer and the wizard**: that `GTK_THEME` from the unit's drop-in reaches the GTK program (read
+  in Ubiquity's source; the CI observer now reads the program's environment and fails the run when it is missing),
+  that GTK honours it over the desktop's settings (its documentation says so), that the `Lindos-Setup` style sheet
+  loads and every page is readable (a dark background never with dark text: checked only by reading the CSS), that
+  metacity's window frame follows the skin's `wm_*` colours (it may stay light: the first-boot screenshot is
+  checked for "mostly light" and only warns), and that `oem-config/late_command` removes the drop-in. The
+  *first-boot.png* and *install-progress-\*.png* files of the CI artifact are the evidence.
 * **GTK, seen by nobody yet**: the wizard pages (in particular the banners and the "Set up while Lindos was
   installing" box on the done page), Settings › Apps › Left to finish from setup with real pending items and
   the **Install now** buttons through the real helper actions, and the search box interplay.
 * **Tests that do exist** run everything else hermetically (fake targets, fake runners, `LINDOS_TEST_CMDLINE`):
   `packages/lindos-installer/tests`, `build/tests`, `tests/test_boot_menu.py`, the lindos-core session /
   install-state / first-boot tests and the lindos-setup / lindos-settings suites. The CI `boot-test` job
-  boots the kernel directly and never sees the installer. A QEMU install test (`build/qa/install_test.py`:
-  blank disk, `automatic-ubiquity` with a CI-only seed, read-only inspection of the installed disk, then a boot
-  to see the account wizard) is being added to CI and has not yet run on GitHub Actions.
+  boots the kernel directly and never sees the installer. The QEMU install test (`build/qa/install_test.py`, the
+  opt-in CI job `install-test`: blank disk, `automatic-ubiquity` with a CI-only seed, read-only inspection of the
+  installed disk, then a boot to see the account wizard) has run once; its findings are in the list above. Two
+  of its verdicts were the test's own faults and are fixed: the check for "no desktop session" matched the
+  command line of `earlyoom` (which names the panel in a regular expression) instead of process names, and its
+  listing of the ISO's boot files put several `xorriso -find` commands into one run. `/run` in the installed system
+  is not empty after the install (`/run/mount` and `/run/adduser`): that is Ubiquity's own user setup (it runs
+  `mount` and `adduser` in a bare chroot before it binds `/run`), not the hook; harmless on a tmpfs, tidied by the
+  finalisation and only noted, not warned about, by the test.
 
 ## See also
 

@@ -11,12 +11,18 @@ IS_LIVE_SESSION="/usr/libexec/lindos/is-live-session"
 OEM_CONFIG_PENDING="/usr/libexec/lindos/oem-config-pending"
 WAIT_FOR_NETWORK="/usr/libexec/lindos/wait-for-network"
 APT_SERIALISE="/usr/libexec/lindos/apt-serialise"
+UPDATE_REFRESH="/usr/libexec/lindos/update-refresh"
+UPDATE_REPAIR="/usr/libexec/lindos/update-repair"
+REBOOT_HOOK="/usr/libexec/lindos/reboot-required-hook"
 STATE_DIR="/var/lib/lindos"
 LIVE_INHIBIT_UNIT="/usr/lib/systemd/system/lindos-live-inhibit.service"
 LIVE_INHIBIT_WANTS="/usr/lib/systemd/system/multi-user.target.wants"
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 SYSTEM_CONF="/etc/lindos/system.json"
 USER_TIMER_WANTS="/usr/lib/systemd/user/timers.target.wants"
+SYSTEM_TIMER_WANTS="/usr/lib/systemd/system/timers.target.wants"
+UPDATE_REFRESH_TIMER="/usr/lib/systemd/system/lindos-update-refresh.timer"
+UPDATE_REPAIR_UNIT="/usr/lib/systemd/system/lindos-update-repair.service"
 
 case "$1" in
     configure)
@@ -34,6 +40,9 @@ case "$1" in
         [ -f "$OEM_CONFIG_PENDING" ] && chmod 0755 "$OEM_CONFIG_PENDING" 2>/dev/null || true
         [ -f "$WAIT_FOR_NETWORK" ] && chmod 0755 "$WAIT_FOR_NETWORK" 2>/dev/null || true
         [ -f "$APT_SERIALISE" ] && chmod 0755 "$APT_SERIALISE" 2>/dev/null || true
+        [ -f "$UPDATE_REFRESH" ] && chmod 0755 "$UPDATE_REFRESH" 2>/dev/null || true
+        [ -f "$UPDATE_REPAIR" ] && chmod 0755 "$UPDATE_REPAIR" 2>/dev/null || true
+        [ -f "$REBOOT_HOOK" ] && chmod 0755 "$REBOOT_HOOK" 2>/dev/null || true
 
         # install-state.json (lindos.installstate) lives here; the installer writes it, the
         # first-boot retries and Settings read it.
@@ -46,6 +55,18 @@ case "$1" in
         if [ -f "$LIVE_INHIBIT_UNIT" ]; then
             mkdir -p "$LIVE_INHIBIT_WANTS"
             ln -sf ../lindos-live-inhibit.service "$LIVE_INHIBIT_WANTS/lindos-live-inhibit.service"
+        fi
+        # The update system (SPEC-UPDATE.md §39): the root timer that refreshes the package lists twice a
+        # day (the stock apt-daily timers are switched off on Lindos) and the boot-time repair of an
+        # interrupted upgrade. Enabled with static ".wants" symlinks like the unit above, so they do not
+        # depend on the systemd preset having run. Neither ever installs anything by itself.
+        if [ -f "$UPDATE_REFRESH_TIMER" ]; then
+            mkdir -p "$SYSTEM_TIMER_WANTS"
+            ln -sf ../lindos-update-refresh.timer "$SYSTEM_TIMER_WANTS/lindos-update-refresh.timer"
+        fi
+        if [ -f "$UPDATE_REPAIR_UNIT" ]; then
+            mkdir -p "$LIVE_INHIBIT_WANTS"
+            ln -sf ../lindos-update-repair.service "$LIVE_INHIBIT_WANTS/lindos-update-repair.service"
         fi
         for cli in lindos-mode lindos-browser lindos-config lindos-ram lindos-dualboot lindos-update; do
             [ -f "/usr/bin/$cli" ] && chmod 0755 "/usr/bin/$cli"

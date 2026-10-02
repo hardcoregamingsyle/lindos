@@ -365,7 +365,7 @@ BUILTIN_PAGES: dict[str, Any] = {
             "icon": ["applications-games"],
             "kind": "native",
             "description": "Game Mode, MangoHud, Proton-GE, launchers, controllers, refresh rate",
-            "keywords": ["steam", "proton", "lutris", "heroic", "roblox", "minecraft", "controller", "gamepad", "fps", "mangohud", "gamemode", "anti-cheat", "refresh", "dual boot", "restart into windows", "cloud gaming", "geforce now", "xbox cloud"],
+            "keywords": ["steam", "proton", "lutris", "heroic", "roblox", "minecraft", "controller", "gamepad", "fps", "mangohud", "gamemode", "anti-cheat", "not supported yet", "refresh", "dual boot", "restart into windows", "cloud gaming", "geforce now", "xbox cloud"],
         },
         {
             "id": "hardware",
@@ -922,6 +922,29 @@ def base_description(osr: dict[str, str]) -> str:
 # Static data: accents, launchers, power menu
 # ---------------------------------------------------------------------------------------------
 
+#: the cursor themes Lindos ships (kept equal to lindos.theme.CURSOR_DARK / CURSOR_LIGHT by a test)
+CURSOR_DARK = "Lindos-Cursors-Dark"
+CURSOR_LIGHT = "Lindos-Cursors"
+#: names older releases stored; the ISO keeps them as hidden alias themes without a cursors/ directory
+LEGACY_CURSOR_NAMES = {"Fluent-dark-cursors": CURSOR_DARK, "Fluent-cursors": CURSOR_LIGHT}
+
+
+def canonical_cursor_theme(name: str) -> str:
+    """The shipped name for a stored cursor theme name (so the pointer picker can show it as selected)."""
+    return LEGACY_CURSOR_NAMES.get(str(name or "").strip(), str(name or "").strip())
+
+
+#: xfce4-panel's plugin description for Docklike; without it the taskbar uses the plain task list (lindos-desktop)
+DOCKLIKE_PLUGIN_DESKTOP = "/usr/share/xfce4/panel/plugins/docklike.desktop"
+
+
+def taskbar_alignment_hint(can_centre: bool) -> str:
+    """Subtitle of the taskbar alignment card - honest about what this system's taskbar can do."""
+    if can_centre:
+        return "Centre (Windows 11) or left (Windows 10)"
+    return "Left (Windows 10). Centring needs the Docklike taskbar plugin, which this system does not have yet"
+
+
 DEFAULT_ACCENTS: tuple[tuple[str, str], ...] = (
     ("Lindos Blue", "#60CDFF"),
     ("Windows Blue", "#0078D4"),
@@ -1048,7 +1071,10 @@ ANTICHEAT_TEXT = (
     "Windows programs and games run through Wine / Proton — a translation layer, not Windows and "
     "not a virtual machine. Most single-player games work. Games with kernel-level anti-cheat do "
     "not: Valorant (Vanguard), Fortnite (Epic disabled EAC for Linux), League of Legends, Apex "
-    "Legends, Rainbow Six Siege, Destiny 2 and PUBG will NOT run on Lindos or any Linux. Roblox "
+    "Legends, Rainbow Six Siege, Destiny 2 and PUBG will NOT run on Lindos or any Linux today, so "
+    "they are not supported on Lindos yet. Whether that ever changes is up to their publishers: "
+    "Lindos will list a game as supported once its publisher enables Linux and it has been "
+    "tested, but cannot promise when. Until then, cloud streaming or a restart into your own Windows works. Roblox "
     "runs through Sober (a community runtime, not the Windows client). Minecraft Java is native; "
     "Bedrock works via the unofficial mcpelauncher. Steam games depend on the developer enabling "
     "anti-cheat for Proton — check the links below before buying."
@@ -1380,6 +1406,9 @@ def parse_xrandr(text: str) -> list[dict[str, Any]]:
 
 COMPAT_STATUSES: tuple[str, ...] = ("works", "partial", "broken", "native", "not-possible")
 
+#: badge id for a game the matrix marks with ``unsupported_kind`` (widgets.badge / settings.css)
+BADGE_NOT_SUPPORTED_YET = "not-supported-yet"
+
 
 def normalize_compat_status(value: Any) -> str:
     s = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
@@ -1422,9 +1451,25 @@ def parse_compat_matrix(data: Any) -> list[dict[str, str]]:
                 "reason": str(_first(e, ("reason", "notes", "note", "why"), "") or ""),
                 "link": str(_first(e, ("link", "url", "href"), "") or ""),
                 "how": str(_first(e, ("how", "via", "launcher", "method"), "") or ""),
+                "kind": str(e.get("unsupported_kind") or ""),
             }
         )
     return sorted(out, key=lambda d: d["name"].lower())
+
+
+def parse_compat_disclaimer(data: Any) -> dict[str, Any]:
+    """Top-level ``disclaimer`` of compat-matrix.json -> {badge, short, long, via, kinds}; ``{}`` when absent."""
+    block = data.get("disclaimer") if isinstance(data, dict) else None
+    if not isinstance(block, dict) or not block.get("short"):
+        return {}
+    kinds = block.get("kinds")
+    return {
+        "badge": str(block.get("badge") or ""),
+        "short": str(block.get("short") or ""),
+        "long": str(block.get("long") or ""),
+        "via": str(block.get("via") or ""),
+        "kinds": {str(k): str(v) for k, v in kinds.items()} if isinstance(kinds, dict) else {},
+    }
 
 
 def parse_recipe(data: Any, fallback_id: str = "") -> Optional[dict[str, Any]]:
@@ -1735,6 +1780,7 @@ def normalize_game_route(data: Any) -> dict[str, Any]:
         "routes": routes,
         "recommended": recommended,
         "notes": notes,
+        "disclaimer": dict(data["disclaimer"]) if isinstance(data.get("disclaimer"), dict) else None,
     }
 
 
@@ -2391,6 +2437,11 @@ __all__ = [
     "mode_display_name",
     "base_description",
     "DEFAULT_ACCENTS",
+    "CURSOR_DARK",
+    "CURSOR_LIGHT",
+    "canonical_cursor_theme",
+    "DOCKLIKE_PLUGIN_DESKTOP",
+    "taskbar_alignment_hint",
     "normalize_hex",
     "parse_accents",
     "Launcher",
@@ -2415,6 +2466,8 @@ __all__ = [
     "COMPAT_STATUSES",
     "normalize_compat_status",
     "parse_compat_matrix",
+    "parse_compat_disclaimer",
+    "BADGE_NOT_SUPPORTED_YET",
     "parse_recipe",
     "normalize_apps_db",
     "prefix_path",

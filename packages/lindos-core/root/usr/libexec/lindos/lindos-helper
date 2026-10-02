@@ -49,6 +49,7 @@ try:
     from lindos import hardware as lhardware
     from lindos import helper as lhelper
     from lindos import paths as lpaths
+    from lindos import updatestate as lupdatestate
     from lindos.helper import ACTIONS, EXIT_ERROR, EXIT_OK, EXIT_USAGE, PayloadError, validate_payload
 except ImportError as exc:  # pragma: no cover - only when lindos-core is broken
     sys.stderr.write(f"lindos-helper: cannot import the lindos python package: {exc}\n")
@@ -893,15 +894,120 @@ def act_set_binfmt(ctx: Ctx, p: Dict[str, Any]) -> int:
 
 # --- Lindos's own updates: apt-get-update / system-upgrade / cleanup-old-packages /
 # install-local-debs (SPEC-UPDATE.md §36.4; read-only planning lives in ``lindos.update``) --------
+def _capture_runner(ctx: Ctx):
+    """The ``(argv, timeout) -> (returncode, output)`` runner :mod:`lindos.updatestate` wants, on top of
+    :func:`_run_capture` (dry-run: a no-op success with empty output)."""
+    def run(argv: Sequence[str], timeout: float = 300.0) -> Tuple[int, str]:
+        ok, out = _run_capture(ctx, list(argv), timeout=timeout)
+        return (0 if ok else 1), out
+    return run
+
+
+def _refresh_update_state(ctx: Ctx, *, lists_refreshed: bool = False) -> None:
+    """Rewrite ``/var/lib/lindos/update-state.json`` from the package lists as they are now (never installs
+    anything, never fails the action it follows). *lists_refreshed*: this action just ran a successful
+    ``apt-get update``, so the state says the lists are fresh; every other action leaves that stamp alone."""
+    if ctx.dry_run:
+        ctx.say(f"[dry-run] would refresh {lupdatestate.STATE_PATH}")
+        return
+    try:
+        lupdatestate.refresh_state(runner=_capture_runner(ctx), do_update=False, lists_just_refreshed=lists_refreshed)
+    except Exception as exc:  # the state file is a convenience: a failure here must not fail the update
+        ctx.warn(f"could not refresh {lupdatestate.STATE_PATH}: {exc}")
+
+
+# The lock every Lindos apt job queues on (libexec/apt-serialise takes a flock(1) on the same file). The helper
+# takes it for an upgrade so an apt-serialise'd list refresh cannot change the lists between the checks and the run.
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - not Linux (the tests inject a fake)
+    _fcntl = None  # type: ignore[assignment]
+APT_TURN_LOCK = "/run/lindos/apt.lock"
+#: seconds to wait for our turn; a refresh (apt-get update, up to 15 minutes on a slow mirror) may be ahead of us
+APT_TURN_WAIT = 900.0
+_apt_clock = time.monotonic
+_apt_sleep = time.sleep
+
+
+class _AptTurn:
+    """``with _AptTurn(ctx) as got:`` - hold the shared apt lock for the block. *got* is False only when another
+    Lindos apt job still held it after :data:`APT_TURN_WAIT` seconds: the caller then refuses, nothing is changed.
+    Best effort otherwise, like apt-serialise: no dry run, nested inside apt-serialise (it holds the lock and says
+    so), no ``fcntl`` or an unusable lock file just mean no queueing. While held, ``LINDOS_APT_SERIALISED=1`` is in the
+    environment of every child, so a script that queues behind apt-serialise does not wait for our own lock."""
+
+    def __init__(self, ctx: "Ctx", wait: Optional[float] = None) -> None:
+        self.ctx = ctx
+        self.wait = APT_TURN_WAIT if wait is None else wait
+        self._fh: Any = None
+        self._held = False
+
+    def __enter__(self) -> bool:
+        ctx = self.ctx
+        if ctx.dry_run or _fcntl is None or ctx.env.get("LINDOS_APT_SERIALISED") == "1":
+            return True
+        path = lpaths.resolve(APT_TURN_LOCK)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self._fh = open(path, "a+")
+        except OSError as exc:
+            ctx.warn(f"cannot open {path} ({exc}); not queueing behind other update jobs")
+            return True
+        deadline = _apt_clock() + self.wait
+        announced = False
+        while True:
+            try:
+                _fcntl.flock(self._fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                break
+            except OSError:
+                if _apt_clock() >= deadline:
+                    self._fh.close()
+                    self._fh = None
+                    return False
+                if not announced:
+                    ctx.say("waiting for another Lindos update job to finish ...")
+                    announced = True
+                _apt_sleep(1.0)
+        self._held = True
+        ctx.env["LINDOS_APT_SERIALISED"] = "1"
+        return True
+
+    def __exit__(self, *_exc: Any) -> None:
+        if self._held:
+            self.ctx.env.pop("LINDOS_APT_SERIALISED", None)
+            try:
+                _fcntl.flock(self._fh, _fcntl.LOCK_UN)
+            except OSError:
+                pass
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+        self._fh = None
+        self._held = False
+
+
+def _apt_busy(ctx: Ctx) -> int:
+    ctx.error("another Lindos update job is still running - nothing was changed; try again in a few minutes")
+    return EXIT_ERROR
+
+
 def act_apt_get_update(ctx: Ctx, p: Dict[str, Any]) -> int:
-    """Refresh apt's package indexes only — nothing is installed/removed/upgraded here."""
+    """Refresh apt's package indexes (and the update-state file that reports them) — nothing is
+    installed/removed/upgraded here."""
     if not ctx.online() and not ctx.dry_run:
         ctx.error("offline: cannot refresh package indexes (apt-get update needs network)")
         return EXIT_ERROR
-    ok, tail = ctx.run(["apt-get", "update", "-q"], timeout=900)
-    if not ok:
-        ctx.error(f"apt-get update failed: {tail}")
-    return EXIT_OK if ok else EXIT_ERROR
+    with _AptTurn(ctx) as got:
+        if not got:
+            return _apt_busy(ctx)
+        ok, tail = ctx.run(["apt-get", "update", "-q"], timeout=900)
+        if not ok:
+            ctx.error(f"apt-get update failed: {tail}")
+            return EXIT_ERROR
+        _refresh_update_state(ctx, lists_refreshed=True)
+    return EXIT_OK
 
 
 def act_system_upgrade(ctx: Ctx, p: Dict[str, Any]) -> int:
@@ -920,14 +1026,181 @@ def act_system_upgrade(ctx: Ctx, p: Dict[str, Any]) -> int:
                         "--"] + packages, timeout=1800)
     if not ok:
         ctx.error(f"apt-get install --only-upgrade failed: {tail}")
+    _refresh_update_state(ctx)        # so `lindos-update status` does not keep listing what was just installed
     return EXIT_OK if ok else EXIT_ERROR
 
 
+#: apt options for every unattended package run: keep the user's edited config files, wait for a dpkg lock
+#: somebody else holds instead of failing, retry a flaky mirror.
+UPGRADE_APT_OPTS = ["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+                    "-o", "DPkg::Lock::Timeout=300", "-o", "Acquire::Retries=3"]
+UPGRADE_ENV = {"NEEDRESTART_MODE": "a", "APT_LISTCHANGES_FRONTEND": "none", "UCF_FORCE_CONFFOLD": "1"}
+#: refuse to start an upgrade when the root file system has less free space than this ...
+MIN_FREE_ROOT_BYTES = 1024 * 1024 * 1024
+#: ... or /boot has less than this and a kernel is part of the plan
+MIN_FREE_BOOT_BYTES = 200 * 1024 * 1024
+
+
+def _disk_free(path: str) -> Optional[int]:
+    """Free bytes on *path*'s file system, or ``None`` when it cannot be read."""
+    try:
+        return shutil.disk_usage(lpaths.resolve(path)).free
+    except OSError:
+        return None
+
+
+def _running_kernel_release() -> str:
+    uname = getattr(os, "uname", None)
+    try:
+        return str(uname().release) if uname else ""
+    except OSError:
+        return ""
+
+
+def _repair_dpkg(ctx: Ctx) -> bool:
+    """The always-run tail of an upgrade (and the boot-time repair): finish half-configured packages, then
+    let apt fix broken dependencies."""
+    ok1, tail1 = ctx.run(["dpkg", "--configure", "-a", "--force-confdef", "--force-confold"],
+                         timeout=1800, extra_env=UPGRADE_ENV)
+    if not ok1:
+        ctx.error(f"dpkg --configure -a failed: {tail1}")
+    ok2, tail2 = ctx.run(["apt-get", "-f", "install", "-y", "-q"] + UPGRADE_APT_OPTS, timeout=1800,
+                         extra_env=UPGRADE_ENV)
+    if not ok2:
+        ctx.error(f"apt-get -f install failed: {tail2}")
+    return ok1 and ok2
+
+
+def act_apt_full_upgrade(ctx: Ctx, p: Dict[str, Any]) -> int:
+    """The base-system upgrade (SPEC-UPDATE.md §36.4): take the apt turn, simulate as root, run only the plan
+    the user was shown - mark the run in progress, download, check the plan again on a fresh simulation, upgrade
+    (never removing what was not approved) - and always repair afterwards."""
+    digest = str(p["plan_digest"])
+    allow_kernel = bool(p.get("allow_kernel"))
+    allow_removals = bool(p.get("allow_removals"))
+    # apt re-resolves in every new process, so a removal nobody approved could slip in between the checks and the
+    # run: unless removals were approved, apt itself is told to abort rather than remove anything
+    no_remove = [] if allow_removals else ["--no-remove"]
+    upgrade_cmd = ["apt-get", "dist-upgrade", "-y", "-q"] + UPGRADE_APT_OPTS + no_remove
+    if ctx.dry_run:
+        ctx.say(f"[dry-run] would take the apt turn, then refuse unless apt-get -s dist-upgrade gives exactly the plan {digest}")
+        ctx.run(["apt-get", "-q", "-s", "dist-upgrade"])
+        ctx.say(f"[dry-run] would mark {lupdatestate.IN_PROGRESS_PATH} before the download, then download")
+        ctx.run(["apt-get", "-d", "-y", "-q", "dist-upgrade"] + UPGRADE_APT_OPTS + no_remove)
+        ctx.say(f"[dry-run] would simulate again after the download and refuse unless it is still exactly the plan {digest}")
+        ctx.run(["apt-get", "-q", "-s", "dist-upgrade"])
+        ctx.run(upgrade_cmd)
+        ctx.run(["dpkg", "--configure", "-a", "--force-confdef", "--force-confold"])
+        ctx.run(["apt-get", "-f", "install", "-y", "-q"] + UPGRADE_APT_OPTS)
+        _refresh_update_state(ctx)
+        return EXIT_OK
+    if not ctx.online():
+        ctx.error("offline: cannot upgrade (apt-get needs network)")
+        return EXIT_ERROR
+    with _AptTurn(ctx) as got:
+        if not got:
+            return _apt_busy(ctx)
+        return _apt_full_upgrade(ctx, digest, allow_kernel, allow_removals, upgrade_cmd, no_remove)
+
+
+def _apt_full_upgrade(ctx: Ctx, digest: str, allow_kernel: bool, allow_removals: bool, upgrade_cmd: List[str],
+                      no_remove: List[str]) -> int:
+    """The body of :func:`act_apt_full_upgrade`, run while holding the apt turn."""
+    if lupdatestate.marker_present():
+        ctx.say("a previous upgrade did not finish - repairing it first")
+        if not _repair_dpkg(ctx):
+            ctx.error("the previous upgrade could not be repaired; nothing was changed")
+            return EXIT_ERROR
+        lupdatestate.clear_marker()
+    runner = _capture_runner(ctx)
+    plan = lupdatestate.simulate_upgrade(runner)
+    problems = lupdatestate.check_upgrade_plan(plan, expected_digest=digest, allow_kernel=allow_kernel,
+                                               allow_removals=allow_removals,
+                                               running_kernel=_running_kernel_release())
+    if problems:
+        for problem in problems:
+            ctx.error(problem)
+        ctx.error("refusing to upgrade; nothing was changed")
+        return EXIT_ERROR
+    if not plan.items and not plan.removals:
+        ctx.say("apt-full-upgrade: nothing to do (already up to date)")
+        _refresh_update_state(ctx)
+        return EXIT_OK
+    free_root = _disk_free("/")
+    if free_root is not None and free_root < MIN_FREE_ROOT_BYTES:
+        ctx.error(f"not enough free disk space to upgrade safely ({free_root // (1024 * 1024)} MiB free on /; "
+                  f"{MIN_FREE_ROOT_BYTES // (1024 * 1024)} MiB needed); nothing was changed")
+        return EXIT_ERROR
+    if plan.kernel_items():
+        free_boot = _disk_free("/boot")
+        if free_boot is not None and free_boot < MIN_FREE_BOOT_BYTES:
+            ctx.error(f"not enough free space in /boot for a new kernel ({free_boot // (1024 * 1024)} MiB free; "
+                      f"{MIN_FREE_BOOT_BYTES // (1024 * 1024)} MiB needed); nothing was changed")
+            return EXIT_ERROR
+    ctx.say(f"upgrading {len(plan.items)} package(s), removing {len(plan.removals)}")
+    # marked BEFORE the download (up to an hour): a list refresh that starts meanwhile sees it and stays out
+    try:
+        lupdatestate.write_marker("apt-full-upgrade", digest=digest)
+    except OSError as exc:
+        ctx.warn(f"could not write the in-progress marker: {exc}")
+    ok_dl, tail_dl = ctx.run(["apt-get", "-d", "-y", "-q", "dist-upgrade"] + UPGRADE_APT_OPTS + no_remove, timeout=3600,
+                             extra_env=UPGRADE_ENV)
+    if not ok_dl:
+        lupdatestate.clear_marker()      # nothing was installed: nothing to repair at the next start
+        ctx.error(f"downloading the packages failed ({tail_dl}); nothing was changed")
+        return EXIT_ERROR
+    # the lists may have changed during the download: the plan is checked AGAIN, on a fresh simulation, right before
+    # the real run - the first checks only covered what apt planned back then
+    plan = lupdatestate.simulate_upgrade(runner)
+    problems = lupdatestate.check_upgrade_plan(plan, expected_digest=digest, allow_kernel=allow_kernel,
+                                               allow_removals=allow_removals,
+                                               running_kernel=_running_kernel_release())
+    if problems:
+        lupdatestate.clear_marker()
+        for problem in problems:
+            ctx.error(problem)
+        ctx.error("the package lists changed while the packages were downloading; refusing to upgrade, nothing "
+                  "was installed")
+        _refresh_update_state(ctx)       # so the next look at the state shows the new plan
+        return EXIT_ERROR
+    ok_up, tail_up = ctx.run(upgrade_cmd, timeout=3600, extra_env=UPGRADE_ENV)
+    if not ok_up:
+        ctx.error(f"apt-get dist-upgrade failed: {tail_up}")
+    repaired = _repair_dpkg(ctx)
+    if repaired:
+        lupdatestate.clear_marker()      # left in place when the repair failed: the boot-time repair retries it
+    _refresh_update_state(ctx)
+    return EXIT_OK if (ok_up and repaired) else EXIT_ERROR
+
+
 def act_cleanup_old_packages(ctx: Ctx, p: Dict[str, Any]) -> int:
-    """``apt-get autoremove --purge`` (old kernels/orphaned dependencies) — fully offline-safe."""
-    ok, tail = ctx.run(["apt-get", "autoremove", "--purge", "-y", "-q"], timeout=900)
+    """A *safe* autoremove (build/chroot/lib.sh ``safe_autoremove``, ported): simulate it, leave out the
+    desktop/base packages and the running, newest and previous kernel, and prove with a second simulation
+    that purging just the rest removes nothing else - or remove nothing at all."""
+    if ctx.dry_run:
+        ctx.run(["apt-get", "-q", "-s", "autoremove", "--purge"])
+        ctx.say("[dry-run] would purge only what a second simulation proves safe: apt-get purge -y -q -- <packages>")
+        return EXIT_OK
+    runner = _capture_runner(ctx)
+    rc, out = runner(("dpkg-query", "-W", "-f=${Package}\n", "linux-image-*"), 30.0)
+    releases = [rel for rel in (lupdatestate.kernel_release_of(n.strip()) for n in out.splitlines())
+                if rc == 0 and rel]
+    decision = lupdatestate.decide_cleanup(runner, running_kernel=_running_kernel_release(),
+                                           installed_kernels=releases)
+    if decision.refused:
+        ctx.error(decision.refused)
+        return EXIT_ERROR
+    for name, why in decision.kept:
+        ctx.say(f"kept {name} ({why})")
+    if not decision.packages:
+        ctx.say("cleanup: nothing to remove")
+        return EXIT_OK
+    ctx.say(f"removing {len(decision.packages)} package(s): {' '.join(decision.packages)}")
+    ok, tail = ctx.run(["apt-get", "purge", "-y", "-q", "--"] + decision.packages, timeout=900,
+                       extra_env=UPGRADE_ENV)
     if not ok:
-        ctx.error(f"apt-get autoremove --purge failed: {tail}")
+        ctx.error(f"apt-get purge failed: {tail}")
+    _refresh_update_state(ctx)
     return EXIT_OK if ok else EXIT_ERROR
 
 
@@ -964,6 +1237,7 @@ def act_install_local_debs(ctx: Ctx, p: Dict[str, Any]) -> int:
     ok2, tail2 = ctx.run(["apt-get", "-f", "install", "-y", "-q"], timeout=900)
     if not ok2:
         ctx.error(f"apt-get -f install failed: {tail2}")
+    _refresh_update_state(ctx)        # a sideload changes what is installed, so it changes the plan too
     return EXIT_OK if (ok and ok2) else EXIT_ERROR
 
 
@@ -1067,6 +1341,7 @@ HANDLERS = {
     "system-upgrade": act_system_upgrade,
     "cleanup-old-packages": act_cleanup_old_packages,
     "install-local-debs": act_install_local_debs,
+    "apt-full-upgrade": act_apt_full_upgrade,
     "run-batch": act_run_batch,
 }
 assert set(HANDLERS) == set(ACTIONS), "helper actions out of sync with lindos.helper.ACTIONS"

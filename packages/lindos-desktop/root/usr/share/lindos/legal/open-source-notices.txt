@@ -1,0 +1,47 @@
+Lindos - legal and open-source notices
+======================================
+
+This text is shown by Settings > About > "Legal and open-source notices".  It is information, not legal advice,
+and it is not exhaustive: the licence of every installed package is in /usr/share/doc/<package>/copyright.
+
+Lindos itself
+-------------
+Lindos's own code, packaging, artwork (wallpapers, logo, icons) and documentation are free software, licensed
+GPL-3.0-or-later.  They come with no warranty, to the extent the law permits.  Source:
+https://github.com/hardcoregamingsyle/lindos
+
+What Lindos is built on
+-----------------------
+Lindos is an independent project.  Its base system is made of packages from Ubuntu 24.04 LTS ("noble"), from Debian,
+and from the Linux Mint 22.x repositories and installer tooling: the Linux kernel, systemd, apt and dpkg, the GNU
+tools, X.Org, the Xfce desktop, LightDM and thousands of other programs.  Each keeps its own licence (mostly GPL,
+LGPL, MIT, BSD, MPL and Apache).  The source code of every one of them is available from the archive it came from
+(apt source <package>).
+
+Names and trademarks
+--------------------
+Linux Mint, Ubuntu, Debian, Firefox, Windows, Steam, Xfce and the other product names in this text belong to their
+owners.  Lindos is not affiliated with, endorsed by or sponsored by any of them.  Lindos is not Windows and does not
+contain Windows: Windows programs run through Wine and Proton, a compatibility layer, without a virtual machine.
+Some programs (in particular games with kernel-level anti-cheat) do not run.
+
+Components Lindos adds or configures
+------------------------------------
+Fluent GTK theme and Fluent icon theme   GPL-3.0     vinceliuice; installed under the names Lindos-Dark, Lindos-Light,
+                                                     Lindos, Lindos-dark and Lindos Cursors
+Selawik (default UI font)                SIL OFL-1.1 Microsoft; "Selawik" is a reserved font name, the font is
+                                                     shipped unmodified
+Inter (fallback UI font)                 SIL OFL-1.1 Rasmus Andersson
+Xfce, Thunar, Whisker Menu, Mousepad,
+  Ristretto, xfce4-terminal              GPL / LGPL  the Xfce project
+Evince                                   GPL-2.0+    the GNOME project
+VLC media player                         GPL-2.0+    VideoLAN
+Mozilla Firefox and Thunderbird          MPL-2.0     Mozilla; the Mozilla trademarks apply to their names and logos
+LibreOffice                              MPL-2.0     The Document Foundation
+Wine, DXVK, VKD3D-Proton                 LGPL / zlib  the respective projects
+
+Google Chrome and Microsoft Edge are proprietary programs.  They are never part of the Lindos image: they are
+downloaded from their publishers' own repositories.  Steam is Valve's proprietary client and comes from Valve's
+repository, under Valve's own terms.
+
+The full list of third-party components and where each one comes from is THIRD_PARTY.md in the source repository.

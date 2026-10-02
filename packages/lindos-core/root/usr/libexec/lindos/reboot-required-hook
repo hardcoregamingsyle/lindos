@@ -1,0 +1,17 @@
+#!/bin/bash
+# reboot-required-hook - apt's DPkg::Post-Invoke hook (etc/apt/apt.conf.d/98lindos-reboot-required).
+#
+# The base system writes /run/reboot-required through update-notifier-common, which is not on
+# Lindos, so nothing would ever tell you that a kernel or core-library update needs a restart.
+# After every apt run this notes it: `python3 -m lindos.updatestate reboot-hook` looks at what dpkg
+# installed since boot (dpkg.log), and at whether a newer kernel than the running one is installed,
+# and writes /run/reboot-required and /run/reboot-required.pkgs (/run is cleared by the restart
+# itself). The desktop shows "Restart now / later"; nothing ever restarts by itself.
+# It must never make apt fail: every path ends with exit 0.
+# Test seam: LINDOS_PYTHON.
+set -Eeuo pipefail
+
+PY="${LINDOS_PYTHON:-python3}"
+command -v "${PY}" >/dev/null 2>&1 || exit 0
+"${PY}" -m lindos.updatestate reboot-hook >/dev/null 2>&1 || true
+exit 0

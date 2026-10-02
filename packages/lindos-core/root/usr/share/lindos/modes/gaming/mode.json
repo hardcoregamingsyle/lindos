@@ -8,7 +8,6 @@
   "packages": [
     "gamemode",
     "mangohud",
-    "steam-devices",
     "mesa-vulkan-drivers",
     "libvulkan1",
     "vulkan-tools",
@@ -56,5 +55,5 @@
     "prism",
     "sober"
   ],
-  "notes": "Valorant (Vanguard) and Fortnite (EAC-Linux disabled by Epic) do not run on any Linux, Lindos included. Roblox runs through Sober, not the Windows client. Check protondb.com and areweanticheatyet.com for Steam titles."
+  "notes": "Valorant (Vanguard) and Fortnite (EAC-Linux disabled by Epic) do not run on any Linux today, so they are not supported on Lindos yet: that is up to their publishers, and no date is given. Roblox runs through Sober, not the Windows client. Check protondb.com and areweanticheatyet.com for Steam titles."
 }

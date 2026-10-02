@@ -50,8 +50,8 @@ command, JSON shape and file this document describes) and extends the honesty ru
     Windows. **Nothing is installed without you choosing it.**
   * **Kernel-anti-cheat games are never claimed to "transfer".** Steam game *files* can be copied (see
     §5 below), but a title that needs Vanguard/EAC-kernel/BattlEye-kernel is shown with its honest
-    [play-anywhere route](GAMING.md) (cloud, dual-boot, or "not possible"), never as something that
-    just works after the copy.
+    [play-anywhere route](GAMING.md) (cloud, dual-boot, or "not supported on Lindos yet" — the
+    publisher decides, no date), never as something that just works after the copy.
 * **BitLocker recovery keys are typed by you, into udisks/cryptsetup/dislocker's own prompt.** Lindos
   never sees, stores or passes them on.
 
@@ -134,8 +134,9 @@ collected them) and, for each one, offers the closest honest match:
 * a `.desktop` **shortcut to the website**, when that is genuinely the modern equivalent;
 * **your own licensed Windows**, over [WinApps](WINAPPS.md) or the [Windows VM](VM.md), for the
   handful of things that need it;
-* or, honestly, **"not possible on Linux yet"** — for example a kernel-anti-cheat game, which is shown
-  with its [play-anywhere route](GAMING.md) instead of a fake "installed" checkmark.
+* or, honestly, **"not supported on Lindos yet"** — for example a kernel-anti-cheat game (whether it
+  ever runs on Linux is its publisher's decision, and no date is given), which is shown with its
+  [play-anywhere route](GAMING.md) instead of a fake "installed" checkmark.
 
 **Nothing is installed without you choosing it**: by ticking items in a saved plan file before running
 `lindos-transfer install-apps --plan plan.json` (Lindos Setup no longer has an Apps page; the installer

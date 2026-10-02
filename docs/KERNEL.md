@@ -12,7 +12,8 @@
 > **What it is not.** A faster kernel is still a **Linux** kernel. It does not run Windows
 > kernel-mode anti-cheat and changes nothing about the anti-cheat reality in
 > [ANTI-CHEAT.md](ANTI-CHEAT.md). Do not expect Valorant, Fortnite or Call of Duty to work because
-> the kernel is tuned — they cannot, for the reasons in that document. It also does not forge,
+> the kernel is tuned — they cannot, for the reasons in that document (Lindos marks them **Not
+> supported yet**; whether that ever changes is up to their publishers, not the kernel). It also does not forge,
 > spoof or bypass Secure Boot: §6 below signs the kernel with a key **you** create and enrol, the
 > same way any self-compiled kernel has to.
 

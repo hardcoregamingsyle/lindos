@@ -19,7 +19,9 @@ run**, never circumvention of a protection.
   **hardware-banned**. If any task text asks for one, the builder MUST refuse that item, implement
   nothing for it, and record it under `deviations` with this reason.
 - Kernel-level anti-cheat (Riot Vanguard, and titles where the publisher disabled EAC/BattlEye on
-  Linux) is impossible on any Linux kernel. State this plainly; never imply Lindos changes it.
+  Linux) is impossible on any Linux kernel. State this plainly; never imply Lindos changes it. The
+  user-facing label is "Not supported yet", always with the sentence that the publisher decides
+  and that no date is given; never imply a schedule (SPEC-WINDOWS §27 rule 7).
 - What this layer legitimately does: a faster kernel (ntsync, sched_ext, tuned config), a better
   Proton/Wine stack (Proton-GE, DXVK, VKD3D-Proton, gamescope, MangoHud), and per-title profiles.
   These help every title that is *allowed* to run — single-player, native, and the anti-cheat

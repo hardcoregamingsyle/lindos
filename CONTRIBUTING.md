@@ -16,7 +16,10 @@ recipe notes, the compat matrix, docs and this file. In particular:
 * Wine/Proton is a translation layer, not Windows — never write "runs Windows natively"
   without that qualification.
 * Valorant, Fortnite, League of Legends, Apex Legends, Rainbow Six Siege, Destiny 2, PUBG (and
-  every other kernel-anti-cheat title) are **not possible** on any Linux; say so and say why.
+  every other kernel-anti-cheat title) are **not possible** on any Linux today and are shown as
+  **"Not supported yet"**; say so, say why, say it is the publisher's decision, and never write
+  "coming soon" or give a date — only a publisher can deliver that. The wording lives once, in the
+  `disclaimer` block of the compat matrix (`tests/test_anticheat_disclaimer.py` guards it).
 * Roblox is "via Sober", never "the Windows client works".
 * Adobe CC 2019–2021 recipes are `partial` at best (CS6 `works`); newer releases, Premiere and
   AutoCAD are `broken` and must name native alternatives.
@@ -92,7 +95,7 @@ the bundled binary in the interpreter's scripts directory.
 
 | Change this | Then |
 |---|---|
-| `packages/lindos-gaming/root/usr/share/lindos/compat-matrix.json` | `python3 tests/gen-compat-doc.py` — commits `docs/COMPATIBILITY.md`; CI/`tests/run.sh` fail when it is stale. Entry keys: `game, status (native\|works\|partial\|not_possible\|unknown), how, anticheat, reason, link`; `not_possible` entries must not advertise a launcher (`how` = `—`). |
+| `packages/lindos-gaming/root/usr/share/lindos/compat-matrix.json` | `python3 tests/gen-compat-doc.py` — commits `docs/COMPATIBILITY.md`; CI/`tests/run.sh` fail when it is stale. Entry keys: `game, status (native\|works\|partial\|not_possible\|unknown), how, anticheat, reason, link` and, on kernel-anti-cheat / publisher-blocked titles only, `unsupported_kind` (`no-linux-version` \| `publisher-disabled`); the top-level `disclaimer{badge,short,via,long,kinds}` is the one place the "Not supported yet" wording is written; `not_possible` entries must not advertise a launcher (`how` = `—`). |
 | `packages/lindos-core/root/usr/share/lindos/modes/<id>/mode.json` (+ `packages/lindos-tune/root/etc/lindos/tune.d/<id>.conf`, `packages/lindos-desktop/root/usr/share/lindos/modes/<id>/panel/`) | update the table in `docs/MODES.md` |
 | `packages/lindos-compat/root/usr/share/lindos/recipes/<id>.json` | update the recipe table in `docs/WINDOWS-APPS.md`; `id` must equal the file name; `broken` recipes need `alternatives` |
 | `packages/lindos-settings/root/usr/share/lindos/settings/pages.json` | update `docs/SETTINGS.md`; `model.BUILTIN_PAGES` must stay identical (a test checks) |

@@ -17,12 +17,16 @@ services (Microsoft 365 Click-to-Run, Creative Cloud) or DirectX features Wine l
 shows the same table.
 
 ### Can I play Valorant / Fortnite / League of Legends / Apex / Rainbow Six / Destiny 2 / PUBG?
-**No — on no Linux distribution, Lindos included.** Valorant and League use Riot Vanguard (a
-Windows-only kernel driver); Epic disabled Easy Anti-Cheat's Linux support for Fortnite; Apex
-Legends disabled it in November 2024; Ubisoft, Bungie and Krafton never enabled BattlEye's Linux
-support; Rust's developer refused; Call of Duty's Ricochet is a kernel driver. Nothing on the
-Lindos side can change a publisher's decision. See [COMPATIBILITY.md](COMPATIBILITY.md) (56
-titles) and [areweanticheatyet.com](https://areweanticheatyet.com/).
+**Not supported on Lindos yet — and not possible on any Linux distribution today.** Valorant and
+League use Riot Vanguard (a Windows-only kernel driver); Epic disabled Easy Anti-Cheat's Linux
+support for Fortnite; Apex Legends disabled it in November 2024; Ubisoft, Bungie and Krafton never
+enabled BattlEye's Linux support; Rust's developer refused; Call of Duty's Ricochet is a kernel
+driver. Nothing on the Lindos side can change a publisher's decision. Lindos will list a game as
+supported once its publisher enables Linux and it has been tested, but it cannot promise when — and
+some publishers have said they will not. See
+[ANTI-CHEAT.md](ANTI-CHEAT.md#0-what-not-supported-yet-means-and-does-not-mean),
+[COMPATIBILITY.md](COMPATIBILITY.md) (56 titles) and
+[areweanticheatyet.com](https://areweanticheatyet.com/).
 
 Lindos does not pretend otherwise — it ships **no** attestation/TPM/Secure-Boot forger, no HWID or
 CPUID spoofer, no VM-hiding trick, because none of that can produce the hardware-rooted signature

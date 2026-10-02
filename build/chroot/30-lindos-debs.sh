@@ -4,8 +4,11 @@
 #
 #  Runs INSIDE the squashfs chroot as root.  build-iso.sh stages out/debs/*.deb
 #  to /tmp/lindos/debs/.  Order (LINDOS_DEB_ORDER in build/config.env):
-#      lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming
-#      lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta
+#      lindos-archive-keyring lindos-core lindos-desktop lindos-tune lindos-compat
+#      lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta
+#  (lindos-archive-keyring - the update source and its key - is installed here and nowhere earlier; it
+#  needs nothing, so no order can leave apt with an unmet dependency; afterwards this hook checks the
+#  source and, when it is enabled, exercises it with apt-get update)
 #  (lindos-installer: the installer scripts, on the medium only; 79-installer-flow.sh wires them into Ubiquity)
 #  (lindos-transfer installs before lindos-setup per SPEC-WINDOWS §33 so the
 #  OOBE's optional "Bring your stuff from Windows" page can call it.)
@@ -24,7 +27,7 @@ set -Eeuo pipefail
 
 hook_begin "lindos debs"
 
-: "${LINDOS_DEB_ORDER:=lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta}"
+: "${LINDOS_DEB_ORDER:=lindos-archive-keyring lindos-core lindos-desktop lindos-tune lindos-compat lindos-gaming lindos-transfer lindos-setup lindos-settings lindos-installer lindos-meta}"
 : "${INSTALL_MODE_PACKAGES:=1}"
 : "${TUNE_MODE:=everyday}"
 
@@ -95,6 +98,36 @@ else
         fi
     done
     [ "${failed}" -eq 0 ] || die "one or more Lindos packages failed to install"
+fi
+
+# ---------------------------------------------------------------------------
+# The Lindos update source (SPEC-UPDATE.md, docs/UPDATES.md): lindos.sources and its key come from the
+# lindos-archive-keyring package installed above; nothing is fetched from the network. It ships switched OFF
+# until a real key and server exist. LINDOS_APT_REPO_REQUIRE=1 (release images) fails the build unless the
+# source is enabled and its key is on the image; an enabled source is exercised by apt-get update right away.
+# ---------------------------------------------------------------------------
+: "${LINDOS_APT_REPO_REQUIRE:=0}"
+: "${LINDOS_SOURCES_FILE:=/etc/apt/sources.list.d/lindos.sources}"
+: "${LINDOS_KEYRING_FILE:=/usr/share/keyrings/lindos-archive-keyring.gpg}"
+if ! pkg_installed lindos-archive-keyring; then
+    if [ "${LINDOS_APT_REPO_REQUIRE}" = "1" ]; then
+        die "LINDOS_APT_REPO_REQUIRE=1 but lindos-archive-keyring is not installed (no .deb staged in ${DEBS_DIR}?)"
+    fi
+    warn "no lindos-archive-keyring installed - the image gets no Lindos update source (lindos-update sideload still works)"
+elif [ -f "${LINDOS_SOURCES_FILE}" ] && ! grep -qiE '^[[:space:]]*Enabled:[[:space:]]*(no|false|0|off)[[:space:]]*$' "${LINDOS_SOURCES_FILE}"; then
+    [ -s "${LINDOS_KEYRING_FILE}" ] || die "the Lindos apt source is enabled but ${LINDOS_KEYRING_FILE} is missing"
+    log "Lindos apt source enabled: $(sed -n 's/^URIs:[[:space:]]*//p' "${LINDOS_SOURCES_FILE}" | head -n 1)"
+    if apt-get "${APT_ARGS[@]}" update; then
+        log "apt-get update accepted the Lindos source"
+    elif [ "${LINDOS_APT_REPO_REQUIRE}" = "1" ]; then
+        die "apt-get update failed with the Lindos source enabled (LINDOS_APT_REPO_REQUIRE=1)"
+    else
+        warn "apt-get update failed with the Lindos source enabled - is the repository reachable and signed with the shipped key?"
+    fi
+elif [ "${LINDOS_APT_REPO_REQUIRE}" = "1" ]; then
+    die "LINDOS_APT_REPO_REQUIRE=1 but the Lindos apt source is not enabled (${LINDOS_SOURCES_FILE}); see docs/RELEASING.md"
+else
+    log "Lindos apt source is switched off (no real signing key and server yet) - the honest default; see docs/UPDATES.md"
 fi
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
 Depends: xfce4-panel, xfce4-whiskermenu-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
-Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall, policykit-1-gnome | mate-polkit | lxpolkit
+Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall, mousepad, ristretto, evince, vlc, policykit-1-gnome | mate-polkit | lxpolkit
 Suggests: lindos-settings, lindos-setup, fonts-jetbrains-mono, emote
 Homepage: https://lindos.dev
 Description: Lindos desktop look and feel (Windows-11-style XFCE)
@@ -13,7 +13,7 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  centred Start button and pinned apps (Whisker Menu + Docklike), a dark
  translucent panel, a two-line clock, Windows-style keyboard shortcuts
  (Super+E, Super+I, Super+L, Super+X, Super+Shift+S, ...), xfwm4 and
- xsettings defaults (Lindos-Dark GTK theme, Lindos icons, Fluent cursors,
+ xsettings defaults (Lindos-Dark GTK theme, Lindos icons, Lindos cursors,
  Selawik UI font), picom compositor profile with the lindos-compositor
  helper, GTK CSS overlay, five original SVG wallpapers, Plymouth boot
  theme, LightDM/slick-greeter branding, per-mode panel layouts for the
@@ -35,11 +35,17 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  .
  It also keeps the base system's own branding from showing through: the
  base's Welcome Screen and Software Manager menu entries (duplicates of
- Lindos Setup and Lindos Store) are hidden, Update Manager and Driver
- Manager get Lindos icons, and the display names in /etc/lsb-release,
- /etc/linuxmint/info and the GRUB menu say Lindos - re-applied after every
- apt run (rebrand-base.py, /etc/apt/apt.conf.d/99lindos-branding). Identity
- fields the base's tools rely on (ID, DISTRIB_ID, codenames) are left alone.
+ Lindos Setup and Lindos Store), its file-sharing, notes, backup and USB
+ tools and the Xfce/Thunar settings entries are hidden, the update and driver
+ tools get Lindos names and icons, the base's theme packs are hidden from the
+ pickers, and the display names in /etc/lsb-release, /etc/linuxmint/info and
+ the GRUB menu say Lindos - re-applied after every apt run (rebrand-base.py,
+ /etc/apt/apt.conf.d/99lindos-branding). The base's artwork defaults no longer
+ outrank Lindos's (/etc/xdg/xdg-xfce is diverted and replaced), its boot-time
+ rewrite of Firefox's distribution.ini is switched off, and Lindos's default
+ applications (Mousepad, Ristretto, Evince, VLC) are registered in
+ /etc/xdg/mimeapps.list. Identity fields the base's tools rely on (ID,
+ DISTRIB_ID, codenames) are left alone.
  .
  The GTK/icon/cursor themes themselves (built from Fluent by
  build/fetch-assets.sh) and the Selawik/Inter fonts are installed by the
@@ -47,7 +53,9 @@ Description: Lindos desktop look and feel (Windows-11-style XFCE)
  .
  xfce4-docklike-plugin is a Recommends, not a Depends: as of this writing it
  is not packaged for Ubuntu 24.04 "noble" (only Ubuntu 25.10+ and Debian
- trixie+ carry it) — see docs/BUILDING.md. The panel ships configured to use
- it (plugin-2 = docklike in xfce4-panel.xml) and xfce4-panel will simply
- leave that slot empty if it is absent; nothing else about the desktop
- depends on it being present.
+ trixie+ carry it) — see docs/BUILDING.md. The panel layouts ship with it in
+ slot plugin-2; without it the taskbar uses xfce4-panel's own task list and
+ one launcher per installed pinned app instead (taskbar-fallback.py, applied
+ at the first login and when the mode panel profiles are built), so a
+ fresh session always has a window list. That variant is left-aligned,
+ because the task list fills the bar.

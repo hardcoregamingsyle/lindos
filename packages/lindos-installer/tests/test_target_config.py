@@ -88,10 +88,17 @@ def test_holds_pin_apt_conf_and_mounts_lifecycle(full) -> None:
     for family in ("ubiquity", "ubiquity-frontend-gtk", "casper", "linux-image-6.14.0-lindos", "grub-efi-amd64-signed",
                    "shim-signed", "initramfs-tools", "plymouth"):
         assert family in held_words, family
-    for removed_anyway in ("firefox-locale-de", "language-pack-de"):
-        assert removed_anyway in held_words, "%s is in filesystem.manifest-remove: no point upgrading it" % removed_anyway
     for other in ("libfoo", "libplymouth5", "libreoffice-writer", "firefox", "flatpak", "linux-firmware"):
         assert other not in held_words[3:], other
+    # what Ubiquity removes anyway is held in a second call, only for the updates step (and released right after it)
+    holds = [c for c in calls if c.startswith("apt-mark hold")]
+    assert len(holds) == 2, holds
+    for removed_anyway in ("firefox-locale-de", "language-pack-de"):
+        assert removed_anyway not in held_words, "%s must not be held for the whole hook" % removed_anyway
+        assert removed_anyway in holds[1].split(), "%s is in filesystem.manifest-remove: no point upgrading it" % removed_anyway
+    assert "ubiquity" not in holds[1].split()[3:], "a family is held once"
+    unholds = [c for c in calls if c.startswith("apt-mark unhold")]
+    assert unholds[0].split()[2:] == holds[1].split()[2:], "the same packages are released as were held for the updates step"
     assert sb.held() == [] and not (sb.target / "var/lib/lindos/installer-holds").exists()
     pin = (sb.target / "etc/apt/preferences.d/00lindos-installer.pref").read_text(encoding="utf-8")
     assert "Package: ubiquity ubiquity-* oem-config oem-config-*" in pin
@@ -343,10 +350,8 @@ def test_a_failed_browser_install_leaves_no_marker_and_triggers_the_repair(sandb
 
 
 def test_a_script_that_says_installed_while_dpkg_denies_it_is_not_done(sandbox: Sandbox) -> None:
-    script = sandbox.target / "usr/libexec/lindos/install-browser.sh"
-    script.write_text(script.read_text(encoding="utf-8").replace('echo google-chrome-stable >>"${FAKE_STATE}/installed"', ":"),
-                      encoding="utf-8", newline="\n")
-    _ok(sandbox.run_hook(LINDOS_INSTALLER_STEPS="browser"))
+    # (FAKE_NO_EVIDENCE: the fake install-browser.sh exits 0 and leaves nothing installed)
+    _ok(sandbox.run_hook(FAKE_NO_EVIDENCE="install-browser.sh", LINDOS_INSTALLER_STEPS="browser"))
     assert sandbox.step("browser")["status"] == "failed"
     assert not (sandbox.target / "var/lib/lindos/browser-firstboot.done").exists()
 
@@ -610,3 +615,145 @@ def test_the_hook_source_never_sets_errexit_and_always_ends_with_exit_zero() -> 
     assert code.rstrip().endswith("exit 0")
     assert "exec </dev/null" in code and "cd / || true" in code
     assert "trap li_on_exit EXIT" in code and "trap li_on_signal HUP INT TERM" in code
+
+
+# --------------------------------------------------------------------------- apt gets its configuration as an option
+def test_the_hooks_own_apt_calls_carry_the_installer_config_as_an_option_never_as_a_variable(full) -> None:
+    """APT_CONFIG in the environment would be inherited by dpkg's maintainer scripts: google-chrome-stable's postinst
+    assigns APT_CONFIG=/usr/bin/apt-config (a shell variable it runs later) - once the variable is exported already
+    apt-config reads the BINARY as a configuration file ('E: Syntax error /usr/bin/apt-config:13: Extra junk')."""
+    sb, _proc = full
+    apt = [c for c in sb.raw_call_log() if c.startswith(("apt-get ", "apt-cache "))]
+    assert len(apt) > 10
+    for call in apt:
+        if call == "apt-get clean":
+            continue
+        assert call.split()[1:3] == ["-c", "/var/lib/lindos/installer-apt.conf"], call
+    seen = [ln.split(" ", 1) for ln in (sb.state / "apt-config-seen").read_text(encoding="utf-8").splitlines() if ln]
+    for name, value in seen:
+        if name in ("ubuntu-drivers", "lindos-drivers"):
+            continue                       # started with an 'env APT_CONFIG=...' prefix: they run apt themselves
+        assert value == "APT_CONFIG=", "%s inherited %s" % (name, value)
+    drivers = [v for n, v in seen if n == "ubuntu-drivers"]
+    assert drivers == ["APT_CONFIG=/var/lib/lindos/installer-apt.conf"], "the helper that starts apt itself keeps the options"
+
+
+# --------------------------------------------------------------------------- the hold policy
+def _held_blocks(sb: Sandbox):
+    """[(call, held packages)] for every real download/install/upgrade call the fake apt-get saw."""
+    blocks, cur = [], None
+    for ln in (sb.state / "held-log").read_text(encoding="utf-8").splitlines():
+        if ln.startswith("== "):
+            cur = (ln[3:], [])
+            blocks.append(cur)
+        elif ln and cur is not None:
+            cur[1].append(ln)
+    return blocks
+
+
+def test_the_packages_ubiquity_removes_anyway_are_held_only_while_the_updates_step_runs(full) -> None:
+    sb, _proc = full
+    blocks = _held_blocks(sb)
+    upgrades = [held for call, held in blocks if call.startswith("upgrade")]
+    installs = [held for call, held in blocks if call.startswith("install")]
+    assert upgrades and installs
+    for held in upgrades:
+        assert "firefox-locale-de" in held and "ubiquity" in held
+    for held in installs:
+        assert "firefox-locale-de" not in held and "language-pack-de" not in held, "held packages block what needs them to change"
+        assert "ubiquity" in held and "linux-image-6.14.0-lindos" in held, "the installer and kernel families stay held throughout"
+
+
+def test_a_held_l10n_pack_can_no_longer_block_the_libreoffice_extras(sandbox: Sandbox) -> None:
+    """First real install: 'pkgProblemResolver::Resolve generated breaks, this may be caused by held packages' - the
+    held libreoffice-l10n-* / -help-* packs (exact-version dependency on libreoffice-common) refused every libreoffice-*
+    extra, and the step failed although the runner was online."""
+    blocked = " ".join("%s=firefox-locale-de" % p for p in ("libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "libreoffice-gtk3"))
+    _ok(sandbox.run_hook(FAKE_BLOCKED_BY_HOLD=blocked, FAKE_UPGRADES="libfoo", LINDOS_INSTALLER_STEPS="updates mode_extras"))
+    assert sandbox.statuses() == {"updates": "done", "mode_extras": "done"}, (sandbox.step("mode_extras"), sandbox.log_text()[-1500:])
+    installed = (sandbox.state / "installed").read_text(encoding="utf-8").split()
+    for pkg in ("libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "libreoffice-gtk3"):
+        assert pkg in installed, pkg
+    assert sandbox.held() == []
+
+
+def test_a_package_that_stays_blocked_is_named_with_apts_words_and_the_others_are_installed(sandbox: Sandbox) -> None:
+    _ok(sandbox.run_hook(FAKE_UNRESOLVABLE="krita", LINDOS_INSTALLER_STEPS="mode_extras"))
+    step = sandbox.step("mode_extras")
+    assert step["status"] == "failed" and step["detail"].startswith("not installed: krita;"), step
+    assert "held broken packages" in step["detail"], "precisely why: apt's own first error line"
+    installed = (sandbox.state / "installed").read_text(encoding="utf-8").split()
+    assert "gimp" in installed and "kdenlive" in installed and "krita" not in installed, "the rest of its Mode is installed"
+    assert "libreoffice-calc" in installed and "gamemode" in installed, "and so are the other Modes"
+    downloads = [c for c in sandbox.calls_of("apt-get") if c.startswith("apt-get -y -q -d install")]
+    assert not any(c.split()[-1] == "krita" for c in downloads), "nothing was downloaded for what apt cannot resolve"
+
+
+# --------------------------------------------------------------------------- extras: one Mode at a time, simulated first
+def test_the_extras_are_installed_one_modes_apps_at_a_time(sandbox: Sandbox) -> None:
+    import json
+    from installer_testlib import SHARE
+    doc = json.loads((SHARE / "extras.json").read_text(encoding="utf-8"))
+    mode_of = {pkg: modes[0] for pkg, modes in doc["apt_sources"].items()}
+    _ok(sandbox.run_hook(FAKE_NO_CANDIDATE="ananicy-cpp", LINDOS_INSTALLER_STEPS="mode_extras"))
+    assert sandbox.step("mode_extras")["status"] == "done"
+    downloads = [c.split() for c in sandbox.calls_of("apt-get") if c.startswith("apt-get -y -q -d install")]
+    assert len(downloads) == len(set(mode_of.values())) >= 3, downloads
+    for words in downloads:
+        pkgs = [w for w in words if w in mode_of]
+        assert len({mode_of[w] for w in pkgs}) == 1, "one transaction must not mix Modes: %s" % pkgs
+    assert set(w for words in downloads for w in words if w in mode_of) == set(doc["apt"]) - {"ananicy-cpp"}
+
+
+def test_an_extra_whose_install_would_remove_an_installed_package_is_refused_and_named(sandbox: Sandbox) -> None:
+    """First real install: 'apt-get install steam-devices' REMOVED Valve's steam-launcher, which the gaming step had just
+    reported as installed.  Every extras install is simulated first; one that removes something that has to stay is
+    not run."""
+    (sandbox.state / "installed").write_text((sandbox.state / "installed").read_text(encoding="utf-8") + "steam-launcher\n",
+                                             encoding="utf-8", newline="\n")
+    _ok(sandbox.run_hook(FAKE_REMOVES="gimp=steam-launcher", LINDOS_INSTALLER_STEPS="mode_extras"))
+    step = sandbox.step("mode_extras")
+    assert step["status"] == "failed" and step["detail"].startswith("not installed: gimp;") and "would remove steam-launcher" in step["detail"], step
+    installed = (sandbox.state / "installed").read_text(encoding="utf-8").split()
+    assert "steam-launcher" in installed, "the launcher is still there"
+    assert "gimp" not in installed and "krita" in installed and "kdenlive" in installed, "only the offender is left out"
+    assert not any(c.startswith("apt-get -y -q -d install") and "gimp" in c.split() for c in sandbox.calls_of("apt-get"))
+
+
+def test_removals_that_are_on_purpose_or_on_the_removal_list_are_fine(sandbox: Sandbox) -> None:
+    """wine -> wine-staging is an intended replacement; what Ubiquity removes anyway (filesystem.manifest-remove) may go."""
+    _ok(sandbox.run_hook(FAKE_REMOVES="gimp=wine krita=firefox-locale-de,language-pack-de:amd64", LINDOS_INSTALLER_STEPS="mode_extras"))
+    assert sandbox.step("mode_extras")["status"] == "done", sandbox.step("mode_extras")
+    installed = (sandbox.state / "installed").read_text(encoding="utf-8").split()
+    assert "gimp" in installed and "krita" in installed
+
+
+def test_the_firmware_install_is_simulated_too(sandbox: Sandbox) -> None:
+    (sandbox.state / "installed").write_text((sandbox.state / "installed").read_text(encoding="utf-8") + "foo-app\n",
+                                             encoding="utf-8", newline="\n")
+    _ok(sandbox.run_hook(FAKE_REMOVES="linux-firmware=foo-app", LINDOS_INSTALLER_STEPS="drivers"))
+    step = sandbox.step("drivers")
+    assert step["status"] == "failed" and "would remove foo-app" in step["detail"], step
+    assert not any(c.startswith("apt-get -y -q -d install") for c in sandbox.calls_of("apt-get"))
+
+
+# --------------------------------------------------------------------------- the end: 'done' is looked at again
+def test_a_script_that_says_it_worked_but_left_nothing_is_failed_at_the_end(sandbox: Sandbox) -> None:
+    """The gaming step said 'done' with Steam missing (install-gaming.sh had seen steam-launcher earlier; something removed it)."""
+    _ok(sandbox.run_hook(FAKE_NO_EVIDENCE="install-gaming.sh", LINDOS_INSTALLER_STEPS="compat gaming"))
+    assert sandbox.statuses() == {"compat": "done", "gaming": "failed"}, sandbox.statuses()
+    assert "steam" in sandbox.step("gaming")["detail"] and "lutris" in sandbox.step("gaming")["detail"]
+    assert "something removed it again" in sandbox.log_text()
+
+
+def test_a_later_repair_that_removes_an_earlier_result_turns_it_from_done_to_failed(sandbox: Sandbox) -> None:
+    _ok(sandbox.run_hook(FAKE_REPAIR_REMOVES="google-chrome-stable", LINDOS_INSTALLER_STEPS="browser"))
+    assert sandbox.statuses() == {"browser": "failed"}
+    assert "google-chrome-stable" in sandbox.step("browser")["detail"]
+    assert not (sandbox.target / "var/lib/lindos/browser-firstboot.done").exists(), "the silent retry must run again"
+
+
+def test_a_package_list_that_cannot_be_read_at_the_end_leaves_the_results_alone(sandbox: Sandbox) -> None:
+    _ok(sandbox.run_hook(FAKE_DPKG_QUERY_FAIL="1", LINDOS_INSTALLER_STEPS="browser"))
+    assert sandbox.statuses() == {"browser": "done"}
+    assert "cannot be read" in sandbox.log_text()

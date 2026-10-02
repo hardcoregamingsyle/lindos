@@ -102,7 +102,7 @@ TRANSFER_SOURCE_TYPES: List[str] = ["", "partition", "bundle"]
 FALLBACK_ACCENTS: List[Dict[str, str]] = [
     {"id": "aurora-blue", "name": "Aurora Blue", "hex": "#60CDFF"},
     {"id": "classic-blue", "name": "Classic Blue", "hex": "#0067C0"},
-    {"id": "mint-green", "name": "Mint Green", "hex": "#6CCB5F"},
+    {"id": "meadow-green", "name": "Meadow Green", "hex": "#6CCB5F"},
     {"id": "violet", "name": "Violet", "hex": "#B4A0FF"},
     {"id": "rose", "name": "Rose", "hex": "#FF99A4"},
     {"id": "sunset-orange", "name": "Sunset Orange", "hex": "#FF9E5A"},

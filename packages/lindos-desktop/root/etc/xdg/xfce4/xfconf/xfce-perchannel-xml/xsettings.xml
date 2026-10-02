@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <!-- Lindos xsettings defaults (xfsettingsd): Lindos-Dark GTK theme, Lindos icons,
-     Fluent dark cursors, Selawik UI font, Windows-style titlebar button layout. -->
+     Lindos dark cursors, Selawik UI font, Windows-style titlebar button layout. -->
 <channel name="xsettings" version="1.0">
   <property name="Net" type="empty">
     <property name="ThemeName" type="string" value="Lindos-Dark"/>
@@ -37,7 +37,7 @@
     <property name="MenuImages" type="bool" value="true"/>
     <property name="ButtonImages" type="bool" value="false"/>
     <property name="MenuBarAccel" type="string" value="F10"/>
-    <property name="CursorThemeName" type="string" value="Fluent-dark-cursors"/>
+    <property name="CursorThemeName" type="string" value="Lindos-Cursors-Dark"/>
     <property name="CursorThemeSize" type="int" value="24"/>
     <property name="DecorationLayout" type="string" value="menu:minimize,maximize,close"/>
     <property name="DialogsUseHeader" type="bool" value="false"/>

@@ -249,6 +249,21 @@ def test_privacy_page_keeps_nothing_is_sent_anywhere(monkeypatch):
         assert "update" not in text.lower() and "download" not in text.lower() and "repositor" not in text.lower()
 
 
+def test_done_page_says_not_supported_yet_with_the_publisher_and_no_date():
+    """SPEC 0.1: the anti-cheat line says what is true today; it never promises or dates support."""
+    _ensure_gi()
+    from lindos_setup import pages
+    low = pages.WINE_HONESTY.lower()
+    for must in ("do not run on any linux today", "not supported on lindos yet", "their publishers", "no date"):
+        assert must in low, must
+    learn = " ".join(pages.LEARN_MORE_LINES).lower()
+    for must in ("not supported yet", "cloud streaming", "your pc's own windows", "lindos-game route"):
+        assert must in learn, must
+    assert "<" not in learn                                   # no placeholder a markup-aware label would swallow
+    for banned in ("coming soon", "will be supported", "will be coming", "in the near future"):
+        assert banned not in low and banned not in learn, banned
+
+
 def test_done_page_keeps_the_anti_cheat_note(monkeypatch):
     _need_stub()
     from lindos_setup import pages

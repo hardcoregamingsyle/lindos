@@ -10,12 +10,23 @@
 #               every packages/<name>/ with a DEBIAN/control, so the SPEC-VM
 #               packages lindos-vm and lindos-winapps are built the moment they
 #               exist — no change to this job is needed for them.
-#   publish-repo  workflow_dispatch only (SPEC-UPDATE.md §36.5-§36.6): builds the
-#               flat-format signed apt repo (build/publish-apt-repo.sh) from the
-#               'debs' job's .deb artifact (+ the kernel's, if that job also ran),
-#               uploads out/apt-repo/** always, and additionally deploys it to
-#               GitHub Pages only when the repo variable LINDOS_PAGES_ENABLED is
-#               'true' (unset by default — never enabled by CI on its own).
+#   publish-repo  workflow_dispatch only, TEST build (SPEC-UPDATE.md §36.5): builds the flat-format
+#               apt repo (build/publish-apt-repo.sh) from the 'debs' job's .deb artifact and uploads
+#               it as an artifact. Signed with a throw-away key generated on the spot: it never sees
+#               the real key and has no deploy step - it can never reach users.
+#   release-repo  tags vX.Y.Z (the version in VERSION): the
+#               ONLY job that sees the signing key (secret LINDOS_APT_SIGNING_KEY of the 'apt-publish'
+#               environment; its token is contents: write only). Attaches the .debs to the GitHub Release,
+#               rebuilds the repository from this release and the 2 before it (an older release's .debs
+#               only when its own signed metadata vouches for them: build/tools/fetch-previous-releases.sh),
+#               signs it, refuses unless the signing key's fingerprint is the committed one and the
+#               committed keyring holds only that key (packages/lindos-archive-keyring), then attaches the
+#               signed metadata to the release. Nothing is deployed from here.
+#   deploy-pages  after release-repo, and only when the repository variable LINDOS_PAGES_ENABLED is
+#               'true' (unset by default - CI never turns Pages on by itself): GitHub Pages deploy.
+#   repo-e2e    workflow_dispatch input repo_e2e (opt-in, default off): in a bare ubuntu:24.04 container, installs
+#               Lindos from a localhost repo signed with a throw-away key, publishes a newer version and
+#               checks that lindos-update sees it and installs it (build/tools/repo-e2e.sh).
 #   kernel      workflow_dispatch input build_kernel, and on tags (SPEC-VM §25):
 #               the real Linux work this Windows dev host cannot do — compile
 #               the Lindos-tuned kernel .debs on the Ubuntu runner.  Slow and
@@ -76,6 +87,14 @@ on:
         description: "INCLUDE_STEAM (1 = Steam/Lutris/Heroic on the ISO)"
         type: string
         default: "1"
+      repo_e2e:
+        description: "Repo e2e (Linux container): apt install + upgrade from a localhost repo signed with a throw-away key. with-full-upgrade also runs 'lindos-update apply --all' (upgrades the whole container)"
+        type: choice
+        options:
+          - "off"
+          - basic
+          - with-full-upgrade
+        default: "off"
       boot_test:
         description: "Boot-test the built ISO under QEMU/KVM (needs build_iso)"
         type: boolean
@@ -153,6 +172,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Versions move in lock-step: build/mkdeb.sh stamps the version in VERSION into every package
+      # (and lindos-meta's exact pins). A release tag has to be that version.
+      - name: The tag must be the version in VERSION
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          want="v$(tr -d ' \r\n' < VERSION)"
+          if [ "${GITHUB_REF_NAME}" != "${want}" ]; then
+            echo "::error::the tag ${GITHUB_REF_NAME} is not ${want}, the version in VERSION (bump VERSION and CHANGELOG.md first: docs/RELEASING.md)"
+            exit 1
+          fi
+
       - name: Install dpkg-dev + lintian
         run: |
           sudo apt-get update
@@ -172,16 +203,15 @@ jobs:
           retention-days: 14
 
   publish-repo:
-    name: publish Lindos apt repo (manual)
-    # manual only: this never runs on a plain push/PR, and it never deploys anything on its
-    # own (see the Pages steps below) -- SPEC-UPDATE.md §35/§36.6.
+    name: apt repo TEST build (ephemeral key, never deployed)
+    # manual only, artifact only: this signs with a throw-away key generated on the spot, never
+    # sees the real signing key (no secrets, no environment) and has no deploy step at all. It
+    # exists to test the repository tooling; the real, signed release is 'release-repo' below.
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     needs: debs
     permissions:
       contents: read
-      pages: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -191,33 +221,134 @@ jobs:
           name: lindos-debs
           path: out/debs
 
-      # Optional: the tuned kernel's .debs, when the 'kernel' job also produced an artifact
-      # in this same workflow run. Harmless (the kernel is simply left out of the repo) when
-      # it did not -- build/publish-apt-repo.sh's --kernel-in is best-effort by design.
-      - name: Download lindos-kernel-debs artifact (optional)
-        continue-on-error: true
+      - name: Install apt-ftparchive + gpg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg gpgv
+
+      # The kernel .debs (~115 MiB each) are deliberately not part of the repository: they do not
+      # belong on GitHub Pages (docs/UPDATES.md, "What is not in the repository").
+      - name: build/publish-apt-repo.sh --gen-key
+        run: |
+          bash build/publish-apt-repo.sh --in out/debs --out out/apt-repo --gen-key
+
+      - name: List repository contents
+        run: ls -l out/apt-repo/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lindos-apt-repo-TEST-ephemeral-key
+          path: out/apt-repo/**
+          if-no-files-found: error
+          retention-days: 14
+
+  release-repo:
+    name: release the Lindos apt repo (signed with the archive key)
+    # tags vX.Y.Z (the version in VERSION). The only job that sees the signing key: it is a secret of the 'apt-publish' environment (add a required
+    # reviewer there), and build/publish-apt-repo.sh --release refuses unless the key is the one
+    # whose fingerprint is committed - so a wrong or ephemeral key can never reach the site.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    needs: debs
+    environment: apt-publish
+    permissions:
+      contents: write   # attach the .debs to the GitHub Release (the copy kept for rollback)
+    env:
+      LINDOS_APT_SIGNING_KEY: ${{ secrets.LINDOS_APT_SIGNING_KEY }}
+      LINDOS_APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.LINDOS_APT_SIGNING_KEY_PASSPHRASE }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to run without the signing key
+        shell: bash
+        run: |
+          if [ -z "${LINDOS_APT_SIGNING_KEY}" ]; then
+            echo "::error::the secret LINDOS_APT_SIGNING_KEY is not set (docs/RELEASING.md); a release is never signed with a throw-away key"
+            exit 1
+          fi
+
+      - name: Download lindos-debs artifact
         uses: actions/download-artifact@v4
         with:
-          name: lindos-kernel-debs
-          path: out/kernel
+          name: lindos-debs
+          path: out/debs
+
+      - name: Attach the .debs to the GitHub Release (tags only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          notes="$(awk -v v="${version}" '$0 ~ "^## \\[" v "\\]" { found = 1; next } /^## \[/ { found = 0 } found' CHANGELOG.md)"
+          [ -n "${notes}" ] || notes="Lindos ${version}"
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            gh release create "${tag}" --title "Lindos ${version}" --notes "${notes}"
+          fi
+          gh release upload "${tag}" out/debs/*.deb --clobber
 
       - name: Install apt-ftparchive + gpg
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg gpgv
 
-      - name: build/publish-apt-repo.sh
+      # The two previous releases stay in the repository so a bad update can be rolled back. Release assets are
+      # mutable - anyone with write access can add or replace one - so a .deb from there is taken only when the
+      # signed metadata published with that release vouches for its exact bytes (SHA256 in Packages, itself
+      # listed in a Release whose signature verifies against the committed keyring). Nothing unverified is signed.
+      - name: Fetch the previous releases (each verified against its own signed metadata)
+        shell: bash
         run: |
-          # No persistent signing key is configured for this repository yet
-          # (SPEC-UPDATE.md §35/§36.5) -- '--gen-key' produces an honestly-labelled
-          # ephemeral CI key (README-CI-KEY.txt) instead of silently failing or
-          # shipping something unsigned. Wiring in a real, persistent key later is
-          # a matter of importing it into $GNUPGHOME in an earlier step (e.g. from
-          # a repository secret) and passing --key-id instead of --gen-key here.
-          bash build/publish-apt-repo.sh --in out/debs --kernel-in out/kernel --out out/apt-repo --gen-key
+          bash build/tools/fetch-previous-releases.sh --tag "${GITHUB_REF_NAME}" \
+            --keyring packages/lindos-archive-keyring/root/usr/share/keyrings/lindos-archive-keyring.gpg \
+            --out out/previous --count 2
+          ls -l out/previous
 
-      - name: List repository contents
-        run: ls -l out/apt-repo/
+      - name: build/publish-apt-repo.sh --release (sign, pin-check, verify)
+        run: |
+          bash build/publish-apt-repo.sh --release --in out/debs --previous out/previous --out out/apt-repo --keep 3
+
+      - name: Guard - only the committed archive key may have signed this
+        shell: bash
+        run: |
+          # belt and braces after the script's own check: nothing ephemeral, and the exported public key
+          # carries exactly the fingerprint that is committed (the one installed systems trust)
+          test ! -e out/apt-repo/README-CI-KEY.txt
+          pin="$(tr -d ' \r\n' < packages/lindos-archive-keyring/root/usr/share/lindos/archive-key.fingerprint | tr '[:lower:]' '[:upper:]')"
+          got="$(gpg --show-keys --with-colons out/apt-repo/lindos-archive-keyring.gpg | awk -F: '/^fpr:/ && !done { print toupper($10); done = 1 }')"
+          echo "committed fingerprint: ${pin}"
+          echo "signing fingerprint:   ${got}"
+          if [ -z "${pin}" ] || [ "${pin}" != "${got}" ]; then
+            echo "::error::the signing key is not the committed Lindos archive key - nothing is published"
+            exit 1
+          fi
+          # apt trusts EVERY key of the keyring installed systems have, so the committed keyring (not just the exported
+          # signing key) must be exactly the one pinned primary key, and the shipped source must be sound (one https
+          # stanza, Signed-By the shipped keyring, no Trusted/Allow-Insecure)
+          state="$(bash build/tools/check-archive-keyring.sh packages/lindos-archive-keyring/root)" || state=""
+          if [ "${state}" != "real" ]; then
+            echo "::error::the committed archive keyring package failed its guard (build/tools/check-archive-keyring.sh) - nothing is published"
+            exit 1
+          fi
+          primaries="$(gpg --show-keys --with-colons packages/lindos-archive-keyring/root/usr/share/keyrings/lindos-archive-keyring.gpg | grep -c '^pub:' || true)"
+          if [ "${primaries}" != "1" ]; then
+            echo "::error::the committed keyring holds ${primaries} primary keys, exactly one is allowed - nothing is published"
+            exit 1
+          fi
+
+      # What lets the NEXT release keep these packages: the metadata this run just signed. Only uploaded after the
+      # guard above; fetch-previous-releases.sh checks old releases against it (never against the .debs alone).
+      - name: Attach the signed repository metadata to the release
+        shell: bash
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" out/apt-repo/Release out/apt-repo/Release.gpg out/apt-repo/Packages --clobber
+
+      - name: Lay out the site
+        shell: bash
+        run: |
+          mkdir -p out/pages
+          cp -a out/apt-repo out/pages/stable
+          printf '%s\n' '<!doctype html><meta charset="utf-8"><title>Lindos package repository</title><p>This is the Lindos apt repository. It is meant for apt, not for browsing.</p>' > out/pages/index.html
 
       - uses: actions/upload-artifact@v4
         with:
@@ -226,23 +357,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # GitHub Pages deployment is a one-time, explicit choice for whoever owns this
-      # repository (documented in docs/UPDATES.md), never something CI enables by itself:
-      # every step below is a no-op unless the repository variable LINDOS_PAGES_ENABLED is
-      # set to 'true' (it is unset by default).
-      - name: Configure Pages
-        if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
-        uses: actions/configure-pages@v5
-
+      # GitHub Pages is a one-time, explicit choice for whoever owns this repository
+      # (docs/RELEASING.md), never something CI enables by itself: the step below and the
+      # 'deploy-pages' job are no-ops unless the repository variable LINDOS_PAGES_ENABLED is 'true'.
+      # No actions/configure-pages here: it calls the Pages API, which this job's token (contents: write only,
+      # so the signing key never sits next to a Pages permission) is not allowed to, it would fail the job after
+      # the release was created, and nothing uses what it outputs. Deploying is deploy-pages' job.
       - name: Upload Pages artifact
         if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
         uses: actions/upload-pages-artifact@v3
         with:
-          path: out/apt-repo
+          path: out/pages
 
+  deploy-pages:
+    name: deploy the signed repo to GitHub Pages
+    # only after release-repo succeeded (so only a repository signed with the committed key), and
+    # only when the owner switched Pages on
+    needs: release-repo
+    if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
-        if: ${{ vars.LINDOS_PAGES_ENABLED == 'true' }}
+        id: deployment
         uses: actions/deploy-pages@v4
+
+  repo-e2e:
+    name: repo e2e - apt install and upgrade from a throw-away-key repo (opt-in)
+    # opt-in (repo_e2e): builds a repository with a throw-away key, serves it on localhost and, in a
+    # bare ubuntu:24.04 container, installs Lindos from it with apt, publishes a newer version and
+    # checks that lindos-update sees it and installs it. Needs real apt/dpkg/gpg, so it can only
+    # run here. The throw-away key never leaves the job.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.repo_e2e != 'off' }}
+    runs-on: ubuntu-24.04
+    needs: lint-test
+    timeout-minutes: 45
+    container:
+      image: ubuntu:24.04
+    steps:
+      - name: Tools (the bare container has none)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git dpkg-dev apt-utils gnupg gpgv python3 curl fakeroot
+
+      - uses: actions/checkout@v4
+
+      - name: build/tools/repo-e2e.sh
+        env:
+          LINDOS_E2E_FULL_UPGRADE: ${{ inputs.repo_e2e == 'with-full-upgrade' && '1' || '0' }}
+        run: bash build/tools/repo-e2e.sh
+
+      - name: Keep the logs (never the key)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-e2e-logs
+          path: out/e2e/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
 
   kernel:
     name: build Lindos kernel (manual / tags)

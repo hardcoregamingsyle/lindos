@@ -400,6 +400,7 @@ LINDOS_CHECK live-no-xfce-session=OK
 LINDOS_CHECK live-no-lindos-setup=OK
 LINDOS_CHECK live-no-pkexec=OK
 LINDOS_CHECK live-inhibitor-active=OK
+LINDOS_CHECK live-installer-theme=OK
 LINDOS_INSTALL_SESSION_CHECKED fails=0
 LINDOS_INSTALL_HEARTBEAT tick=12 ubiquity=active target=1024/9000KiB procs=9
 LINDOS_INSTALL_UBIQUITY_EXIT result=success
@@ -962,7 +963,7 @@ def test_the_harness_flags_used_by_the_workflow_exist():
 
 # ============================================================================================ the Install session (serial grammar)
 SESSION_NAMES = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session", "live-no-lindos-setup",
-                 "live-no-pkexec", "live-inhibitor-active")
+                 "live-no-pkexec", "live-inhibitor-active", "live-installer-theme")
 
 
 def test_parse_install_serial_collects_the_session_checks():
@@ -1178,3 +1179,51 @@ def test_the_lint_job_installs_grub_script_check_so_the_real_check_runs():
     run = " ".join(str(s.get("run", "")) for s in _yaml()["jobs"]["lint-test"]["steps"])
     assert "grub-common" in run
     assert "shellcheck" in run                                                # the tools that were there stay
+
+
+# ============================================================================================ how the account wizard looks
+def _ppm(path, width, height, pixel):
+    """A binary PPM (what QEMU's screendump writes) of width x height, pixel(x, y) -> (r, g, b)."""
+    body = b"".join(bytes(pixel(x, y)) for y in range(height) for x in range(width))
+    path.write_bytes(b"P6\n# QEMU screendump\n%d %d\n255\n" % (width, height) + body)
+    return path
+
+
+def _window(inside):
+    """A black X root with a 60x60 window in the middle whose pixels are inside(x, y)."""
+    return lambda x, y: inside(x, y) if 20 <= x < 80 and 20 <= y < 80 else (0, 0, 0)
+
+
+def test_read_ppm_parses_header_comments_and_refuses_anything_else(tmp_path):
+    good = _ppm(tmp_path / "a.ppm", 3, 2, lambda x, y: (x, y, 9))
+    w, h, buf = it.read_ppm(good)
+    assert (w, h) == (3, 2) and buf[:3] == bytes([0, 0, 9]) and len(buf) == 18
+    (tmp_path / "b.ppm").write_bytes(b"P5\n1 1\n255\n\0")
+    (tmp_path / "c.ppm").write_bytes(b"P6\n4 4\n255\n\0\0")               # truncated pixel data
+    for name in ("b.ppm", "c.ppm", "missing.ppm"):
+        assert it.read_ppm(tmp_path / name) is None
+
+
+def test_the_light_default_page_of_ubiquity_is_recognised_and_the_dark_skin_is_not(tmp_path):
+    light = _ppm(tmp_path / "light.ppm", 100, 100, _window(lambda x, y: (246, 245, 244)))        # Adwaita's #f6f5f4 (first-boot.png)
+    share, stats = it.screenshot_light_share(light, step=1)
+    assert share is not None and share > 0.99 and "light" in stats
+    dark = _ppm(tmp_path / "dark.ppm", 100, 100, _window(lambda x, y: (96, 205, 255) if x < 24 else (32, 32, 32)))   # #202020 + a strip of accent
+    share, _stats = it.screenshot_light_share(dark, step=1)
+    assert share is not None and share < 0.1, "a strip of accent colour (the Continue button) on a dark page is not a light page"
+    black = _ppm(tmp_path / "black.ppm", 10, 10, lambda x, y: (0, 0, 0))
+    assert it.screenshot_light_share(black)[0] is None and it.screenshot_light_share(tmp_path / "nothing.ppm")[0] is None
+
+
+def test_a_light_first_boot_wizard_is_a_warning_a_dark_one_passes_and_an_unjudged_one_is_noted():
+    serial = {"observer": True, "ready": True, "checks": {}, "fail_logs": [], "diag": [], "panic": False}
+
+    def look(light):
+        return {f.name: f for f in it.judge_first_boot(serial, screenshot_ok=True, screenshot_reason="x", light=light)}
+
+    assert look((0.9, "1280x800, 90% of ...  are light"))["boot-wizard-look"].level == ic.WARN
+    assert "Lindos-Setup" in look((0.9, "s"))["boot-wizard-look"].detail
+    assert look((0.05, "s"))["boot-wizard-look"].level == ic.OK
+    assert look((None, "nothing but black"))["boot-wizard-look"].level == ic.INFO
+    assert "boot-wizard-look" not in look(None)
+    assert not ic.failures(it.judge_first_boot(serial, screenshot_ok=True, light=(0.9, "s"))), "a heuristic never fails the run"

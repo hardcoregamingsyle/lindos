@@ -1,0 +1,4 @@
+// Lindos: after every package operation, note whether the update needs a restart
+// (/run/reboot-required and /run/reboot-required.pkgs) - the base system's own writer of that file
+// (update-notifier-common) is not installed. Offline, quick, and it never fails the apt run.
+DPkg::Post-Invoke { "if [ -x /usr/libexec/lindos/reboot-required-hook ]; then /usr/libexec/lindos/reboot-required-hook || true; fi"; };

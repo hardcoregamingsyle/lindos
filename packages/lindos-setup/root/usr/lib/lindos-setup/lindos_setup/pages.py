@@ -68,14 +68,19 @@ LOW_RAM_MB = 4096
 # disclosure) instead of on the welcome page.
 WINE_HONESTY = N_(
     "Windows apps run through Wine and Proton — a translation layer with near-native speed, not a "
-    "copy of Windows. Most software and Steam games work; games with kernel anti-cheat such as "
-    "Valorant and Fortnite do not run on any Linux.")
+    "copy of Windows. Most software and Steam games work. Games with kernel anti-cheat such as "
+    "Valorant and Fortnite do not run on any Linux today, so they are not supported on Lindos yet: "
+    "that is up to their publishers, Lindos will list them once they enable Linux and it has tested "
+    "them, and there is no date.")
 LEARN_MORE_TITLE = N_("Learn more about Windows apps")
 LEARN_MORE_LINES = (
     N_("Double-click an .exe or .msi file and Lindos opens it with Wine or Proton. You can manage "
        "installed Windows programs later in Lindos Settings › Windows apps."),
     N_("Steam games depend on the developer enabling anti-cheat for Proton. Check protondb.com and "
        "areweanticheatyet.com before you rely on a game."),
+    N_("Games that are not supported yet can still be played through official cloud streaming "
+       "(where the publisher offers it) or by restarting into your PC's own Windows. Open "
+       "Lindos Settings › Gaming, or run lindos-game route with the game's name."),
     N_("Roblox runs through Sober, a community runtime for the Android client, because the Windows "
        "client does not run on Linux. Minecraft Java runs natively."),
     N_("Adobe: Creative Cloud 2019–2021 era Photoshop and Illustrator work through Wine recipes; "

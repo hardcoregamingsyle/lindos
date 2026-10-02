@@ -67,6 +67,12 @@ Windows' kernel-level anti-cheat."* The first two exist (§3–§11). This adden
 6. **Everything destructive or outward-facing asks first** (`.reg` import with a deletions preview,
    ISO setup, restart into Windows, firmware setup, app installs, Wi-Fi import, downloads from
    `.appinstaller`), mirroring Windows' own prompts. CLIs take `--yes` for scripted use.
+7. **Not-supported wording.** A title kept off Linux by a kernel-level anti-cheat or by its
+   publisher's choice is shown as **"Not supported yet"** (matrix `unsupported_kind`, §30.1), and
+   the badge is never shown without who decides (the game's publisher) and that no date is given.
+   Never "coming soon", "will be supported", a date or an ETA: only a publisher can deliver that,
+   and some have said they will not. The Xbox app / PC Game Pass (Microsoft Store licensing, not an
+   anti-cheat) does not get the badge. `tests/test_anticheat_disclaimer.py` guards every surface.
 
 ---
 
@@ -752,11 +758,22 @@ Top level gains `"cloud_providers"` (only providers with a real way in from Lind
   "amazon-luna": {"name":"Amazon Luna","url":"https://luna.amazon.com/","linux":"browser-unofficial",
      "browsers_official":["chrome","edge"],"regions_excluded":["IN"],"note":"Linux not officially listed; not available in India."}}
 ```
+Top level also gains `"disclaimer": {"badge","short","via","long","kinds":{…}}`, the **single source** of
+the "Not supported yet" wording (§27 rule 7): `badge` is the label, `short` the one-line form (shown
+above the routes), `via` a `{game}`/`{route}` template for a shortcut comment or a play line, `long`
+the paragraph Settings shows and `docs/ANTI-CHEAT.md` §0 quotes verbatim, and `kinds` one cause
+sentence per `unsupported_kind`. Settings, `lindos-game` and `tests/gen-compat-doc.py` read it; none of
+them carries its own copy.
 Each entry may gain:
 ```json
+"unsupported_kind": "no-linux-version" | "publisher-disabled",
 "routes": {"cloud":[{"provider":"geforce-now","url":"https://…","tier":"free|premium","note":"…"}],
            "windows": true, "windows_requires": ["secure-boot","tpm2"], "vm": false, "verified": "2026-09-26"}
 ```
+`unsupported_kind` is optional, only on `status: not_possible` entries, and never replaces the status
+(four consumers key on `not_possible`): `no-linux-version` = the anti-cheat exists only as a Windows
+kernel driver, `publisher-disabled` = it has a Linux runtime the publisher has not enabled. It is
+absent on the Xbox app / PC Game Pass.
 Binding data (verified 2026-09-26): every `not_possible` entry has `routes` with `windows: true`,
 `vm: false`. Cloud: **GeForce NOW** — Fortnite, Apex Legends (EA app), Rainbow Six Siege X, Destiny
 2, Rust (premium), Delta Force, Battlefield 2042, Battlefield 6 (premium), Call of Duty; **Xbox
@@ -776,6 +793,13 @@ cloud; Fortnite's anti-cheat is EAC (BattlEye removed June 2024); Apex moves to 
 2026-09-29; Escape from Tarkov is on Steam. `tests/gen-compat-doc.py` renders an "Other ways to
 play" section; `routes.verified` shown; a maintainer script may refresh data, runtime never scrapes.
 
+**Maintenance policy for "Not supported yet".** An entry moves out of `not_possible` (to `works` or
+`partial`, dropping `unsupported_kind`) only after a maintainer has checked the publisher's
+announcement and Are We Anti-Cheat Yet? **and** tested the game; the same change bumps `updated` and
+`routes.verified`, regenerates `docs/COMPATIBILITY.md`, and ships in a `lindos-gaming` update (a new
+ISO or a sideloaded package until a Lindos update repository is hosted, `docs/UPDATES.md`). Nothing
+is flipped on a rumour, a job posting or a date, and no "expected" field exists in the schema.
+
 ### 30.2 `lindos-game` additions
 
 ```
@@ -785,7 +809,9 @@ lindos-game shortcut <title> --route cloud|windows [--provider ID]
 lindos-game cloud install geforce-now      # official Flatpak from NVIDIA's own remote: --user scope (no root) by default, --system via helper install-flatpaks
 ```
 `route --json` → `{"title","id","status","anticheat","region","routes":[{"type":"native|proton|cloud|windows|vm",
-"provider","label","available":bool,"why","requires":[…],"action":{…}|null}],"recommended":0,"notes":[…]}`.
+"provider","label","available":bool,"why","requires":[…],"action":{…}|null}],"recommended":0,"notes":[…],
+"disclaimer":{"badge","kind","cause","short","via"}|null}` (`disclaimer` is non-null only for an entry with
+`unsupported_kind`; the text route output prints its `short` and `cause` right after the header).
 `action` is `{"cmd":[argv…]}` for a directly launchable client (GeForce NOW Flatpak, Boosteroid), `{"open_url":"https://…",
 "browser_path":"/usr/bin/…"}` for browser providers, or `null` when the route is unavailable. Provider `regions` may use the
 group codes `EU`/`NA`, which `lindos-game` expands to ISO country codes before matching the user's region.
@@ -797,7 +823,7 @@ Edge/Chrome for browser providers). `play --route cloud` launches the GFN app or
 URL in Edge/Chrome (never Firefox for xCloud/Luna; never a spoofed user agent); `play --route windows`
 confirms, then runs `lindos-dualboot reboot-to-windows`. `shortcut` writes
 `~/.local/share/applications/lindos-play-<id>-<route>.desktop` ("Valorant — restarts into Windows",
-"Fortnite — Xbox Cloud Gaming"). `lindos-run` on a `not_possible` title's exe prints `lindos-game
+"Fortnite — Xbox Cloud Gaming"; its `Comment` starts with the disclaimer's `via` sentence for a disclaimed title). `lindos-run` on a `not_possible` title's exe prints `lindos-game
 route <id>`. The Lindos VM is never offered for a `not_possible` title (VAN 9100, EOS "no VMs",
 Bungie VM bans, Javelin).
 

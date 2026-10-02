@@ -5,8 +5,8 @@
 #  Runs INSIDE the squashfs chroot as root, after the Lindos debs (30-*).
 #    1. /tmp/lindos/assets/install-into-chroot.sh  (written by
 #       build/fetch-assets.sh: Fluent GTK/icon/cursor themes renamed to
-#       Lindos-*, Selawik + Inter fonts; JetBrains Mono comes from apt via
-#       20-base.sh fonts-jetbrains-mono, best effort) — warns if absent
+#       Lindos-* / Lindos-Cursors*, Selawik + Inter fonts; JetBrains Mono comes
+#       from apt via 20-base.sh fonts-jetbrains-mono, best effort) — warns if absent
 #    2. /usr/libexec/lindos/apply-branding.sh (lindos-desktop): os-release sed,
 #       /etc/issue, /etc/lindos-release, plymouth + wallpaper alternatives
 #    3. /usr/libexec/lindos/build-panel-profiles.sh (lindos-desktop):
@@ -36,7 +36,7 @@ if [ -f "${ASSETS_INSTALLER}" ]; then
         warn "install-into-chroot.sh reported errors — theme may be incomplete"
     fi
 else
-    warn "no ${ASSETS_INSTALLER} (build/fetch-assets.sh not run or --skip-assets): Lindos GTK/icon themes and Selawik font will be missing; XFCE falls back to Mint's theme"
+    warn "no ${ASSETS_INSTALLER} (build/fetch-assets.sh not run or --skip-assets): Lindos GTK/icon themes and Selawik font will be missing; XFCE falls back to the plain Adwaita/Default look"
 fi
 
 # Sanity: report what we ended up with.
@@ -46,8 +46,8 @@ done
 for i in Lindos Lindos-dark; do
     if [ -d "/usr/share/icons/${i}" ]; then log "icon theme present: ${i}"; else warn "icon theme missing: ${i}"; fi
 done
-for c in Fluent-dark-cursors Fluent-cursors; do
-    if [ -d "/usr/share/icons/${c}" ]; then log "cursor theme present: ${c}"; else warn "cursor theme missing: ${c}"; fi
+for c in Lindos-Cursors-Dark Lindos-Cursors; do
+    if [ -d "/usr/share/icons/${c}/cursors" ]; then log "cursor theme present: ${c}"; else warn "cursor theme missing: ${c}"; fi
 done
 if fc-list 2>/dev/null | grep -qi selawik; then log "font present: Selawik"; else warn "font missing: Selawik (UI falls back to Inter/Noto Sans)"; fi
 

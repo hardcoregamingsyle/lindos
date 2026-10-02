@@ -375,18 +375,37 @@ class FakeXorriso:
         if "-report_el_torito" in argv:
             return subprocess.CompletedProcess(argv, 0, self.report, "xorriso : NOTE : x\n")
         if "-find" in argv:
-            out = "\n".join("'%s'" % p for p in sorted(self.listing))
+            if argv.count("-find") > 1:
+                # what the real xorriso does: '-find' takes every following word as one of its own tests until '--' or the
+                # end of the arguments, so a second '-find' in the same run is an unknown test and nothing is listed
+                return subprocess.CompletedProcess(argv, 32, "", "xorriso : SORRY : -find: unknown test '-find'\n")
+            top = argv[argv.index("-find") + 1].rstrip("/")
+            found = sorted(p for p in self.listing if p.startswith(top + "/"))
+            if not found:
+                # a directory the ISO does not have (Mint 22 has no /isolinux) is an error of its own run only
+                return subprocess.CompletedProcess(argv, self.list_rc or 32, "", "xorriso : FAILURE : Cannot find path '%s' in loaded ISO image\n" % top)
+            out = "\n".join("'%s'" % p for p in found)
             return subprocess.CompletedProcess(argv, self.list_rc, out, "xorriso : NOTE : Loading ISO image tree\n")
         return subprocess.CompletedProcess(argv, 1, "", "unknown")
 
 
-def test_iso_listing_reads_the_quoted_paths_of_one_xorriso_run():
+def test_iso_listing_reads_the_quoted_paths_with_one_xorriso_run_per_directory():
+    """First real install test: 'xorriso could not list the ISO's boot files' - several '-find' commands in ONE run make
+    the second one an unknown test of the first, and xorriso lists nothing."""
     fake = FakeXorriso({}, LISTING | {"/boot/grub/i386-pc/eltorito.img"})
     got = mc.iso_listing(Path("x.iso"), which=fake.which, run=fake)
     assert got == LISTING | {"/boot/grub/i386-pc/eltorito.img"}
-    assert len(fake.calls) == 1 and fake.calls[0].count("-find") == len(mc.LISTED_DIRS)       # one run for every directory
+    assert len(fake.calls) == len(mc.LISTED_DIRS) and all(c.count("-find") == 1 for c in fake.calls)
+    assert [c[c.index("-find") + 1] for c in fake.calls] == list(mc.LISTED_DIRS)
     assert mc.iso_listing(Path("x.iso"), which=lambda n: None, run=fake) is None
     assert mc.iso_listing(Path("x.iso"), which=fake.which, run=FakeXorriso({}, [], list_rc=32)) is None
+
+
+def test_a_directory_the_iso_does_not_have_does_not_hide_the_others():
+    """Mint 22's ISO has no /isolinux: xorriso's error for that directory is that run's alone."""
+    no_isolinux = {p for p in LISTING if not p.startswith("/isolinux/")}
+    got = mc.iso_listing(Path("x.iso"), which=FakeXorriso({}, no_isolinux).which, run=FakeXorriso({}, no_isolinux))
+    assert got == no_isolinux and any(p.startswith("/casper/") for p in got)
 
 
 def test_check_iso_menus_reads_everything_it_needs_through_xorriso(tmp_path):

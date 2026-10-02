@@ -37,6 +37,18 @@ def test_real_app_map_maps_known_anticheat_titles_to_not_possible() -> None:
         assert "lindos-game route" in entry["actions"][0]["note"]
 
 
+def test_real_app_map_not_possible_labels_are_plain_names() -> None:
+    """The wizard shows '<label> - Not supported on Lindos yet (...)': the label must not restate 'does not run'."""
+    seen = 0
+    for entry in apps.load_app_map()["apps"]:
+        for act in entry["actions"]:
+            if act["type"] == "not_possible":
+                seen += 1
+                low = act["label"].lower()
+                assert "run on" not in low and "cannot" not in low and "impossible" not in low, act["label"]
+    assert seen == 15
+
+
 def test_real_app_map_disambiguates_rust_game_from_rust_toolchain() -> None:
     app_map = apps.load_app_map()
     assert apps.match_app_map_entry(app_map, "Rust", "Facepunch") is not None

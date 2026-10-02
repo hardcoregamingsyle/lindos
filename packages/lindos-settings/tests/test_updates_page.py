@@ -319,6 +319,47 @@ def test_update_check_valid(monkeypatch):
     assert len(st["lindos_updates"]) == 2
 
 
+CHECK_UP_TO_DATE = {**CHECK_VALID, "lindos_updates": [], "system_updates": [], "kernel_available": None}
+
+
+def test_update_check_exit_3_nothing_to_do_is_a_normal_answer(monkeypatch):
+    """lindos-update exits 3 (EXIT_NOTHING) after printing a complete document when there is nothing to
+    update - the normal steady state.  It must read as 'up to date', not as the raw JSON in an error."""
+    import json as _json
+    b = _backend_with(monkeypatch, present=("lindos-update",), run_result=CmdResult(3, _json.dumps(CHECK_UP_TO_DATE), ""))
+    st = b.update_check()
+    assert st["error"] == ""
+    assert st["repo_configured"] is True and st["booted_kernel"] == "6.8.0-1-lindos"
+    assert "up to date" in model.update_status_summary(st)
+    assert model.needs_sideload_note(st) is False
+
+
+def test_update_check_a_failure_with_the_other_exit_codes_stays_an_error(monkeypatch):
+    import json as _json
+    for code in (1, 2):
+        b = _backend_with(monkeypatch, present=("lindos-update",), run_result=CmdResult(code, _json.dumps(CHECK_UP_TO_DATE), "usage: lindos-update"))
+        assert b.update_check()["error"] != ""
+    b = _backend_with(monkeypatch, present=("lindos-update",), run_result=CmdResult(3, "", ""))
+    assert "exited 3" in b.update_check()["error"]
+
+
+def test_update_kernel_and_repo_status_accept_the_nothing_to_do_exit(monkeypatch):
+    import json as _json
+    b = _backend_with(monkeypatch, present=("lindos-update",))
+    not_configured = {"configured": False, "url": None, "reachable": None, "message": "no Lindos apt repository is configured yet"}
+    monkeypatch.setattr(b, "run", lambda argv, timeout=20, **kw: CmdResult(3, _json.dumps(not_configured), ""))
+    repo = b.update_repo_status()
+    assert repo["configured"] is False and repo["message"] == "no Lindos apt repository is configured yet"
+    assert b.update_kernel_status()["error"] == ""
+    # configured but unreachable: exit 1 with a complete document (reachable=false), not a failure to run
+    unreachable = {"configured": True, "url": "https://packages.lindos.dev", "reachable": False, "message": "timed out"}
+    monkeypatch.setattr(b, "run", lambda argv, timeout=20, **kw: CmdResult(1, _json.dumps(unreachable), ""))
+    repo = b.update_repo_status()
+    assert repo["configured"] is True and repo["reachable"] is False and repo["message"] == "timed out"
+    monkeypatch.setattr(b, "run", lambda argv, timeout=20, **kw: CmdResult(1, "", "boom"))
+    assert b.update_repo_status()["message"] == "boom"
+
+
 def test_update_kernel_status_and_repo_status_and_secureboot_status(monkeypatch):
     import json as _json
     b = _backend_with(monkeypatch, present=("lindos-update", "lindos-kernel"))

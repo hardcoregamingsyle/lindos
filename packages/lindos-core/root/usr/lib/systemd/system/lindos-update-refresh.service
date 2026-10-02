@@ -1,0 +1,22 @@
+[Unit]
+Description=Lindos: refresh the package lists and note which updates are available (never installs anything)
+Documentation=man:lindos-update(1)
+# The stock apt-daily timers are switched off on Lindos (lindos-tune), so this is what keeps the
+# list of available updates current. It only refreshes the lists and simulates: it writes
+# /var/lib/lindos/update-state.json and stops. Installing is always a separate, confirmed step.
+# It waits for NetworkManager itself (/usr/libexec/lindos/wait-for-network, bounded): the wait-online
+# unit is masked on Lindos, so network-online.target comes before Wi-Fi is up.
+# Not in the live USB session, not before the account wizard has finished, not while an update is
+# in progress or waiting for repair (lindos-update-repair.service).
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
+ConditionPathExists=!/lib/systemd/system/oem-config.target
+ConditionPathExists=!/var/lib/lindos/update-in-progress
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/lindos/update-refresh
+Nice=15
+IOSchedulingClass=idle
+# room for a slow mirror and for queueing behind another Lindos apt job (apt-serialise)
+TimeoutStartSec=45min

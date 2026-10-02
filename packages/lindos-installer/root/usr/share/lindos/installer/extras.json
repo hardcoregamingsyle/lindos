@@ -22,7 +22,6 @@
     "mesa-vulkan-drivers",
     "power-profiles-daemon",
     "redshift-gtk",
-    "steam-devices",
     "thunderbird",
     "vulkan-tools",
     "winetricks"
@@ -88,9 +87,6 @@
     "redshift-gtk": [
       "work"
     ],
-    "steam-devices": [
-      "gaming"
-    ],
     "thunderbird": [
       "work"
     ],
@@ -110,6 +106,48 @@
     "steam",
     "lutris"
   ],
+  "evidence": {
+    "compat": {
+      "wine": {
+        "pkgs": [
+          "winehq-staging",
+          "wine-staging",
+          "wine"
+        ]
+      },
+      "winetricks": {
+        "pkgs": [
+          "winetricks"
+        ]
+      },
+      "umu": {
+        "pkgs": [
+          "umu-launcher",
+          "python3-umu-launcher"
+        ],
+        "files": [
+          "usr/local/bin/umu-run",
+          "usr/bin/umu-run"
+        ]
+      }
+    },
+    "gaming": {
+      "steam": {
+        "pkgs": [
+          "steam-launcher",
+          "steam-installer"
+        ]
+      },
+      "lutris": {
+        "pkgs": [
+          "lutris"
+        ],
+        "flatpaks": [
+          "net.lutris.Lutris"
+        ]
+      }
+    }
+  },
   "flatpaks": [
     "com.heroicgameslauncher.hgl",
     "com.usebottles.bottles",

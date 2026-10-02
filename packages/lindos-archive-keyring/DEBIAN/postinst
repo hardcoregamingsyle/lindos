@@ -1,0 +1,23 @@
+#!/bin/sh
+# postinst for lindos-archive-keyring - idempotent
+set -e
+
+# DPKG_ROOT is set by dpkg --root; the tests use it to run this against a scratch tree.
+ROOT="${DPKG_ROOT:-}"
+LEGACY_LIST="${ROOT}/etc/apt/sources.list.d/lindos.list"
+LEGACY_KEY="${ROOT}/etc/apt/keyrings/lindos-archive-keyring.gpg"
+
+case "$1" in
+    configure)
+        # An earlier image build could write a one-line lindos.list next to a key it had fetched from
+        # the repository host. lindos.sources replaces it, and two entries for one repository make apt
+        # warn, so drop the old pair - only when the list really is that one.
+        if [ -f "${LEGACY_LIST}" ] && grep -q 'lindos-archive-keyring' "${LEGACY_LIST}" 2>/dev/null; then
+            rm -f "${LEGACY_LIST}" "${LEGACY_KEY}"
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

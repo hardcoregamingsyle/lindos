@@ -20,12 +20,14 @@ Description: Lindos gaming stack — launchers, Proton-GE, GPU drivers, GameMode
   * lindos-drivers — GPU detection (lspci), driver status, NVIDIA/AMD/Intel driver
                      installation via ubuntu-drivers, nvidia-drm modeset, optional
                      xpadneo/xone controller drivers.
-  * lindos-game route/play/shortcut/cloud — honest routes for the 15 titles a
-                     kernel-level anti-cheat blocks on any Linux: official cloud
-                     streaming (NVIDIA GeForce NOW, Xbox Cloud Gaming, Boosteroid,
-                     Amazon Luna — only where the title and your region actually
-                     support it) or a one-click restart into an existing Windows
-                     install; never the Lindos VM and never a spoofer.
+  * lindos-game route/play/shortcut/cloud — honest routes for the titles that do
+                     not run on any Linux today (a kernel-level anti-cheat, or a
+                     publisher that has not enabled Linux; shown as "Not
+                     supported yet"): official cloud streaming (NVIDIA GeForce
+                     NOW, Xbox Cloud Gaming, Boosteroid, Amazon Luna — only where
+                     the title and your region actually support it) or a
+                     one-click restart into an existing Windows install; never
+                     the Lindos VM and never a spoofer.
   * GameMode config (/etc/gamemode.ini) that pauses the compositor while gaming,
     MangoHud defaults (/etc/xdg/MangoHud/MangoHud.conf, Shift_R+F12),
     controller udev rules, vm.max_map_count sysctl, launcher catalogue and the
@@ -33,7 +35,9 @@ Description: Lindos gaming stack — launchers, Proton-GE, GPU drivers, GameMode
  .
  Honesty notes: Windows games run through Wine/Proton (a translation layer, not
  Windows). Valorant (Vanguard) and Fortnite (Epic disabled EAC-Linux) do not run
- on any Linux, including Lindos. Roblox runs through Sober, not the Windows
+ on any Linux today, so they are not supported on Lindos yet: that is up to their
+ publishers, no date is given, and Lindos lists a game once its publisher enables
+ Linux and it has been tested. Roblox runs through Sober, not the Windows
  client; Minecraft Java is native. Steam titles depend on the developer enabling
  anti-cheat for Proton — see areweanticheatyet.com and protondb.com. Launchers
  are downloaded from Valve/Flathub/GitHub on demand, never in postinst.

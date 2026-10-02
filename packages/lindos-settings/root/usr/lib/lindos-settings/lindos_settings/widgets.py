@@ -188,8 +188,8 @@ def button(text: str = "", icon: Optional[str] = None, classes: Sequence[str] = 
     return btn
 
 
-def badge(status: str) -> Any:
-    text = {
+def badge(status: str, text: Optional[str] = None, tooltip: Optional[str] = None) -> Any:
+    text = text or {
         "works": "Works",
         "native": "Native",
         "partial": "Partial",
@@ -200,6 +200,8 @@ def badge(status: str) -> Any:
     lbl = Gtk.Label(label=text)
     lbl.set_valign(Gtk.Align.CENTER)
     add_class(lbl, "badge", f"badge-{status or 'unknown'}")
+    if tooltip:
+        lbl.set_tooltip_text(tooltip)
     return lbl
 
 

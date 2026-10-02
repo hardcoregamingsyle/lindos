@@ -38,7 +38,10 @@ Known limitations (a reproducible install log is the point; expect several round
     X (start-ubiquity-dm falls back to it by itself when X dies before Ubiquity starts).
   * A preseed cannot hide Ubiquity's temporary-account page in OEM mode; the harness answers it (user
     ``oem``, a random throw-away password that is scrubbed from every uploaded log).
-  * The GTK front end is only exercised in automatic mode: nothing here judges how the window looks.
+  * The GTK front end is only exercised in automatic mode.  How the windows look is judged only coarsely: the observer
+    proves the Lindos-Setup skin's GTK_THEME reached the installer's and the account wizard's GTK programs (a FAIL), and
+    the first-boot screenshot must not be mostly light (a WARN); whether the skin looks RIGHT is for a person to see in
+    first-boot.png / install-progress-*.png.
   * The install needs real internet: without it every network step is 'pending' - the assertions then
     accept that (``--expect-online auto`` probes the runner) and record what they saw.
   * Phase 3 patches the installed disk before booting it (a serial console on the kernel command line and a
@@ -126,7 +129,8 @@ SESSION_DIAG_RE = re.compile(r"^LINDOS_INSTALL_DIAG (.*)$")
 # What the default 'Install Lindos' session must prove, once, about two minutes in (ci-observer.sh live_checks): an
 # absent report is a failure too, otherwise a session whose observer never got that far would pass by staying silent.
 REQUIRED_SESSION_CHECKS: Tuple[str, ...] = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session",
-                                            "live-no-lindos-setup", "live-no-pkexec", "live-inhibitor-active")
+                                            "live-no-lindos-setup", "live-no-pkexec", "live-inhibitor-active",
+                                            "live-installer-theme")
 
 
 def log(msg: str) -> None:
@@ -649,8 +653,17 @@ def judge_install_session(serial: dict, *, completed: bool) -> List[ic.Finding]:
     return out
 
 
-def judge_first_boot(serial: dict, *, screenshot_ok: Optional[bool], screenshot_reason: str = "") -> List[ic.Finding]:
-    """Findings about phase 3: the installed disk must boot into oem-config."""
+#: above this share of light pixels the account wizard is judged to be Ubiquity's light default, not the Lindos-Setup skin
+WIZARD_LIGHT_LIMIT = 0.5
+
+
+def judge_first_boot(serial: dict, *, screenshot_ok: Optional[bool], screenshot_reason: str = "",
+                     light: Optional[Tuple[Optional[float], str]] = None) -> List[ic.Finding]:
+    """Findings about phase 3: the installed disk must boot into oem-config.
+
+    *light*: what :func:`screenshot_light_share` said about the first-boot picture - a heuristic, so a light wizard is a
+    warning; the hard promise (the skin's environment variable reached the GTK program) is the observer's
+    ``oem-wizard-theme`` check."""
     out: List[ic.Finding] = []
     if serial.get("panic"):
         out.append(ic.fail("boot-kernel", "the installed system's kernel panicked"))
@@ -675,6 +688,15 @@ def judge_first_boot(serial: dict, *, screenshot_ok: Optional[bool], screenshot_
         out.append(ic.info("boot-screenshot", "no screenshot check (%s)" % (screenshot_reason or "unavailable")))
     else:
         out.append(ic.ok("boot-screenshot", "the screenshot shows something (%s)" % screenshot_reason))
+    if light is not None:
+        share, stats = light
+        if share is None:
+            out.append(ic.info("boot-wizard-look", "not judged (%s)" % stats))
+        elif share >= WIZARD_LIGHT_LIMIT:
+            out.append(ic.warn("boot-wizard-look", "the account wizard looks LIGHT (%s): Ubiquity's default page, not the Lindos-Setup "
+                                                   "skin (dark #202020, accent #60CDFF)" % stats))
+        else:
+            out.append(ic.ok("boot-wizard-look", "the account wizard is dark (%s)" % stats))
     return out
 
 
@@ -842,6 +864,7 @@ LOG_COLLECT: Tuple[str, ...] = (
     "var/lib/lindos/install-state.json", "var/log/lindos", "var/log/installer", "var/log/apt/history.log",
     "var/log/apt/term.log", "var/log/dpkg.log", "var/log/oem-config.log", "etc/fstab", "boot/grub/grub.cfg",
     "etc/lightdm/lightdm.conf", "etc/os-release", "etc/lindos-release",
+    "etc/systemd/system/oem-config.service.d",               # the account wizard's GTK_THEME drop-in (finalize.sh)
 )
 LOG_CAP = 6 << 20
 
@@ -886,6 +909,69 @@ def collect_logs(tree: ic.Tree, dest: Path, secrets_: Iterable[str] = ()) -> Lis
 def screenshot_verdict(path: Path) -> Tuple[Optional[bool], str]:
     """(False, why) for a blank/single-colour screenshot, (True, stats) for one with content, (None, why) if unjudged."""
     return bt.screenshot_has_content(path)
+
+
+def read_ppm(path: Path) -> Optional[Tuple[int, int, bytes]]:
+    """(width, height, RGB bytes) of a binary PPM (what QEMU's screendump writes), None when it is not one."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if not data.startswith(b"P6"):
+        return None
+    fields: List[int] = []
+    pos = 2
+    while len(fields) < 3 and pos < len(data):
+        while pos < len(data) and data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            while pos < len(data) and data[pos:pos + 1] != b"\n":
+                pos += 1
+            continue
+        start = pos
+        while pos < len(data) and not data[pos:pos + 1].isspace():
+            pos += 1
+        try:
+            fields.append(int(data[start:pos]))
+        except ValueError:
+            return None
+    if len(fields) < 3 or fields[2] != 255:
+        return None
+    pos += 1                                  # the single whitespace byte after maxval
+    w, h = fields[0], fields[1]
+    return (w, h, data[pos:pos + 3 * w * h]) if len(data) - pos >= 3 * w * h else None
+
+
+def screenshot_light_share(path: Path, *, step: int = 4) -> Tuple[Optional[float], str]:
+    """The share of the LIT pixels (not black: the X root behind Ubiquity's window is black) whose brightness is 150 or more.
+
+    (share, stats), or (None, why) when the picture cannot be read (a PPM needs no library; a PNG needs Pillow).  A dark
+    Lindos-Setup page is a few percent light (text, the accent button); Ubiquity's default page is about 80 percent."""
+    rgb = read_ppm(path)
+    if rgb is None:
+        try:
+            from PIL import Image  # type: ignore[import-not-found]
+            with Image.open(path) as im:
+                conv = im.convert("RGB")
+                rgb = (conv.width, conv.height, conv.tobytes())
+        except ImportError:
+            return None, "not a PPM and Pillow is not installed"
+        except Exception as exc:  # noqa: BLE001 - unreadable is "cannot judge", not a crash
+            return None, "could not read %s: %s" % (Path(path).name, exc)
+    w, h, buf = rgb
+    lit = light = 0
+    for y in range(0, h, step):
+        row = y * w * 3
+        for x in range(0, w, step):
+            i = row + x * 3
+            luma = (buf[i] * 299 + buf[i + 1] * 587 + buf[i + 2] * 114) // 1000
+            if luma >= 8:
+                lit += 1
+                if luma >= 150:
+                    light += 1
+    if lit == 0:
+        return None, "nothing but black on the screen"
+    return light / lit, "%dx%d, %.0f%% of the %d lit sample pixels are light" % (w, h, 100.0 * light / lit, lit)
 
 
 # ============================================================================================
@@ -1312,7 +1398,8 @@ def _first_boot(ns: argparse.Namespace, out_dir: Path, disk: Path, ovmf: Optiona
     text3 = serial3.read_text(encoding="utf-8", errors="replace") if serial3.exists() else ""
     picture = next((p for p in (shot, shot.with_suffix(".ppm")) if p.exists()), None)
     verdict_shot, why = screenshot_verdict(picture) if ran["screenshot"] and picture else (None, "not captured")
-    return judge_first_boot(parse_oem_serial(text3), screenshot_ok=verdict_shot, screenshot_reason=why)
+    light = screenshot_light_share(picture) if ran["screenshot"] and picture else None
+    return judge_first_boot(parse_oem_serial(text3), screenshot_ok=verdict_shot, screenshot_reason=why, light=light)
 
 
 def _parse_size(text: str) -> int:

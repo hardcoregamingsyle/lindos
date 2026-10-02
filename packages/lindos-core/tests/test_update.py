@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 from lindos import paths
 from lindos import update as lupdate
 
@@ -462,3 +464,122 @@ def test_cli_version_flag(core_env, run_cli) -> None:
     proc = run_cli("lindos-update", "--version")
     assert proc.returncode == 0
     assert "lindos-update" in (proc.stdout + proc.stderr)
+
+
+# =================================================================================================
+# the Lindos apt source: deb822 conffile of lindos-archive-keyring (+ the older one-line list)
+# =================================================================================================
+SHIPPED_SOURCES = (Path(__file__).resolve().parents[2] / "lindos-archive-keyring" / "root" / "etc" / "apt"
+                   / "sources.list.d" / "lindos.sources")
+
+
+def _write_source(text: str, name: str = "lindos.sources") -> None:
+    path = paths.resolve("/etc/apt/sources.list.d/" + name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def test_parse_deb822_stanzas_comments_continuations_and_case() -> None:
+    text = ("# comment\nTypes: deb\nURIs: https://a.example/x/\n  https://b.example/y/\nSUITES: ./\n\n"
+            "\n# another\nTypes: deb-src\nuris: https://c.example/\n")
+    stanzas = lupdate.parse_deb822(text)
+    assert len(stanzas) == 2
+    assert stanzas[0]["types"] == "deb" and stanzas[0]["suites"] == "./"
+    assert stanzas[0]["uris"] == "https://a.example/x/ https://b.example/y/"
+    assert stanzas[1]["uris"] == "https://c.example/"
+    assert lupdate.parse_deb822("") == [] and lupdate.parse_deb822("no colon here\n") == []
+
+
+def test_the_shipped_source_is_switched_off_and_points_at_a_reserved_name(core_env) -> None:
+    _write_source(SHIPPED_SOURCES.read_text(encoding="utf-8"))
+    info = lupdate.source_info()
+    assert info["present"] and info["format"] == "deb822"
+    assert info["enabled"] is False and info["configured"] is False
+    assert info["url"] == "https://apt.lindos.invalid/stable" and info["placeholder"] is True
+    assert info["suites"] == "./" and info["signed_by"] == "/usr/share/keyrings/lindos-archive-keyring.gpg"
+    assert lupdate.configured_repo_url() is None
+    assert lupdate.repo_info()["configured"] is False
+
+
+@pytest.mark.parametrize("value, enabled", [("no", False), ("No", False), ("false", False), ("0", False),
+                                            ("OFF", False), ("yes", True), ("true", True), ("1", True)])
+def test_enabled_field_values(core_env, value: str, enabled: bool) -> None:
+    _write_source(f"Enabled: {value}\nTypes: deb\nURIs: https://apt.example.test/stable/\nSuites: ./\n")
+    assert lupdate.source_info()["enabled"] is enabled
+    assert lupdate.configured_repo_url() == ("https://apt.example.test/stable" if enabled else None)
+
+
+def test_a_source_without_an_enabled_field_is_enabled_like_apt_does(core_env) -> None:
+    _write_source("Types: deb\nURIs: https://apt.example.test/stable/\nSuites: ./\n")
+    assert lupdate.source_info()["configured"] is True
+
+
+def test_deb822_takes_precedence_over_the_old_one_line_list(core_env) -> None:
+    _write_source("Types: deb\nURIs: https://new.example.test/stable/\nSuites: ./\n")
+    _write_source("deb [signed-by=/x] https://old.example.test/repo ./\n", "lindos.list")
+    assert lupdate.configured_repo_url() == "https://new.example.test/stable"
+
+
+def test_the_old_one_line_list_still_works_without_a_deb822_file(core_env) -> None:
+    _write_source("deb [signed-by=/x] https://old.example.test/repo ./\n", "lindos.list")
+    info = lupdate.source_info()
+    assert info["format"] == "list" and info["configured"] is True and info["url"] == "https://old.example.test/repo"
+
+
+def test_a_disabled_deb822_file_is_not_replaced_by_the_old_list(core_env) -> None:
+    _write_source("Enabled: no\nTypes: deb\nURIs: https://new.example.test/stable/\nSuites: ./\n")
+    _write_source("deb [signed-by=/x] https://old.example.test/repo ./\n", "lindos.list")
+    assert lupdate.configured_repo_url() is None
+
+
+def test_keyring_detection_never_counts_the_placeholder(core_env) -> None:
+    key = Path(paths.resolve(lupdate.LINDOS_KEYRING))
+    key.parent.mkdir(parents=True, exist_ok=True)
+    assert lupdate.source_info()["keyring_present"] is False
+    key.write_text("LINDOS-PLACEHOLDER-KEYRING\nnot a key\n", encoding="utf-8")
+    assert lupdate.source_info()["keyring_present"] is False
+    key.write_bytes(b"\x99\x01\x0d\x04fakekeybytes")
+    assert lupdate.source_info()["keyring_present"] is True
+
+
+@pytest.mark.parametrize("url, placeholder", [
+    ("https://apt.lindos.invalid/stable", True), ("https://packages.lindos.dev", True),
+    ("https://x.INVALID/", True), ("https://apt.example.test/stable", False),
+    ("http://127.0.0.1:8099/stable/", False), ("", False)])
+def test_is_placeholder_url(url: str, placeholder: bool) -> None:
+    assert lupdate.is_placeholder_url(url) is placeholder
+
+
+def test_repo_status_refuses_a_reserved_placeholder_name() -> None:
+    ok, msg = lupdate.repo_status("https://apt.lindos.invalid/stable/", fetch=lambda u: (True, "HTTP 200"))
+    assert ok is False and "placeholder" in msg
+
+
+def test_check_says_not_configured_for_the_shipped_disabled_source(core_env) -> None:
+    _write_source(SHIPPED_SOURCES.read_text(encoding="utf-8"))
+    st = lupdate.check(run=_run_returning("Listing... Done\n"), which=_which_map({}))
+    assert st.repo_configured is False and st.repo_reachable is None
+
+
+def test_cli_repo_status_says_the_source_is_switched_off(core_env, run_cli) -> None:
+    _write_source(SHIPPED_SOURCES.read_text(encoding="utf-8"))
+    proc = run_cli("lindos-update", "repo", "status", "--json")
+    assert proc.returncode == 3, (proc.stdout, proc.stderr)
+    data = json.loads(proc.stdout)
+    assert data["configured"] is False and data["switched_off"] is True and data["reachable"] is None
+    assert "switched off" in data["message"]
+
+
+def test_cli_check_text_explains_the_switched_off_source(core_env, run_cli) -> None:
+    _write_source(SHIPPED_SOURCES.read_text(encoding="utf-8"))
+    proc = run_cli("lindos-update", "check")
+    assert "not configured yet" in proc.stdout and "switched off" in proc.stdout
+    assert "mintupdate" not in proc.stdout.lower() and "update manager" not in proc.stdout.lower()
+
+
+def test_apply_all_payload_shape() -> None:
+    digest = "sha256:" + "a" * 64
+    assert lupdate.apply_all_payload(digest) == {"plan_digest": digest}
+    assert lupdate.apply_all_payload(digest, allow_kernel=True, allow_removals=True) == {
+        "plan_digest": digest, "allow_kernel": True, "allow_removals": True}

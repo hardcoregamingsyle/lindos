@@ -759,6 +759,38 @@ fix_boot_paths() {
     fi
 }
 
+# The BIOS (ISOLINUX) menu and the disc's own markers are shown or listed to the user as much as the desktop is:
+# drop Mint's marker file and the GRUB boot theme nothing uses (the overlay's grub.cfg has its own palette), draw
+# Lindos's splash in place of Mint's ring logo (build/lib/boot_splash.py, from the Lindos logo SVG; a picture in
+# build/overlay/isolinux/splash.png wins), title the menu and colour its selection bar for Lindos.  Dies rather than
+# ship Mint's splash or marker.
+lindos_bios_boot_art() {
+    local logo="${ROOT}/packages/lindos-desktop/root/usr/share/pixmaps/lindos-logo.svg" f
+    rm -f "${ISO_DIR}/.disk/mint_iso" "${ISO_DIR}/boot/grub/theme.cfg"
+    rm -rf "${ISO_DIR}/boot/grub/live-theme"
+    if [ -d "${ISO_DIR}/isolinux" ]; then
+        if [ -f "${BUILD_DIR}/overlay/isolinux/splash.png" ]; then
+            log "isolinux/splash.png comes from build/overlay (the picture the owner supplied)"
+        else
+            [ -f "${logo}" ] || die "the Lindos logo ${logo} is missing - cannot draw the BIOS boot splash"
+            python3 "${BUILD_DIR}/lib/boot_splash.py" --svg "${logo}" --out "${ISO_DIR}/isolinux/splash.png" \
+                || die "could not draw isolinux/splash.png (BIOS boot would keep the base's Mint logo)"
+        fi
+        if [ -f "${ISO_DIR}/isolinux/live.cfg" ]; then
+            sed -i -E "s/^([[:space:]]*menu title[[:space:]]+).*/\\1Lindos ${LINDOS_VERSION} (${LINDOS_CODENAME})/I" "${ISO_DIR}/isolinux/live.cfg"
+        fi
+        for f in "${ISO_DIR}"/isolinux/*.cfg; do
+            [ -f "${f}" ] || continue
+            sed -i -E 's/^([[:space:]]*menu color sel[[:space:]]+[^[:space:]]+[[:space:]]+)#[0-9a-fA-F]{8}[[:space:]]+#[0-9a-fA-F]{8}/\1#ff000000 #ff60cdff/I' "${f}"
+        done
+        if [ -f "${WORK_DIR}/orig/isolinux/splash.png" ] && cmp -s "${ISO_DIR}/isolinux/splash.png" "${WORK_DIR}/orig/isolinux/splash.png"; then
+            die "isolinux/splash.png is still the base's Mint logo"
+        fi
+        log "BIOS boot menu: Lindos splash, title and selection colour"
+    fi
+    [ ! -e "${ISO_DIR}/.disk/mint_iso" ] || die "/.disk/mint_iso ('unique to Mint ISO images') is still on the disc"
+}
+
 apply_overlay() {
     timer_start "overlay + branding"
     local overlay="${BUILD_DIR}/overlay"
@@ -821,6 +853,7 @@ apply_overlay() {
     else
         log "no isolinux/live.cfg in the ISO tree - nothing to rewrite for BIOS boot"
     fi
+    lindos_bios_boot_art
 
     # Brand every boot config / text that still carries Mint's product name.
     local f

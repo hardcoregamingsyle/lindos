@@ -16,9 +16,9 @@
 #    * Flathub — system-wide flatpak remote (flatpak is preinstalled on Mint)
 #    * Kisak   — fresh Mesa PPA, opt-in with KISAK_MESA=1 (key fetched from
 #                Launchpad's API + keyserver, no hard-coded fingerprint)
-#    * Lindos  — Lindos's own lindos-*.deb apt repo (SPEC-UPDATE.md §36),
-#                opt-in with LINDOS_APT_REPO_ENABLE=1 (default 0: no repo
-#                configured is the honest default until someone hosts one)
+#    * Lindos  — NOT here: the lindos-archive-keyring package (Lindos's update source and public
+#                key) is installed by 30-lindos-debs.sh, in the same apt transaction as lindos-core.
+#                Nothing is fetched from the network for it.
 #    * optional APT_MIRROR rewrite, then apt-get update.
 #  Idempotent: re-running rewrites the same files with the same content.
 # ============================================================================
@@ -223,31 +223,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7b. Lindos's own apt repository (SPEC-UPDATE.md §36.5-§36.6) — opt-in only.
-#     An ISO built today ships with LINDOS_APT_REPO_ENABLE=0 (no repo
-#     configured): exactly as honest as the current state, and
-#     lindos-update/Settings say plainly "not configured yet" instead of a
-#     dead URL. The keyring is fetched from right alongside the repo itself
-#     (build/publish-apt-repo.sh writes it at <URL>/lindos-archive-keyring.gpg
-#     -- flat-format repos have no separate keyserver to point at).
+# 7b. Lindos's own apt repository (SPEC-UPDATE.md, docs/UPDATES.md): nothing to do here, on purpose.
+#     The source (/etc/apt/sources.list.d/lindos.sources) and the public key come from the
+#     lindos-archive-keyring package, and 30-lindos-debs.sh installs it with the other Lindos debs, where
+#     it also checks the source and exercises it. It must not be unpacked from this hook: hooks 10 and 20 run
+#     apt after this one, and apt refuses every install/purge/autoremove while a package is half-installed
+#     (dpkg -i --force-depends left exactly that behind). Nothing is fetched from the network for the key.
 # ---------------------------------------------------------------------------
-: "${LINDOS_APT_REPO_URL:=https://packages.lindos.dev}"
-: "${LINDOS_APT_REPO_ENABLE:=0}"
-if [ "${LINDOS_APT_REPO_ENABLE}" = "1" ]; then
-    LINDOS_REPO_KEYRING="${KEYRINGS_DIR}/lindos-archive-keyring.gpg"
-    LINDOS_REPO_LIST="${SOURCES_DIR}/lindos.list"
-    if fetch "${LINDOS_APT_REPO_URL%/}/lindos-archive-keyring.gpg" "${LINDOS_REPO_KEYRING}"; then
-        chmod 0644 "${LINDOS_REPO_KEYRING}"
-        printf 'deb [signed-by=%s] %s ./\n' "${LINDOS_REPO_KEYRING}" "${LINDOS_APT_REPO_URL}" > "${LINDOS_REPO_LIST}"
-        chmod 0644 "${LINDOS_REPO_LIST}"
-        log "Lindos apt repository configured: ${LINDOS_REPO_LIST} (${LINDOS_APT_REPO_URL})"
-    else
-        warn "could not download the Lindos apt repo keyring from ${LINDOS_APT_REPO_URL} — Lindos repo NOT added (lindos-update sideload still works with no repo at all)"
-        rm -f "${LINDOS_REPO_LIST}" "${LINDOS_REPO_KEYRING}"
-    fi
-else
-    log "LINDOS_APT_REPO_ENABLE=0 — Lindos's own apt repo not configured (the honest default; see docs/UPDATES.md)"
-fi
 
 # ---------------------------------------------------------------------------
 # 8. Never let apt inside the image install snaps or Ubuntu's firefox stub:

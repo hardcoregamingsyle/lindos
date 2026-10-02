@@ -575,3 +575,138 @@ def test_a_base_without_a_removal_list_is_warned_about_not_invented(tmp_path: Pa
     assert res.returncode == 0, res.stderr
     assert not (tmp_path / "iso" / "casper" / "filesystem.manifest-remove").exists()
     assert "warn: base ISO has no filesystem.manifest-remove" in res.stderr
+
+
+# --------------------------------------------------------------------------- the look of the installer session
+SKIN_SRC = REPO_ROOT / "build" / "installer" / "themes" / "Lindos-Setup" / "gtk-3.0" / "gtk.css"
+DROPIN = "etc/systemd/system/ubiquity.service.d/10-lindos.conf"
+SKIN_DST = "usr/share/themes/Lindos-Setup/gtk-3.0/gtk.css"
+IMPORT_LINE = '@import url("../../Lindos-Dark/gtk-3.0/gtk.css");'
+ADWAITA_IMPORT = '@import url("resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css");'
+
+
+def _with_skin(root: Path) -> None:
+    _put(root / SKIN_DST, SKIN_SRC.read_bytes())
+
+
+def _stage(tmp: Path) -> Path:
+    stage = tmp / "stage"
+    _put(stage / "themes" / "Lindos-Setup" / "gtk-3.0" / "gtk.css", SKIN_SRC.read_bytes())
+    return stage
+
+
+@needs_bash
+def test_the_installer_session_gets_the_skin_through_a_drop_in_of_ubiquity_service(tmp_path: Path) -> None:
+    """Only the launcher's Exec applied Lindos-Setup: the 'Install Lindos' entries (only-ubiquity) start ubiquity-dm from
+    ubiquity.service, which never saw it.  ubiquity-dm passes its environment on to X, the window manager and the GTK
+    program, so a variable of the unit is enough."""
+    root = _fake_image(tmp_path)
+    _with_skin(root)
+    res = _run(tmp_path, root)
+    assert res.returncode == 0, res.stderr
+    text = (root / DROPIN).read_text(encoding="utf-8")
+    assert text.splitlines()[-2:] == ["[Service]", "Environment=GTK_THEME=Lindos-Setup"], text
+    assert "\r" not in text and text.startswith("# Written by build/chroot/79-installer-flow.sh")
+    assert "deployed /%s" % DROPIN in res.stderr
+    assert sorted(p.name for p in (root / "etc/systemd/system/ubiquity.service.d").iterdir()) == ["10-lindos.conf"]
+
+
+@needs_bash
+@posix_only
+def test_the_drop_in_and_its_directory_are_world_readable(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    _with_skin(root)
+    assert _run(tmp_path, root).returncode == 0
+    assert (root / DROPIN).stat().st_mode & 0o777 == 0o644
+    assert (root / "etc/systemd/system/ubiquity.service.d").stat().st_mode & 0o777 == 0o755
+
+
+@needs_bash
+def test_a_second_run_with_the_skin_changes_nothing(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    _with_skin(root)
+    assert _run(tmp_path, root).returncode == 0
+    first = _snapshot(root)
+    assert _run(tmp_path, root).returncode == 0
+    assert _snapshot(root) == first
+
+
+@needs_bash
+def test_without_a_skin_there_is_no_drop_in_and_the_build_goes_on(tmp_path: Path) -> None:
+    """Cosmetic: the installer keeps the default look, the build says so and does not fail."""
+    root = _fake_image(tmp_path)
+    res = _run(tmp_path, root)
+    assert res.returncode == 0, res.stderr
+    assert not (root / DROPIN).exists() and not (root / "etc/systemd/system/ubiquity.service.d").exists()
+    assert "no Lindos-Setup skin" in res.stderr and "keep the default GTK theme" in res.stderr
+    # a stale drop-in of an earlier build is removed: it would name a theme that is not there
+    _put(root / DROPIN, b"[Service]\nEnvironment=GTK_THEME=Lindos-Setup\n")
+    assert _run(tmp_path, root).returncode == 0
+    assert not (root / DROPIN).exists()
+
+
+@needs_bash
+def test_a_skin_that_78_did_not_install_is_installed_from_the_staged_sources(tmp_path: Path) -> None:
+    root = _fake_image(tmp_path)
+    _put(root / "usr/share/themes/Lindos-Dark/gtk-3.0/gtk.css", b"/* base */\n")
+    res = _run(tmp_path, root, LINDOS_INSTALLER_SRC=(_stage(tmp_path)).as_posix())
+    assert res.returncode == 0, res.stderr
+    assert (root / SKIN_DST).read_bytes() == SKIN_SRC.read_bytes(), "a plain copy: 78's own deployment is byte for byte the same"
+    assert "installed the Lindos-Setup GTK skin" in res.stderr and (root / DROPIN).is_file()
+
+
+@needs_bash
+def test_without_lindos_dark_the_skin_is_rebased_on_gtks_dark_adwaita_so_the_installer_stays_dark(tmp_path: Path) -> None:
+    """78 installs no skin when Lindos-Dark is missing (its @import would find nothing): then the installer would keep
+    Ubiquity's light default although the drop-in asks for the skin.  Here the skin is installed on GTK's built-in dark."""
+    root = _fake_image(tmp_path)
+    res = _run(tmp_path, root, LINDOS_INSTALLER_SRC=(_stage(tmp_path)).as_posix())
+    assert res.returncode == 0, res.stderr
+    css = (root / SKIN_DST).read_text(encoding="utf-8")
+    assert ADWAITA_IMPORT in css.splitlines() and IMPORT_LINE not in css.splitlines()
+    assert css.replace(ADWAITA_IMPORT, IMPORT_LINE) == SKIN_SRC.read_text(encoding="utf-8"), "only the @import line differs"
+    assert "no Lindos-Dark GTK theme" in res.stderr and "dark Adwaita" in res.stderr
+    assert (root / DROPIN).is_file()
+
+
+@needs_bash
+def test_the_skin_source_carries_the_import_line_the_build_rebases() -> None:
+    css = SKIN_SRC.read_text(encoding="utf-8")
+    assert IMPORT_LINE in css.splitlines()
+    first_rule = next(ln for ln in css.splitlines() if ln.startswith("@") or ln.endswith("{"))
+    assert first_rule == IMPORT_LINE, "@import must come first in a GTK style sheet"
+
+
+def test_the_skin_is_a_dark_fluent_palette_that_changes_no_geometry() -> None:
+    css = SKIN_SRC.read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    assert code.count("{") == code.count("}") and code.count("(") == code.count(")")
+    assert b"\r" not in SKIN_SRC.read_bytes()
+    for colour in ("#202020", "#2B2B2B", "#60CDFF"):
+        assert colour.lower() in code.lower(), colour
+    # the pages, the lists, the text fields, the buttons: nothing is left to Ubiquity's light default
+    for selector in ("window,", ".view,", "entry,", "button {", "check,", "button.ubiquity-next", "progressbar progress", ".ubiquity-menubar"):
+        assert selector in code, selector
+    # window frames: metacity (ubiquity-dm's window manager here) reads the wm_* colours of the GTK theme
+    for name in ("wm_title", "wm_bg_a", "wm_bg_b", "theme_bg_color", "theme_fg_color", "theme_selected_bg_color"):
+        assert "@define-color %s " % name in code, name
+    # colours and typography only: a size or a padding could change Ubiquity's layout
+    for prop in ("padding", "margin", "min-width", "min-height", "width:", "height:", "font-size", "border-width"):
+        assert prop not in code.replace("border-radius", ""), prop
+    # a label takes the colour of what it sits in (black on the accent Continue button): no rule of its own
+    assert not re.search(r"(^|\n)label\s*[,{]", code)
+    # every rule that paints a dark background also says what colour the text is
+    for block in re.findall(r"([^{}]+)\{([^{}]*)\}", code):
+        selector, body = block
+        if "background-color" in body and "color:" not in body.replace("background-color:", ""):
+            assert any(w in selector for w in ("trough", "progress", "scrollbar", "separator", "infobar.", ":hover", "button:active",
+                                               "button:disabled", "scrollbar slider")), "no text colour beside a background: %s" % selector.strip()
+
+
+@needs_bash
+def test_a_skin_drop_in_that_could_not_be_written_fails_the_build(tmp_path: Path) -> None:
+    """The drop-in is checked after it is written, like the hook: a silently missing one means the light default."""
+    root = _fake_image(tmp_path)
+    _with_skin(root)
+    script = HOOK.read_text(encoding="utf-8")
+    assert 'grep -qx "Environment=GTK_THEME=${SKIN}" "${SKIN_DROPIN}" || die' in script

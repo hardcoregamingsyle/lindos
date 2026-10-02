@@ -19,6 +19,11 @@ else:  # pragma: no cover
 log = logging.getLogger("lindos.settings.gaming")
 
 
+def _not_supported_badge(disclaimer: Dict[str, Any]) -> Any:
+    """The "Not supported yet" badge; its tooltip is the publisher-decides sentence, so it is never shown bare."""
+    return badge(model.BADGE_NOT_SUPPORTED_YET, disclaimer["badge"], disclaimer.get("short") or None)
+
+
 class GamingPage(PageBase):
     PAGE_ID = "gaming"
 
@@ -80,7 +85,7 @@ class GamingPage(PageBase):
             links.pack_start(lb, False, False, 0)
         info.add_body(links)
         hsec.add(info)
-        compat = Card("Compatibility list", "Which popular games work on Lindos, which are partial and which are impossible", ("view-list-details",), ("compatibility", "matrix", "games", "list"))
+        compat = Card("Compatibility list", "Which popular games work on Lindos, which are partial and which are not supported yet", ("view-list-details",), ("compatibility", "matrix", "games", "list"))
         compat.set_control(button("Open compatibility list", on_click=self._open_compat))
         hsec.add(compat)
 
@@ -267,10 +272,17 @@ class GamingPage(PageBase):
                  lambda ok, exc: None if ok and not exc else self.toast("Could not save the region"),
                  name="set-region")
 
+    def _needs_windows_data(self) -> tuple[list, dict]:
+        return self.backend.not_possible_games(), self.backend.compat_disclaimer()
+
     def _refresh_needs_windows(self) -> None:
-        def _done(games: Any, exc: Optional[BaseException]) -> None:
+        def _done(data: Any, exc: Optional[BaseException]) -> None:
             self.needs_windows_section.clear()
+            games, disclaimer = data if data else ([], {})
             games = games or []
+            if disclaimer.get("long"):
+                # SPEC 0.1: "Not supported yet" - publishers decide, no date is promised
+                self.needs_windows_section.add(InfoCard(disclaimer.get("badge") or "Not supported yet", disclaimer["long"], ("dialog-information",), ("not supported yet", "anti-cheat", "publisher")))
             if exc:
                 self.needs_windows_section.add(Card("Could not read the compatibility list", str(exc), ("dialog-error",), ()))
             elif not games:
@@ -282,10 +294,12 @@ class GamingPage(PageBase):
                         continue
                     card = Card(name, g.get("reason") or "", ("dialog-warning", "applications-games"), (name.lower(), "windows", "restart into windows", "cloud"))
                     card.set_control(button("Routes…", on_click=lambda n=name: self._open_routes(n)))
+                    if g.get("kind") and disclaimer.get("badge"):
+                        card.add_control(_not_supported_badge(disclaimer))
                     self.needs_windows_section.add(card)
             self.needs_windows_section.show_all()
 
-        run_async(self.backend.not_possible_games, _done, name="not-possible-games")
+        run_async(self._needs_windows_data, _done, name="not-possible-games")
 
     def _open_routes(self, title: str) -> None:
         RoutesDialog(self.app, self.backend, title)
@@ -313,7 +327,7 @@ class CompatDialog:
         area.set_margin_top(10)
         area.set_margin_start(12)
         area.set_margin_end(12)
-        area.pack_start(label("Status: Native / Works (Proton) / Partial / Not possible (kernel anti-cheat: Valorant, Fortnite, LoL …). Same data as docs/COMPATIBILITY.md.", ("dim-label",), wrap=True), False, False, 0)
+        area.pack_start(label("Status: Native / Works (Proton) / Partial / Not supported yet (kernel anti-cheat: Valorant, Fortnite, LoL … — up to their publishers, no date) / Not possible (Windows-only store apps). Same data as docs/COMPATIBILITY.md.", ("dim-label",), wrap=True), False, False, 0)
         self.search = Gtk.SearchEntry()
         self.search.set_placeholder_text("Filter games…")
         area.pack_start(self.search, False, False, 0)
@@ -328,19 +342,26 @@ class CompatDialog:
         self.dialog.connect("response", lambda d, *_: d.destroy())
         self.rows: list[tuple[Any, str]] = []
         entries = backend.compat_matrix()
+        self.disclaimer = backend.compat_disclaimer()
         if not entries:
             self.listbox.add(Card("Compatibility data not found", f"Expected {model.COMPAT_MATRIX_JSON} (shipped by lindos-gaming)", ("dialog-warning",)).row)
         for e in entries:
             row = self._row(e, backend)
             self.listbox.add(row)
-            self.rows.append((row, " ".join([e["name"], e["status"], e["reason"], e["how"]]).lower()))
+            self.rows.append((row, " ".join([e["name"], e["status"], e["reason"], e["how"], self._badge_text(e)]).lower()))
         self.search.connect("search-changed", self._filter)
         self.dialog.show_all()
+
+    def _badge_text(self, e: dict[str, str]) -> str:
+        return str(self.disclaimer.get("badge") or "") if e.get("kind") else ""
 
     def _row(self, e: dict[str, str], backend: Any) -> Any:
         sub = e["reason"] + ((" — via " + e["how"]) if e["how"] and e["how"].lower() not in e["reason"].lower() else "")
         card = Card(e["name"], sub, ("applications-games",), (e["status"],))
-        card.add_control(badge(e["status"]))
+        if e.get("kind") and self.disclaimer.get("badge"):
+            card.add_control(_not_supported_badge(self.disclaimer))
+        else:
+            card.add_control(badge(e["status"]))
         if e["link"]:
             lb = Gtk.LinkButton.new_with_label(e["link"], "Details")
             card.set_control(lb)
@@ -422,6 +443,10 @@ class RoutesDialog:
         region = route.get("region") or "unknown"
         self.status_label.set_text(f"Anti-cheat: {anticheat}   ·   Region used: {region}")
         self.boot_label.set_text("Dual boot: " + (model.dualboot_summary(boot) if self._boot is not None else "checking…"))
+        dis = route.get("disclaimer") or {}
+        if dis.get("short"):
+            why = (" " + dis["cause"]) if dis.get("cause") else ""
+            self.listbox.add(InfoCard(dis.get("badge") or "Not supported yet", dis["short"] + why, ("dialog-information",)).row)
         if not routes:
             notes = [n for n in (route.get("notes") or []) if n]
             self.listbox.add(Card("No routes available", "; ".join(notes) or "Lindos has nothing more to suggest for this title.", ("dialog-warning",)).row)
@@ -438,7 +463,7 @@ class RoutesDialog:
         provider = route.get("provider")
         title_text = str(route.get("label") or rtype) + (f" ({provider})" if provider else "")
         card = Card(title_text, str(route.get("why") or ""), _ROUTE_ICONS.get(rtype, ("applications-games",)), (rtype, provider or ""))
-        card.add_control(badge("works" if route.get("available") else "not-possible"))
+        card.add_control(badge("works", "Available") if route.get("available") else badge("unknown", "Not available"))
         requires = route.get("requires") or []
         if requires:
             card.add_body(label("Needs: " + ", ".join(requires), ("dim-label",), wrap=True))

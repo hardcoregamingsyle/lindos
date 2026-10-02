@@ -21,6 +21,10 @@
 #      apt_purge PKG…           purge only the packages that are installed
 #      pkg_installed PKG        true if dpkg says "installed"
 #      pkg_available PKG        true if apt has a candidate for PKG
+#      pkgs_installed_matching GLOB…   installed packages matching dpkg-query globs
+#      mark_manual_installed PKG…      apt-mark manual, installed names only
+#      meta_deps_installed META…       installed Depends/Recommends of installed metapackages
+#      mark_meta_deps_manual           keep everything mint-meta-* pulled in before it goes
 #      svc_disable UNIT…        systemctl disable (offline, chroot-safe)
 #      svc_mask UNIT…           systemctl mask
 #      fetch URL DEST           curl/wget download to a temp file, atomic move
@@ -55,7 +59,8 @@ export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 export APT_LISTCHANGES_FRONTEND=none
 export UCF_FORCE_CONFFOLD=1
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# LINDOS_HOOK_PATH_PREFIX is a test seam (fake apt-get/dpkg-query first in PATH); unset in real builds.
+export PATH="${LINDOS_HOOK_PATH_PREFIX:+${LINDOS_HOOK_PATH_PREFIX}:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 _hts() { date '+%T'; }
 
@@ -162,6 +167,53 @@ pkg_available() {
     [ -n "${cand}" ] && [ "${cand}" != "(none)" ]
 }
 
+# pkgs_installed_matching GLOB… — installed packages matching any dpkg-query glob, one per line.
+pkgs_installed_matching() {
+    [ "$#" -gt 0 ] || return 0
+    # one dpkg-query for all the globs; an unmatched glob only makes it exit non-zero
+    # shellcheck disable=SC2016  # dpkg-query's own ${...} format, not shell
+    { dpkg-query -W -f='${db:Status-Status} ${Package}\n' "$@" 2>/dev/null || true; } | awk '$1=="installed"{print $2}' | sort -u
+}
+
+# mark_manual_installed PKG… — apt-mark manual for the installed ones (one unknown name would fail the whole call).
+mark_manual_installed() {
+    local keep=()
+    [ "$#" -gt 0 ] || return 0
+    mapfile -t keep < <(pkgs_installed_matching "$@")
+    [ "${#keep[@]}" -gt 0 ] || return 0
+    apt-mark manual "${keep[@]}" >/dev/null 2>&1 || warn "apt-mark manual failed for: ${keep[*]}"
+    return 0
+}
+
+# meta_deps_installed META… — installed packages that the (installed) metapackages Depend on or Recommend.
+meta_deps_installed() {
+    local m names=()
+    mapfile -t names < <(
+        for m in "$@"; do
+            # shellcheck disable=SC2016  # dpkg-query's own ${...} format, not shell
+            dpkg-query -W -f='${Depends}\n${Recommends}\n' "${m}" 2>/dev/null || true
+        done | tr ',|' '\n\n' | sed -E 's/\([^)]*\)//g; s/:[A-Za-z0-9_-]+$//; s/[[:space:]]+//g' | sort -u | grep -v '^$' || true)
+    [ "${#names[@]}" -gt 0 ] || return 0
+    pkgs_installed_matching "${names[@]}"
+}
+
+# mark_meta_deps_manual — Mint's mint-meta-* metapackages Depend on the whole desktop (Thunar, the panel plugins,
+# file-roller, …).  Purging one (or letting a purge take it along) turns every one of those into an autoremove
+# candidate, so they are marked manual first.  Idempotent; a no-op when no metapackage is installed.
+mark_meta_deps_manual() {
+    local metas=() deps=()
+    mapfile -t metas < <(pkgs_installed_matching 'mint-meta-*')
+    [ "${#metas[@]}" -gt 0 ] || { log "no mint-meta-* package installed: nothing to keep"; return 0; }
+    mapfile -t deps < <(meta_deps_installed "${metas[@]}")
+    if [ "${#deps[@]}" -eq 0 ]; then
+        warn "could not read the dependencies of ${metas[*]} (dpkg-query); relying on AUTOREMOVE_PROTECT_RE"
+        return 0
+    fi
+    log "marking ${#deps[@]} package(s) that ${metas[*]} pulled in as manually installed"
+    mark_manual_installed "${deps[@]}"
+    return 0
+}
+
 apt_purge() {
     local p
     local todo=()
@@ -180,11 +232,13 @@ apt_purge() {
     return 0
 }
 
-# Packages that 'apt-get autoremove' must never take away.  Mint's
-# mint-meta-* metapackages *Depend* on the seeded desktop apps, so purging one
-# of them (hexchat, rhythmbox, …) removes the metapackage — and everything the
-# metapackage pulled in becomes an autoremove candidate: the whole desktop.
-AUTOREMOVE_PROTECT_RE='^(xfce4|xfwm4|xfdesktop4|xfconf|thunar|tumbler|lightdm|slick-greeter|light-locker|mint|network-manager|nm-|cups|system-config-printer|avahi|casper|ubiquity|linux-|grub|shim|plymouth|pulseaudio|pipewire|wireplumber|mesa|libgl|libegl|libdrm|xserver|xorg|xinit|x11|python3|gir1\.2|libgtk|gtk|glib|gvfs|udisks|upower|policykit|polkit|systemd|dbus|firefox|thunderbird|blueman|bluez|gnome-|libreoffice|fonts-|hicolor|adwaita|mate-|xdg-|initramfs|busybox|lupin|memtest|efibootmgr|os-prober|lindos-)'
+# Packages that 'apt-get autoremove' must never take away.  Mint's mint-meta-* metapackages *Depend* on the seeded
+# desktop apps, so purging one of them (hexchat, rhythmbox, ...) removes the metapackage - and everything the
+# metapackage pulled in becomes an autoremove candidate.  mark_meta_deps_manual (above) marks those manual before
+# any purge; this pattern is the second line of defence.  It names what must stay instead of the blanket 'mint',
+# 'gnome-' and 'mate-' prefixes, so the Mint artwork and apps that 76-mint-purge.sh removes are not protected here
+# (they go through its guarded, simulated purge, not through an autoremove sweep).
+AUTOREMOVE_PROTECT_RE='^(xfce4|xfwm4|xfdesktop4|xfconf|thunar|tumbler|lightdm|slick-greeter|light-locker|linuxmint-keyring|mintupdate|mintinstall|mintdrivers|mintsources|mintreport|mintsystem|mintlocale|mint-common|mint-info|mint-mirrors|mint-translations|ubuntu-system-adjustments|aptitude|aptkit|timeshift|network-manager|nm-|cups|system-config-printer|avahi|casper|ubiquity|linux-|grub|shim|plymouth|pulseaudio|pipewire|wireplumber|mesa|libgl|libegl|libdrm|xserver|xorg|xinit|x11|python3|gir1\.2|libgtk|gtk|glib|gvfs|udisks|upower|policykit|polkit|systemd|dbus|firefox|thunderbird|blueman|bluez|gnome-(keyring|themes|calculator|disk-utility|system-tools|online-accounts|font-viewer)|libreoffice|fonts-|hicolor|adwaita|mate-polkit|xdg-|initramfs|busybox|lupin|memtest|efibootmgr|os-prober|file-roller|mousepad|ristretto|evince|vlc|lindos-)'
 
 # safe_autoremove — apt-get autoremove --purge that cannot dismantle the
 # desktop: candidates matching AUTOREMOVE_PROTECT_RE are marked "manually

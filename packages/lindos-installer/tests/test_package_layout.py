@@ -125,7 +125,8 @@ def test_loading_the_library_has_no_side_effects(tmp_path: Path) -> None:
 @needs_bash
 def test_the_enter_runner_mounts_in_a_private_namespace_and_starts_a_clean_chroot(sandbox: Sandbox) -> None:
     res = sandbox.run(LIBEXEC / "lib.sh", "--enter", sandbox.target.as_posix(), "true",
-                      LINDOS_CHROOT_APT_CONFIG="/var/lib/lindos/installer-apt.conf", http_proxy="http://proxy.example:3128",
+                      APT_CONFIG="/var/lib/lindos/installer-apt.conf", LINDOS_CHROOT_APT_CONFIG="/var/lib/lindos/installer-apt.conf",
+                      http_proxy="http://proxy.example:3128",
                       DEBIAN_HAS_FRONTEND="1", DEBCONF_REDIR="1", DEBIAN_FRONTEND="passthrough")
     assert res.returncode == 0, res.stderr
     t = sandbox.target.as_posix()
@@ -134,12 +135,44 @@ def test_the_enter_runner_mounts_in_a_private_namespace_and_starts_a_clean_chroo
                       f"mount -t tmpfs tmpfs {t}/run -o mode=0755,nosuid,nodev"], mounts
     chroot = sandbox.calls_of("chroot")
     assert len(chroot) == 1 and chroot[0].startswith(f"chroot {t} /usr/bin/env -i "), chroot
-    for word in ("LINDOS_INSTALLER=1", "DEBIAN_FRONTEND=noninteractive", "APT_CONFIG=/var/lib/lindos/installer-apt.conf",
-                 "http_proxy=http://proxy.example:3128", "LC_ALL=C.UTF-8"):
+    for word in ("LINDOS_INSTALLER=1", "DEBIAN_FRONTEND=noninteractive", "http_proxy=http://proxy.example:3128", "LC_ALL=C.UTF-8"):
         assert word in chroot[0].split(), word
+    # ... and never APT_CONFIG: every maintainer script of every package would inherit it (see the next test)
+    assert "APT_CONFIG" not in chroot[0], chroot[0]
     # the debconf pipe of Ubiquity's filter never reaches what runs in the new system
     for banned in ("DEBIAN_HAS_FRONTEND", "DEBCONF_REDIR", "DEBIAN_FRONTEND=passthrough"):
         assert banned not in chroot[0], banned
+
+
+#: google-chrome-stable's postinst (its apt.include) in miniature: it ASSIGNS APT_CONFIG=<apt-config binary> and runs it
+FAKE_CHROME_POSTINST = """#!/bin/sh
+APT_CONFIG="$1"
+"$APT_CONFIG" dump
+"""
+
+#: what apt-config does with a variable that names something else than a configuration file
+FAKE_APT_CONFIG = """#!/bin/sh
+if [ -n "${APT_CONFIG:-}" ]; then
+    echo "E: Syntax error ${APT_CONFIG}:13: Extra junk after value" >&2
+    exit 100
+fi
+echo 'Dir::Etc::sourceparts "sources.list.d";'
+"""
+
+
+@needs_bash
+def test_a_maintainer_script_that_assigns_apt_config_is_not_broken_by_the_runners_environment(sandbox: Sandbox, tmp_path: Path) -> None:
+    """First real install: four 'E: Syntax error /usr/bin/apt-config:13: Extra junk after value' around the Chrome install.
+    The runner exported APT_CONFIG=<installer conf> to everything in the target; the postinst then assigned
+    APT_CONFIG=/usr/bin/apt-config, which stays exported when the variable came from the environment, and apt-config read
+    its own binary as configuration."""
+    from installer_testlib import write_exec
+    post = write_exec(tmp_path / "postinst", FAKE_CHROME_POSTINST)
+    conf = write_exec(tmp_path / "apt-config", FAKE_APT_CONFIG)
+    res = sandbox.run(LIBEXEC / "lib.sh", "--enter", sandbox.target.as_posix(), "sh", post.as_posix(), conf.as_posix(),
+                      APT_CONFIG="/var/lib/lindos/installer-apt.conf", LINDOS_CHROOT_APT_CONFIG="/var/lib/lindos/installer-apt.conf")
+    assert res.returncode == 0, res.stderr
+    assert "Syntax error" not in res.stderr and "sourceparts" in res.stdout, (res.stdout, res.stderr)
 
 
 @needs_bash
@@ -210,6 +243,8 @@ def test_the_seed_bakes_the_oem_flow_and_matches_the_boot_entries() -> None:
     assert seed["ubiquity/success_command"] == ("ubiquity", "string", "/usr/libexec/lindos/installer/finalize.sh")
     assert seed["ubiquity/download_updates"][2] == "false"
     assert seed["apt-setup/multiarch"][2] == "i386"
+    # the window of the installer and (the same debconf database is copied to the new system) of the first-boot wizard
+    assert seed["ubiquity/custom_title_text"] == ("ubiquity", "string", "Lindos Setup")
     assert seed["user-setup/allow-password-empty"][2] == "true"
     assert all(k in ("string", "boolean", "select", "password") for _o, k, _v in seed.values())
     grub = _text(REPO / "build" / "overlay" / "boot" / "grub" / "grub.cfg")
@@ -228,3 +263,50 @@ def test_the_shipped_tree_has_only_what_the_flow_needs() -> None:
                      "usr/libexec/lindos/installer/lib.sh",
                      "usr/libexec/lindos/installer/target-config.sh", "usr/share/lindos/installer/extras.json",
                      "usr/share/lindos/installer/lindos-installer.templates", "usr/share/lindos/installer/lindos.seed"]
+
+
+def test_steam_devices_is_never_installed_next_to_steam_launcher() -> None:
+    """First real install: 'apt-get install steam-devices' removed Valve's steam-launcher (which ships the udev rules).  The
+    gaming Mode lists installed by the Mode switch as well, so the package is out of mode.json - and the derivation would
+    drop it from the installer's union even if a Mode named it again."""
+    doc = json.loads(_text(SHARE / "extras.json"))
+    assert "steam-devices" not in doc["apt"] and "steam-devices" not in doc["apt_sources"]
+    modes = REPO / "packages" / "lindos-core" / "root" / "usr" / "share" / "lindos" / "modes"
+    for f in modes.glob("*/mode.json"):
+        assert "steam-devices" not in json.loads(f.read_text(encoding="utf-8")).get("packages", []), f
+    mod = _extras_module()
+    assert mod.CONFLICTING_APT == {"steam-devices": "steam"}
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / "modes"
+        shutil.copytree(modes, fake)
+        gaming = fake / "gaming" / "mode.json"
+        data = json.loads(gaming.read_text(encoding="utf-8"))
+        data["packages"] = sorted(set(data["packages"]) | {"steam-devices"})
+        gaming.write_text(json.dumps(data), encoding="utf-8")
+        derived = mod.derive(modes_dir=fake)
+    assert "steam-devices" not in derived["apt"], "steam is installed by the gaming step: the conflicting package is dropped"
+
+
+def test_the_evidence_of_the_items_matches_the_scripts_and_the_ci_disk_checks() -> None:
+    """One table says what proves an item installed: the hook's final check reads it from extras.json and the CI disk
+    checks (build/qa/install_checks.py) hold the same facts."""
+    doc = json.loads(_text(SHARE / "extras.json"))
+    for step in ("compat", "gaming"):
+        assert set(doc["evidence"][step]) == set(doc[step]) - ({"dependencies", "fonts"} & set(doc[step])), step
+    spec = importlib.util.spec_from_file_location("install_checks", REPO / "build" / "qa" / "install_checks.py")
+    ic = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    import sys
+    sys.modules.setdefault("install_checks", ic)
+    spec.loader.exec_module(ic)
+    for (step, item), ev in ic.ITEM_EVIDENCE.items():
+        want = doc["evidence"][step][item]
+        assert list(ev.pkgs) == want.get("pkgs", []) and list(ev.files) == want.get("files", []) and list(ev.flatpaks) == want.get("flatpaks", []), (step, item)
+    compat_sh = _text(REPO / "packages" / "lindos-compat" / "root" / "usr" / "libexec" / "lindos" / "install-compat.sh")
+    gaming_sh = _text(REPO / "packages" / "lindos-gaming" / "root" / "usr" / "libexec" / "lindos" / "install-gaming.sh")
+    for pkg in ("winehq-staging", "wine-staging", "umu-launcher"):
+        assert pkg in compat_sh, pkg
+    for pkg in ("steam-launcher", "steam-installer", "lutris"):
+        assert pkg in gaming_sh, pkg

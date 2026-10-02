@@ -4,14 +4,42 @@ set -e
 
 log() { printf 'lindos-desktop: %s\n' "$*"; }
 
-PLYMOUTH_DIR=/usr/share/plymouth/themes/lindos
+R="${LINDOS_ROOT:-}"      # prefix for the paths below (test seam; unset on a real system)
+PLYMOUTH_DIR="$R/usr/share/plymouth/themes/lindos"
+
+# every path preinst diverts (keep in sync with DEBIAN/preinst; a test compares the two lists)
+DIVERTED="
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/thunar.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml
+/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/keyboards.xml
+/etc/xdg/xfce4/panel/whiskermenu-1.rc
+/etc/xdg/xfce4/panel/docklike-2.rc
+/etc/xdg/gtk-3.0/settings.ini
+/etc/lightdm/slick-greeter.conf
+/etc/xdg/xdg-xfce
+/etc/xdg/xdg-default
+/etc/xdg/xdg-default.desktop
+/usr/local/bin/apt
+/usr/local/bin/search
+/usr/local/bin/highlight-mint
+/usr/bin/rtfm
+/usr/share/bash-completion/completions/apt-linux-mint
+/etc/bash_completion.d/apt-linux-mint
+"
 
 case "${1:-}" in
     remove|purge)
         # generated (not shipped) files
         rm -f "$PLYMOUTH_DIR/logo.png" "$PLYMOUTH_DIR/dot.png" "$PLYMOUTH_DIR/bar-bg.png" "$PLYMOUTH_DIR/bar-fg.png"
         for m in everyday gaming work creator lite; do
-            rm -f "/usr/share/lindos/modes/$m/panel.tar.bz2"
+            rm -f "$R/usr/share/lindos/modes/$m/panel.tar.bz2" "$R/usr/share/lindos/modes/$m/.panel-taskbar"
         done
         if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f /usr/share/icons/hicolor/index.theme ]; then
             gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
@@ -22,26 +50,28 @@ case "${1:-}" in
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database -q /usr/share/applications 2>/dev/null || true
         fi
-        # undo the preinst diversions (restores the distribution's XFCE/LightDM defaults)
+        # Lindos's own /etc/xdg/xdg-xfce (created by the postinst, not packaged): removed while it only holds our
+        # README; a Mint symlink that the preinst moved aside by hand (no dpkg diversion recorded) is put back.
+        if [ -d "$R/etc/xdg/xdg-xfce" ] && [ ! -L "$R/etc/xdg/xdg-xfce" ]; then
+            rm -f "$R/etc/xdg/xdg-xfce/README"
+            rmdir "$R/etc/xdg/xdg-xfce" 2>/dev/null || true
+        fi
+        for n in xdg-xfce xdg-default xdg-default.desktop; do
+            p="$R/etc/xdg/$n"
+            if [ -L "$p.lindos-orig" ] && [ ! -e "$p" ] && [ ! -L "$p" ]; then
+                if ! dpkg-divert --list "/etc/xdg/$n" 2>/dev/null | grep -q "by lindos-desktop\$"; then
+                    mv "$p.lindos-orig" "$p" || true
+                fi
+            fi
+        done
+        # undo the preinst diversions (restores the distribution's XFCE/LightDM defaults, Mint's wrappers and
+        # the /etc/xdg/xdg-* symlinks)
         if command -v dpkg-divert >/dev/null 2>&1; then
-            for f in /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/thunar.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-session.xml \
-                     /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/keyboards.xml \
-                     /etc/xdg/xfce4/panel/whiskermenu-1.rc \
-                     /etc/xdg/xfce4/panel/docklike-2.rc \
-                     /etc/xdg/gtk-3.0/settings.ini \
-                     /etc/lightdm/slick-greeter.conf; do
+            for f in $DIVERTED; do
                 if dpkg-divert --list "$f" 2>/dev/null | grep -q "by lindos-desktop\$"; then
                     # our file is gone by now (or is a leftover conffile on 'remove'); move it
                     # aside so --rename can put the original back
-                    if [ -e "$f" ] && [ -e "$f.lindos-orig" ]; then
+                    if [ -e "$f" ] && [ ! -d "$f" ] && [ -e "$f.lindos-orig" ]; then
                         rm -f "$f"
                     fi
                     dpkg-divert --package lindos-desktop --remove --rename --quiet "$f" || true

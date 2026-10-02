@@ -1,0 +1,17 @@
+[Unit]
+Description=Lindos: refresh the package lists twice a day
+Documentation=man:lindos-update(1)
+# Not in the live USB session (that session only installs Lindos).
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!boot=live
+
+[Timer]
+# a few minutes after start-up, then twice a day at a randomised time, and once after a missed run
+OnBootSec=5min
+OnCalendar=*-*-* 06,18:00:00
+RandomizedDelaySec=2h
+AccuracySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

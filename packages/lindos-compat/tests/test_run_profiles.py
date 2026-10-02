@@ -55,6 +55,10 @@ def test_cli_refuses_not_possible_profile(fake_core, home, shipped_profiles, tmp
     assert rc == cli_run.EXIT_UNSUPPORTED
     assert "cannot run on Lindos" in caplog.text and "Vanguard" in caplog.text
     assert "lindos-game route valorant" in caplog.text
+    # SPEC 0.1: "not supported yet", who decides, and no promise of a date
+    low = caplog.text.lower()
+    assert "not supported yet" in low and "publisher" in low and "no date" in low
+    assert "coming soon" not in low
 
 
 def test_cli_info_shows_profile_and_perf_env(fake_core, home, shipped_profiles, tmp_path, capsys, monkeypatch,

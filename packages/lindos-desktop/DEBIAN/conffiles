@@ -1,5 +1,6 @@
+/etc/X11/Xsession.d/61lindos-xdg-config-dirs
 /etc/apt/apt.conf.d/99lindos-branding
-/etc/default/grub.d/49-lindos-distributor.cfg
+/etc/default/grub.d/60-lindos-distributor.cfg
 /etc/fonts/conf.d/60-lindos-ui.conf
 /etc/lightdm/lightdm.conf.d/50-lindos.conf
 /etc/lightdm/slick-greeter.conf

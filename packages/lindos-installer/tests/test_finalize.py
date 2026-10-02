@@ -15,6 +15,10 @@ pytestmark = needs_bash
 
 TWO = "browser drivers"
 RESET_SEED = "d-i user-setup/allow-password-empty boolean false\n"
+# what the armed path adds: the wizard's window title and the command that removes its theme drop-in afterwards
+WIZARD_SEED = ("ubiquity ubiquity/custom_title_text string Lindos Setup\n"
+               "oem-config oem-config/late_command string rm -rf /etc/systemd/system/oem-config.service.d\n")
+DROPIN = "etc/systemd/system/oem-config.service.d/10-lindos.conf"
 NOTICE = "home/oem/Desktop/LINDOS-ACCOUNT-SETUP-FAILED.txt"
 
 
@@ -83,7 +87,9 @@ def test_arms_oem_config_and_cleans_up(sandbox: Sandbox) -> None:
     assert not (t / "var/lib/lindos/oem-config-not-armed").exists()
     # the installer-only answer that allows an empty password is not left for the first-boot wizard's real account
     assert f"chroot {t.as_posix()} debconf-set-selections" in chroots, chroots
-    assert (sandbox.state / "debconf-selections").read_text(encoding="utf-8") == "d-i user-setup/allow-password-empty boolean false\n"
+    assert (sandbox.state / "debconf-selections").read_text(encoding="utf-8") == RESET_SEED + WIZARD_SEED
+    # the installer's own GTK_THEME drop-in is gone (the installed system never runs ubiquity.service again)
+    assert not (t / "etc/systemd/system/ubiquity.service.d").exists()
     # steps the hook never recorded are pending for the silent retries
     assert sandbox.statuses() == {"browser": "pending", "drivers": "pending"}
     assert "did not record" in sandbox.step("browser")["detail"]
@@ -95,6 +101,8 @@ def test_steps_the_hook_recorded_are_left_alone(sandbox: Sandbox) -> None:
     sandbox.make_oem_target()
     from lindos import installstate
     installstate.mark("browser", "done", "google-chrome-stable installed", root=str(sandbox.target))
+    (sandbox.state / "installed").write_text((sandbox.state / "installed").read_text(encoding="utf-8") + "google-chrome-stable\n",
+                                             encoding="utf-8", newline="\n")
     _finalize(sandbox)
     assert sandbox.statuses() == {"browser": "done", "drivers": "pending"}
     assert sandbox.step("browser")["detail"] == "google-chrome-stable installed"
@@ -326,3 +334,121 @@ def test_finalize_source_is_short_guarded_and_never_fails() -> None:
     assert not re.search(r"(chpasswd|passwd)[^|\n]*\$\{?pw\b", code)
     # the essentials of oem-config-prepare WITHOUT its deletion of the saved network connections
     assert "system-connections" not in code and "70-persistent" not in code
+
+
+# --------------------------------------------------------------------------- the look of the account wizard
+def test_the_wizard_gets_the_lindos_skin_through_a_drop_in_a_title_and_a_way_to_remove_it_again(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target()
+    _finalize(sandbox)
+    dropin = (sandbox.target / DROPIN).read_text(encoding="utf-8")
+    # the unit's environment reaches ubiquity-dm and the GTK process (start-ubiquity-dm/oem-config-firstboot do not clear
+    # it; ubiquity-dm only adds to os.environ), and GTK honours GTK_THEME over xsettings and settings.ini
+    assert "[Service]\nEnvironment=GTK_THEME=Lindos-Setup\n" in dropin
+    seeds = (sandbox.state / "debconf-selections").read_text(encoding="utf-8")
+    assert "ubiquity ubiquity/custom_title_text string Lindos Setup\n" in seeds, "the window title is Ubiquity's own answer"
+    late = [ln for ln in seeds.splitlines() if ln.startswith("oem-config oem-config/late_command string ")]
+    assert late == ["oem-config oem-config/late_command string rm -rf /etc/systemd/system/oem-config.service.d"], (
+        "the wizard removes the drop-in itself when it has finished (root shell, before the packages are purged)")
+    # the drop-in is not owned by lindos-installer (Ubiquity purges it): nothing but our own file in that directory
+    assert [p.name for p in (sandbox.target / "etc/systemd/system/oem-config.service.d").iterdir()] == ["10-lindos.conf"]
+    assert "Lindos-Setup GTK skin" in _installer_log(sandbox)
+
+
+def test_without_the_skin_there_is_no_useless_theme_drop_in_but_the_title_is_still_set(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target()
+    import shutil
+    shutil.rmtree(sandbox.target / "usr/share/themes/Lindos-Setup")
+    _finalize(sandbox)
+    assert not (sandbox.target / DROPIN).exists()
+    assert "Lindos-Setup GTK skin is not in the new system" in _installer_log(sandbox)
+    assert "ubiquity/custom_title_text string Lindos Setup" in (sandbox.state / "debconf-selections").read_text(encoding="utf-8")
+    assert (sandbox.target / "lib/systemd/system/oem-config.target").is_file(), "the wizard is armed all the same"
+
+
+def test_a_wizard_that_could_not_be_armed_gets_no_look_and_no_cleanup_command(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=False)
+    _finalize(sandbox)
+    assert not (sandbox.target / DROPIN).exists()
+    assert (sandbox.state / "debconf-selections").read_text(encoding="utf-8") == RESET_SEED
+
+
+# --------------------------------------------------------------------------- a step that said done must still be true
+def _done(sandbox: Sandbox, step: str, detail: str = "") -> None:
+    from lindos import installstate
+    installstate.mark(step, "done", detail, root=str(sandbox.target))
+
+
+def _installed(sandbox: Sandbox, *names: str) -> None:
+    f = sandbox.state / "installed"
+    f.write_text(f.read_text(encoding="utf-8") + "".join(n + "\n" for n in names), encoding="utf-8", newline="\n")
+
+
+def test_a_step_whose_result_was_removed_again_before_the_end_is_failed_not_done(sandbox: Sandbox) -> None:
+    """Ubiquity's own package clean-up runs after the hook; whatever a step called 'done' is looked at again."""
+    sandbox.make_oem_target()
+    _done(sandbox, "browser", "google-chrome-stable installed")
+    _done(sandbox, "gaming", "steam lutris")
+    (sandbox.target / "var/lib/lindos/browser-firstboot.done").write_text("", encoding="utf-8")
+    _installed(sandbox, "lutris")              # Chrome and Steam are gone, Lutris is not
+    proc = sandbox.run_finalize(LINDOS_INSTALLER_STEPS="browser gaming")
+    assert proc.returncode == 0 and proc.stdout == "", proc.stderr[-1500:]
+    assert sandbox.statuses() == {"browser": "failed", "gaming": "failed"}
+    assert "google-chrome-stable" in sandbox.step("browser")["detail"]
+    assert "steam" in sandbox.step("gaming")["detail"] and "lutris" not in sandbox.step("gaming")["detail"]
+    assert not (sandbox.target / "var/lib/lindos/browser-firstboot.done").exists(), "no marker: the silent retry installs Chrome again"
+    assert "something removed it again" in _installer_log(sandbox)
+
+
+def test_extras_that_are_still_installed_stay_done_and_excused_ones_are_not_missed(sandbox: Sandbox) -> None:
+    import json
+    from installer_testlib import SHARE
+    extras = json.loads((SHARE / "extras.json").read_text(encoding="utf-8"))
+    sandbox.make_oem_target()
+    _installed(sandbox, *[p for p in extras["apt"] if p != "ananicy-cpp"])
+    _done(sandbox, "mode_extras", "22 packages installed; not in the archives: ananicy-cpp")
+    proc = sandbox.run_finalize(LINDOS_INSTALLER_STEPS="mode_extras")
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    assert sandbox.statuses() == {"mode_extras": "done"}
+    # ... and one missing package is named
+    (sandbox.state / "installed").write_text((sandbox.state / "installed").read_text(encoding="utf-8").replace("krita\n", ""),
+                                             encoding="utf-8", newline="\n")
+    assert sandbox.run_finalize(LINDOS_INSTALLER_STEPS="mode_extras").returncode == 0
+    assert sandbox.statuses() == {"mode_extras": "failed"} and "krita" in sandbox.step("mode_extras")["detail"]
+
+
+def test_a_package_list_that_cannot_be_read_never_turns_a_result_into_a_failure(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target()
+    _done(sandbox, "browser", "google-chrome-stable installed")
+    proc = sandbox.run_finalize(LINDOS_INSTALLER_STEPS="browser", FAKE_DPKG_QUERY_FAIL="1")
+    assert proc.returncode == 0
+    assert sandbox.statuses() == {"browser": "done"}
+    assert "cannot be read" in _installer_log(sandbox)
+
+
+# --------------------------------------------------------------------------- /run
+def test_the_run_leftovers_of_ubiquitys_own_user_setup_are_tidied_and_nothing_else_is_touched(sandbox: Sandbox) -> None:
+    """user-setup-apply runs 'mount' and adduser in a bare chroot before /run is bound: /run/mount and /run/adduser stay."""
+    sandbox.make_oem_target()
+    run = sandbox.target / "run"
+    for name in ("adduser", "mount", "keepme"):
+        (run / name).mkdir(parents=True)
+    _finalize(sandbox)
+    assert sorted(p.name for p in run.iterdir()) == ["keepme"], "only what Ubiquity's own tools are known to leave"
+
+
+def test_a_run_that_is_a_mount_is_left_alone(sandbox: Sandbox) -> None:
+    """A bind mount of the LIVE /run must never be emptied: the device number of /run differs from the target's."""
+    sandbox.make_oem_target()
+    run = sandbox.target / "run"
+    (run / "adduser").mkdir(parents=True)
+    shim = sandbox.root / "shim"
+    shim.mkdir()
+    # 'stat -c %d PATH': the target's /run reports another device than the target itself
+    (shim / "stat").write_text(
+        '#!/bin/bash\ncase "$*" in *"%d"*"/run") echo 99 ;; *"%d"*) echo 1 ;; *) exec /usr/bin/stat "$@" ;; esac\n',
+        encoding="utf-8", newline="\n")
+    (shim / "stat").chmod(0o755)
+    proc = sandbox.run_finalize(LINDOS_INSTALLER_STEPS=TWO, PATH=str(shim) + os.pathsep + sandbox.env()["PATH"])
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    assert (run / "adduser").is_dir()
+    assert "left alone" in _installer_log(sandbox)

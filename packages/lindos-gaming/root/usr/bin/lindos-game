@@ -16,6 +16,8 @@ Usage:
                                                      (SPEC-WINDOWS §30): official cloud streaming, a
                                                      one-click restart into Windows — never the Lindos VM
                                                      for anti-cheat-blocked titles, and never a spoofer.
+                                                     Such a title is labelled "Not supported yet" (the
+                                                     publisher decides, no date): wording from the matrix.
   lindos-game play <title> [--route cloud|windows|proton|native] [--provider ID] [--region CC] [--yes]
                                                      play through the best (or chosen) route
   lindos-game shortcut <title> --route cloud|windows [--provider ID] [--region CC]
@@ -430,7 +432,8 @@ def cmd_launch(args: argparse.Namespace, launchers: list[dict]) -> int:
         wants = args.install
         if not wants and have("zenity") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
             rc, _ = run(["zenity", "--question", "--title=Lindos", "--icon=input-gaming",
-                         f"--text={name} is not installed yet.\n\n{item.get('description', '')}\n\nInstall it now?",
+                         f"--text={name} is not installed yet.\n\n{item.get('description', '')}"
+                         + (f"\n\n{item['note']}" if item.get("note") else "") + "\n\nInstall it now?",
                          "--ok-label=Install", "--cancel-label=Cancel"], timeout=600)
             wants = rc == 0
         if not wants:
@@ -483,6 +486,31 @@ def find_matrix_entry(entries: list[dict], query: str) -> Optional[dict]:
         if pat.search(_norm(e["game"])):
             return e
     return None
+
+
+def entry_disclaimer(entry: Dict[str, Any], matrix: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """The "Not supported yet" disclaimer for *entry*, or ``None`` when it does not apply.
+
+    Applies only to matrix entries carrying ``unsupported_kind`` (games a kernel-level anti-cheat
+    or a publisher's choice keeps off Linux); the wording lives in the matrix' top-level
+    ``disclaimer`` object so Settings, docs and this CLI can never drift apart. It is a statement
+    about *today*, never a promise: whether a publisher ever enables Linux is not Lindos' call.
+    """
+    kind = str(entry.get("unsupported_kind") or "")
+    block = matrix.get("disclaimer")
+    if not kind or not isinstance(block, dict) or not block.get("short"):
+        return None
+    kinds = block.get("kinds") if isinstance(block.get("kinds"), dict) else {}
+    return {"badge": str(block.get("badge") or ""), "kind": kind,
+            "cause": str(kinds.get(kind) or ""), "short": str(block["short"]),
+            "via": str(block.get("via") or "")}
+
+
+def disclaimer_via(disclaimer: Dict[str, str], game: str, route: Dict[str, Any]) -> str:
+    """The matrix' ``via`` template filled in for *game* and *route* (empty when there is no template)."""
+    label = "a restart into your PC's own Windows" if route.get("type") == "windows" else str(route.get("label") or "cloud streaming")
+    # str.replace, not str.format: the template is data and may contain other braces
+    return str(disclaimer.get("via") or "").replace("{game}", game).replace("{route}", label)
 
 
 def find_profile_by_query(profiles: list[dict], query: str) -> Optional[dict]:
@@ -835,16 +863,21 @@ def cmd_route(args: argparse.Namespace, matrix: Dict[str, Any], profiles: list) 
     region = detect_region(explicit=getattr(args, "region", None))
     routes = build_routes(entry, matrix, region)
     recommended = _recommend(routes)
+    disclaimer = entry_disclaimer(entry, matrix)
     result = {
         "title": entry["game"], "id": _slug(entry["game"]), "status": entry["status"],
         "anticheat": entry.get("anticheat", ""), "region": region or "unknown",
         "routes": routes, "recommended": recommended, "notes": [entry.get("reason", "")],
+        "disclaimer": disclaimer,
     }
     if args.json:
         print(json.dumps(result, indent=2))
         return EXIT_OK
     print(f"{entry['game']} — status: {entry['status']}  anticheat: {entry.get('anticheat') or '—'}  "
          f"region: {region or 'unknown'}")
+    if disclaimer:
+        why = f" Why: {disclaimer['cause']}" if disclaimer["cause"] else ""
+        print(f" ! {disclaimer['short']}{why}")
     for i, r in enumerate(routes):
         mark = "*" if i == recommended else " "
         label = r["label"] if not r.get("provider") else f"{r['label']} ({r['provider']})"
@@ -937,6 +970,10 @@ def cmd_play(args: argparse.Namespace, matrix: Dict[str, Any], profiles: list) -
     if not chosen["available"]:
         LOG.error("%s route not available for %s: %s", chosen["type"], entry["game"], chosen["why"])
         return EXIT_ERROR
+    disclaimer = entry_disclaimer(entry, matrix)
+    via = disclaimer_via(disclaimer, entry["game"], chosen) if disclaimer and chosen["type"] in ("cloud", "windows") else ""
+    if via:
+        LOG.info("%s", via)
     if chosen["type"] == "cloud":
         return _play_cloud(chosen, matrix)
     if chosen["type"] == "windows":
@@ -983,11 +1020,14 @@ def cmd_shortcut(args: argparse.Namespace, matrix: Dict[str, Any], profiles: lis
     if chosen.get("provider"):
         exec_argv += ["--provider", chosen["provider"]]
     label = _shortcut_label(entry, chosen)
+    disclaimer = entry_disclaimer(entry, matrix)
+    via = disclaimer_via(disclaimer, entry["game"], chosen) if disclaimer else ""
+    comment = f"{via} {chosen['why']}".strip()
     lines = [
         "[Desktop Entry]",
         "Type=Application",
         f"Name={label}",
-        f"Comment={chosen['why']}",
+        f"Comment={comment}",
         f"Exec={_desktop_exec_line(exec_argv)}",
         "Icon=input-gaming",
         "Categories=Game;",

@@ -9,6 +9,9 @@
 # PyGObject is installed every value is additionally round-tripped through GLib.Variant.
 # If python3 is missing nothing is generated and the panel/ directory stays as the
 # documented fallback (apply_mode copies the xml + rc files and restarts the panel).
+# Without xfce4-docklike-plugin (not packaged for Ubuntu 24.04) the profiles are built from
+# taskbar-fallback.py's task-list variant of each panel/ (xfce4-panel's own window list plus
+# launchers for the installed pins); <mode>/.panel-taskbar records which kind a tarball holds.
 #
 # Usage: build-panel-profiles.sh [--modes-dir DIR] [--force] [--quiet] [--verify|--no-verify]
 #        Exit 0 on success (or when nothing can be done but the fallback is intact),
@@ -17,16 +20,19 @@ set -Eeuo pipefail
 
 MODES_DIR="${LINDOS_MODES_DIR:-/usr/share/lindos/modes}"
 PACKER="${LINDOS_PANEL_PACKER:-$(dirname "$(readlink -f "$0")")/panel-profile-pack.py}"
+FALLBACK="${LINDOS_TASKBAR_FALLBACK:-$(dirname "$(readlink -f "$0")")/taskbar-fallback.py}"
 FORCE=0
 QUIET=0
 VERIFY=auto
+STAGE=""
+trap '[ -z "${STAGE}" ] || rm -rf "${STAGE}"' EXIT
 
 log() { [ "${QUIET}" -eq 1 ] || printf 'build-panel-profiles: %s\n' "$*" >&2; }
 warn() { printf 'build-panel-profiles: WARNING: %s\n' "$*" >&2; }
 die() { printf 'build-panel-profiles: ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -49,6 +55,13 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 0
 fi
 [ -f "${PACKER}" ] || die "packer not found: ${PACKER}"
+
+kind=docklike
+if [ -f "${FALLBACK}" ]; then
+    kind="$(python3 "${FALLBACK}" status 2>/dev/null || true)"
+    case "${kind}" in docklike|tasklist) ;; *) kind=docklike ;; esac
+fi
+STAGE="$(mktemp -d)"
 
 verify_flag=()
 case "${VERIFY}" in
@@ -73,12 +86,13 @@ for mode_dir in "${MODES_DIR}"/*/; do
     panel_dir="${mode_dir}/panel"
     xml="${panel_dir}/xfce4-panel.xml"
     out="${mode_dir}/panel.tar.bz2"
+    stamp="${mode_dir}/.panel-taskbar"
     if [ ! -f "${xml}" ]; then
         log "${mode}: no panel/xfce4-panel.xml — skipped"
         continue
     fi
-    if [ "${FORCE}" -eq 0 ] && [ -f "${out}" ]; then
-        # rebuild only when any source is newer than the tarball
+    if [ "${FORCE}" -eq 0 ] && [ -f "${out}" ] && [ "$(cat "${stamp}" 2>/dev/null || echo docklike)" = "${kind}" ]; then
+        # rebuild only when any source is newer than the tarball (or the kind of taskbar changed)
         newer="$(find "${panel_dir}" -type f -newer "${out}" -print -quit 2>/dev/null || true)"
         if [ -z "${newer}" ]; then
             log "${mode}: ${out} is up to date"
@@ -86,8 +100,19 @@ for mode_dir in "${MODES_DIR}"/*/; do
             continue
         fi
     fi
-    if python3 "${PACKER}" ${quiet_flag[@]+"${quiet_flag[@]}"} pack "${panel_dir}" "${out}" ${verify_flag[@]+"${verify_flag[@]}"}; then
+    pack_from="${panel_dir}"
+    packed_kind=docklike
+    if [ "${kind}" = "tasklist" ]; then
+        if python3 "${FALLBACK}" convert "${panel_dir}" "${STAGE}/${mode}" >/dev/null 2>&1; then
+            pack_from="${STAGE}/${mode}"
+            packed_kind=tasklist
+        else
+            warn "${mode}: cannot build the task-list layout; packing the docklike one"
+        fi
+    fi
+    if python3 "${PACKER}" ${quiet_flag[@]+"${quiet_flag[@]}"} pack "${pack_from}" "${out}" ${verify_flag[@]+"${verify_flag[@]}"}; then
         chmod 0644 "${out}" 2>/dev/null || true
+        printf '%s\n' "${packed_kind}" >"${stamp}" 2>/dev/null || true
         built=$((built + 1))
         log "${mode}: wrote ${out}"
     else

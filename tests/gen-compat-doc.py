@@ -59,7 +59,7 @@ STATUS_TITLES: Dict[str, str] = {
     "works": "Works (Proton / Wine / Linux launcher)",
     "partial": "Partial (works with caveats)",
     "broken": "Currently broken",
-    "not-possible": "Not possible on Linux",
+    "not-possible": "Not possible on Linux today",
     "unknown": "Unverified",
 }
 
@@ -72,10 +72,13 @@ STATUS_BLURBS: Dict[str, str] = {
                "third-party tooling, or online modes that need verifying).",
     "broken": "Does not currently work for a technical reason that could change "
               "(regressions, launcher updates). Not an anti-cheat block.",
-    "not-possible": "**Will not run on any Linux distribution, including Lindos.** The "
-                    "publisher either uses a kernel-level anti-cheat with no Linux build or "
-                    "has explicitly disabled the Linux support of their anti-cheat. Nothing "
-                    "in Lindos can change this; only the publisher can.",
+    "not-possible": "**Does not run on any Linux distribution today.** Titles marked "
+                    "*{badge}* are kept off Linux by a kernel-level anti-cheat with no "
+                    "Linux build, or by their publisher not enabling the Linux support of its "
+                    "anti-cheat. Nothing in Lindos can change that; only the publisher can. Lindos "
+                    "lists such a title as supported once its publisher enables Linux and it has "
+                    "been tested — no date is promised. Any other entry here (the Xbox app) is "
+                    "blocked for a different reason, given in its row.",
     "unknown": "Entries whose status string is not one of the recognised values. Treat as "
                "unverified.",
 }
@@ -108,7 +111,8 @@ HONESTY_NOTE = (
     "not through Windows. Whether a *multiplayer* game runs is decided by its **anti-cheat**, "
     "and that is the publisher's decision, not ours: **Valorant (Vanguard), Fortnite (Epic "
     "disabled EAC-Linux), League of Legends (Vanguard), Apex Legends (disabled Nov 2024), "
-    "Rainbow Six Siege, Destiny 2 and PUBG do not run on any Linux, including Lindos.** "
+    "Rainbow Six Siege, Destiny 2 and PUBG do not run on any Linux today, including Lindos, so "
+    "they are not supported on Lindos yet.** "
     "Roblox works through **Sober** (a Linux runtime for the Android build), not the Windows "
     "client. Minecraft Java is native. For everything else the authoritative, always-current "
     "sources are [ProtonDB](https://www.protondb.com/) and "
@@ -195,6 +199,8 @@ def load_matrix(path: str) -> List[Dict[str, Any]]:
                 "how": str(entry.get("how") or entry.get("launcher") or "").strip(),
                 "anticheat": str(entry.get("anticheat") or entry.get("anti_cheat") or "").strip(),
                 "reason": str(entry.get("reason") or entry.get("notes") or "").strip(),
+                # optional: "no-linux-version" | "publisher-disabled" (drives the "Not supported yet" note)
+                "unsupported_kind": str(entry.get("unsupported_kind") or "").strip(),
                 "link": str(entry.get("link") or entry.get("url") or "").strip(),
                 # SPEC-WINDOWS §30.1 "routes" (cloud/windows/vm/verified) — optional, only
                 # present on some (typically not-possible) entries; None when absent/malformed.
@@ -224,6 +230,21 @@ def load_cloud_providers(path: str) -> Dict[str, Any]:
         return {}
     if isinstance(data, dict) and isinstance(data.get("cloud_providers"), dict):
         return data["cloud_providers"]
+    return {}
+
+
+def load_disclaimer(path: str) -> Dict[str, Any]:
+    """Best-effort read of the top-level ``disclaimer`` object ({badge, short, long, kinds}).
+
+    Never raises; ``{}`` means "no disclaimer block" and nothing extra is rendered.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(data, dict) and isinstance(data.get("disclaimer"), dict):
+        return data["disclaimer"]
     return {}
 
 
@@ -356,9 +377,16 @@ def _render_other_ways_to_play(entries: List[Dict[str, Any]], providers: Dict[st
     return lines
 
 
+def _blurb(status: str, disclaimer: Dict[str, Any]) -> str:
+    """The status blurb with the matrix' badge text filled in (single source of the wording)."""
+    return STATUS_BLURBS[status].replace("{badge}", str(disclaimer.get("badge") or "Not supported yet"))
+
+
 def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL,
-          providers: Optional[Dict[str, Any]] = None) -> str:
+          providers: Optional[Dict[str, Any]] = None,
+          disclaimer: Optional[Dict[str, Any]] = None) -> str:
     """Render the Markdown document (deterministic; LF newlines)."""
+    disclaimer = disclaimer or {}
     groups = _group(entries)
     total = len(entries)
     lines: List[str] = []
@@ -373,6 +401,9 @@ def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL,
     add("")
     add(HONESTY_NOTE)
     add("")
+    if disclaimer.get("long"):
+        add(f"> **{disclaimer.get('badge') or 'Not supported yet'}.** {disclaimer['long']}")
+        add("")
     add("This page is generated from the same data Lindos Settings shows in **Gaming → "
         "Compatibility** (`/usr/share/lindos/compat-matrix.json`). To correct or add an "
         "entry, edit the JSON in `packages/lindos-gaming` and run `python3 "
@@ -383,7 +414,7 @@ def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL,
     add("| Status | Meaning |")
     add("|---|---|")
     for status in STATUS_ORDER:
-        add(f"| **{STATUS_LABELS[status]}** | {STATUS_BLURBS[status]} |")
+        add(f"| **{STATUS_LABELS[status]}** | {_blurb(status, disclaimer)} |")
     add("")
     add("## Summary")
     add("")
@@ -403,16 +434,19 @@ def render(entries: List[Dict[str, Any]], source_rel: str = SOURCE_REL,
             continue
         add(f"## {STATUS_TITLES[status]} ({len(rows)})")
         add("")
-        add(STATUS_BLURBS[status])
+        add(_blurb(status, disclaimer))
         add("")
         add("| Game | How | Anti-cheat | Reason / notes | Link |")
         add("|---|---|---|---|---|")
         for e in rows:
+            game_cell = f"**{_cell(e['game'])}**"
+            if e.get("unsupported_kind") and disclaimer.get("badge"):
+                game_cell += f" · _{_cell(disclaimer['badge'])}_"
             add(
                 "| "
                 + " | ".join(
                     (
-                        f"**{_cell(e['game'])}**",
+                        game_cell,
                         _cell(e["how"]),
                         _cell(e["anticheat"]),
                         _cell(e["reason"]),
@@ -513,6 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOG.error("%s", exc)
         return 2
     providers = load_cloud_providers(args.source)
+    disclaimer = load_disclaimer(args.source)
 
     if args.source_label:
         source_rel = args.source_label
@@ -523,7 +558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source_rel = args.source
         if source_rel.startswith(".."):
             source_rel = args.source
-    rendered = render(entries, source_rel=source_rel, providers=providers)
+    rendered = render(entries, source_rel=source_rel, providers=providers, disclaimer=disclaimer)
     LOG.debug("rendered %d entries from %s", len(entries), args.source)
 
     if args.stdout:

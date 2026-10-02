@@ -1,25 +1,24 @@
-"""lindos.update — updates for Lindos's own 12 packages, honestly (SPEC-UPDATE.md §35-§36).
+"""lindos.update - updates for Lindos, honestly (SPEC-UPDATE.md §35-§41).
 
-Two update channels exist and this module only ever touches one of them:
+Two things are kept apart here:
 
-* **The base system** (kernel, XFCE, Firefox, Wine, everything from Ubuntu/Mint's own
-  repositories) already updates through Mint's own Update Manager (``mintupdate``). This module
-  never drives that — it only *counts* how many system packages ``apt`` sees as upgradable
-  (:data:`UpdateStatus.system_updates`), so the Settings page can say "N available — open Update
-  Manager" without duplicating mintupdate's own logic.
-* **Lindos's own ``lindos-*`` packages** have no update channel until someone points
-  ``LINDOS_APT_REPO_URL`` (``build/config.env``) at a real signed apt repository (see
-  ``build/publish-apt-repo.sh`` and ``docs/UPDATES.md``) — until then :func:`configured_repo_url`
-  returns ``None`` and every "checked" value here says so plainly. Meanwhile the sideload path
-  (:func:`scan_sideload_dir`) lets someone install/replace ``lindos-*.deb`` files from a local
-  folder (e.g. a CI artifact) with no repo at all.
+* **Reading** (this module): ``apt list --upgradable``, the Lindos apt source, the reboot flag.
+  Every read is unprivileged and safe: :func:`check` never calls ``apt-get update`` itself and
+  never elevates - it reads what Lindos's own root refresh timer (``lindos-update-refresh``, see
+  :mod:`lindos.updatestate`) or an explicit ``apt-get-update`` helper action already downloaded.
+  The richer, categorised picture (sizes, security, restart reasons, history) is in
+  :mod:`lindos.updatestate` and the ``/var/lib/lindos/update-state.json`` it writes.
+* **Applying** is a separate, explicit, privileged step (``lindos-helper`` actions
+  ``system-upgrade`` / ``apt-full-upgrade`` / ``cleanup-old-packages`` / ``install-local-debs``)
+  that this module only *prepares a payload for* - it never runs ``apt-get``/``dpkg`` itself.
 
-Every read here is unprivileged and safe (SPEC-UPDATE.md §35): :func:`check` never calls
-``apt-get update`` itself and never elevates — it only reads whatever ``apt-daily.timer`` (or an
-explicit, privileged ``apt-get-update`` helper action, see :mod:`lindos.helper`) already
-downloaded. Applying anything is a separate, explicit, privileged step
-(``lindos-helper`` actions ``system-upgrade`` / ``cleanup-old-packages`` / ``install-local-debs``)
-that this module only ever *prepares a payload for* — it never runs ``apt-get``/``dpkg`` itself.
+Lindos's own ``lindos-*`` packages come from the Lindos apt repository whose source ships in the
+``lindos-archive-keyring`` package (``/etc/apt/sources.list.d/lindos.sources``, the one place the
+address lives). That source is switched off ("Enabled: no") until a real signing key and server
+exist, and until then :func:`configured_repo_url` returns ``None`` and every "checked" value here
+says so plainly; the sideload path (:func:`scan_sideload_dir`) installs ``lindos-*.deb`` files
+from a local folder with no repository at all. The base system (kernel, desktop libraries, apps)
+is updated through the same helper (``apt-full-upgrade``), not by another tool.
 
 Every external command is reached through an injectable ``run``/``which`` (module-level
 defaults ``subprocess.run``/``shutil.which``, exactly like :mod:`lindos.dualboot`), and every
@@ -42,16 +41,23 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from . import paths
 
-#: build/config.env's default (a host Lindos does not own — SPEC-UPDATE.md §35); repo_status()
-#: refuses to call this "configured" even if somehow written into lindos.list by hand.
+#: an earlier placeholder address (a host Lindos does not own); repo_status() still refuses it.
 PLACEHOLDER_APT_REPO_URL = "https://packages.lindos.dev"
+#: host suffixes / names that are reserved or never real (RFC 2606 + the old placeholder): a source
+#: pointing at one is never treated as a working repository.
+_PLACEHOLDER_HOSTS = ("packages.lindos.dev",)
+_PLACEHOLDER_HOST_SUFFIXES = (".invalid",)
 
-#: where ``build/chroot/00-repos.sh`` / a real apt repo setup writes the Lindos apt source
-#: (SPEC-UPDATE.md §36.5-§36.6) -- a flat-format repo, "./" as the sole "suite".
+#: the Lindos apt source shipped by ``lindos-archive-keyring`` (deb822, a conffile: the ONE place
+#: the repository address and suites live). ``Enabled: no`` until a real key and server exist.
+LINDOS_SOURCES_DEB822 = "/etc/apt/sources.list.d/lindos.sources"
+#: an older one-line source (flat format, "./" as the sole suite); still understood when present.
 LINDOS_SOURCES_LIST = "/etc/apt/sources.list.d/lindos.list"
+#: the public signing keyring shipped by the same package (a text placeholder is never installed).
+LINDOS_KEYRING = "/usr/share/keyrings/lindos-archive-keyring.gpg"
 #: apt's package-lists cache; its own mtime (not any one file inside) is the "last refreshed" signal.
 APT_LISTS_DIR = "/var/lib/apt/lists"
-#: written by apt/dpkg (and read by mintupdate) whenever a just-installed package wants a reboot.
+#: written by Lindos's apt hook (lindos.updatestate) whenever an upgrade needs a restart.
 REBOOT_REQUIRED_PATH = "/var/run/reboot-required"
 #: the ``lindos-kernel`` local version suffix (see ``build/kernel/build-kernel.sh``'s
 #: ``LOCALVERSION=-lindos`` and ``lindos_kernel.features.is_lindos_kernel``); duplicated here
@@ -74,8 +80,7 @@ _UPGRADABLE_LINE_RE = re.compile(
     r"^(?P<name>[^/\s]+)/(?P<origin>\S+)\s+(?P<candidate>\S+)\s+(?P<arch>\S+)\s+"
     r"\[upgradable from:\s*(?P<installed>[^\]]+)\]\s*$"
 )
-#: the flat-format sources.list line ``build/publish-apt-repo.sh`` documents:
-#: ``deb [signed-by=/etc/apt/keyrings/lindos-archive-keyring.gpg] <URL> ./``.
+#: an older one-line flat-format source: ``deb [signed-by=...] <URL> ./``.
 _SOURCES_LINE_RE = re.compile(r"^deb\s+(?:\[[^\]]*\]\s*)?(?P<url>\S+)\s+\./?\s*$")
 #: best-effort fallback for :func:`_naive_version_compare` (used only when ``dpkg`` itself is
 #: not on PATH, e.g. every test on a non-Debian host): alternating digit/non-digit runs.
@@ -220,24 +225,116 @@ def _apt_lists_refreshed_at() -> Optional[str]:
     return _dt.datetime.fromtimestamp(mtime, tz=_dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def configured_repo_url() -> Optional[str]:
-    """The URL from ``/etc/apt/sources.list.d/lindos.list``, or ``None`` when that file does not
-    exist (``LINDOS_APT_REPO_ENABLE`` was ``0`` at build time -- the honest default, SPEC-UPDATE.md
-    §36.6) or has no recognisable ``deb ... ./`` line."""
-    path = paths.resolve(LINDOS_SOURCES_LIST)
+def is_placeholder_url(url: str) -> bool:
+    """True for an address that can never be a working repository: a reserved ``.invalid`` name or the
+    old placeholder host."""
+    host = (urllib.parse.urlparse((url or "").strip()).hostname or "").lower()
+    if not host:
+        return False
+    return host in _PLACEHOLDER_HOSTS or host.endswith(_PLACEHOLDER_HOST_SUFFIXES)
+
+
+def parse_deb822(text: str) -> List[Dict[str, str]]:
+    """Minimal deb822 reader: a list of stanzas (blank-line separated), each a dict with lower-cased
+    field names; ``#`` comment lines are skipped and continuation lines are joined with a space."""
+    stanzas: List[Dict[str, str]] = []
+    current: Dict[str, str] = {}
+    last: Optional[str] = None
+    for raw in (text or "").splitlines():
+        line = raw.rstrip("\r\n")
+        if not line.strip():
+            if current:
+                stanzas.append(current)
+                current, last = {}, None
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        if line[0] in " \t" and last is not None:
+            current[last] = (current[last] + " " + line.strip()).strip()
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        last = key.strip().lower()
+        current[last] = value.strip()
+    if current:
+        stanzas.append(current)
+    return stanzas
+
+
+_ENABLED_OFF = ("no", "false", "0", "off")
+
+
+def source_info() -> Dict[str, Any]:
+    """What the Lindos apt source on this system says, without touching the network::
+
+        {"present", "format": "deb822"|"list"|None, "path", "enabled", "url", "suites",
+         "signed_by", "placeholder", "configured", "keyring_present"}
+
+    ``configured`` means an *enabled* source with an address. A one-line ``lindos.list`` is only
+    consulted when there is no ``lindos.sources``.
+    """
+    info: Dict[str, Any] = {"present": False, "format": None, "path": None, "enabled": False, "url": None,
+                            "suites": None, "signed_by": None, "placeholder": False, "configured": False,
+                            "keyring_present": False}
+    keyring = paths.resolve(LINDOS_KEYRING)
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(keyring, "rb") as fh:
+            head = fh.read(18)
+        info["keyring_present"] = bool(head) and not head.startswith(b"LINDOS-PLACEHOLDER")
+    except OSError:
+        pass
+    deb822 = paths.resolve(LINDOS_SOURCES_DEB822)
+    try:
+        with open(deb822, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = _SOURCES_LINE_RE.match(line)
-        if m:
-            return m.group("url")
-    return None
+        text = None
+    if text is not None:
+        for stanza in parse_deb822(text):
+            uris = stanza.get("uris", "").split()
+            if not uris:
+                continue
+            info.update(present=True, format="deb822", path=deb822, url=uris[0].rstrip("/") or uris[0],
+                        suites=stanza.get("suites"), signed_by=stanza.get("signed-by"),
+                        enabled=stanza.get("enabled", "yes").strip().lower() not in _ENABLED_OFF)
+            break
+    if not info["present"]:
+        legacy = paths.resolve(LINDOS_SOURCES_LIST)
+        try:
+            with open(legacy, "r", encoding="utf-8", errors="replace") as fh:
+                legacy_text = fh.read()
+        except OSError:
+            legacy_text = ""
+        for line in legacy_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = _SOURCES_LINE_RE.match(line)
+            if m:
+                info.update(present=True, format="list", path=legacy, enabled=True, url=m.group("url"),
+                            suites="./")
+                break
+    if info["url"]:
+        info["placeholder"] = is_placeholder_url(info["url"])
+    info["configured"] = bool(info["present"] and info["enabled"] and info["url"])
+    return info
+
+
+def repo_info() -> Dict[str, Any]:
+    """The subset of :func:`source_info` the state file and the CLI report."""
+    info = source_info()
+    return {"configured": info["configured"], "enabled": info["enabled"], "url": info["url"],
+            "placeholder": info["placeholder"], "format": info["format"], "present": info["present"],
+            "keyring_present": info["keyring_present"]}
+
+
+def configured_repo_url() -> Optional[str]:
+    """The address of the *enabled* Lindos apt source, or ``None`` when there is none (the source file is
+    missing, switched off - the honest default until a real key and server exist, SPEC-UPDATE.md §36.6 -
+    or has no recognisable address)."""
+    info = source_info()
+    return info["url"] if info["configured"] else None
 
 
 # --- reachability --------------------------------------------------------------------------
@@ -275,8 +372,8 @@ def repo_status(url: str, *, fetch: Optional[Callable[[str], Tuple[bool, str]]] 
     is_local = host in ("localhost", "127.0.0.1", "::1")
     if parsed.scheme != "https" and not is_local:
         return False, "refusing a non-HTTPS repo URL (HTTPS is required unless the host is localhost)"
-    if url.rstrip("/") == PLACEHOLDER_APT_REPO_URL.rstrip("/"):
-        return False, "this is still the build/config.env placeholder -- no real repo is configured (see docs/UPDATES.md)"
+    if url.rstrip("/") == PLACEHOLDER_APT_REPO_URL.rstrip("/") or is_placeholder_url(url):
+        return False, "this is a placeholder address -- no real repository is configured yet (see docs/UPDATES.md)"
     probe = url.rstrip("/") + "/InRelease"
     fetch_fn = fetch or _default_fetch
     try:
@@ -351,9 +448,22 @@ def apply_payload(names_versions: Mapping[str, str], *, allow_kernel: bool = Fal
     return payload
 
 
+def apply_all_payload(plan_digest: str, *, allow_kernel: bool = False,
+                      allow_removals: bool = False) -> Dict[str, object]:
+    """Payload for the ``apt-full-upgrade`` helper action: the digest of the plan the user was shown
+    (:attr:`lindos.updatestate.Plan.digest`) plus the two explicit approvals. The helper simulates again as
+    root and refuses to run anything but exactly that plan."""
+    payload: Dict[str, object] = {"plan_digest": plan_digest}
+    if allow_kernel:
+        payload["allow_kernel"] = True
+    if allow_removals:
+        payload["allow_removals"] = True
+    return payload
+
+
 def cleanup_payload() -> Dict[str, object]:
-    """Payload for the ``cleanup-old-packages`` helper action -- always empty (a plain
-    ``apt-get autoremove --purge``)."""
+    """Payload for the ``cleanup-old-packages`` helper action -- always empty (the helper decides what is
+    safe to remove; see :func:`lindos.updatestate.decide_cleanup`)."""
     return {}
 
 
@@ -476,8 +586,13 @@ def sideload_payload(files: Iterable[str]) -> Dict[str, object]:
     return {"files": [os.path.abspath(f) for f in files]}
 
 
+apt_lists_refreshed_at = _apt_lists_refreshed_at
+
+
 __all__ = [
-    "PLACEHOLDER_APT_REPO_URL", "LINDOS_SOURCES_LIST", "APT_LISTS_DIR", "REBOOT_REQUIRED_PATH",
+    "PLACEHOLDER_APT_REPO_URL", "LINDOS_SOURCES_LIST", "LINDOS_SOURCES_DEB822", "LINDOS_KEYRING",
+    "APT_LISTS_DIR", "REBOOT_REQUIRED_PATH", "is_placeholder_url", "parse_deb822", "source_info", "repo_info",
+    "apt_lists_refreshed_at", "apply_all_payload",
     "KERNEL_LOCALVERSION_MARKER", "KERNEL_PACKAGE_RE", "LINDOS_PACKAGE_RE", "VERSION_RE",
     "PackageUpdate", "UpdateStatus", "SideloadCandidate",
     "apt_list_upgradable", "configured_repo_url", "repo_status", "check",

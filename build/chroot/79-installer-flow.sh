@@ -22,6 +22,12 @@
 #    /usr/share/lindos/installer/lindos.seed  ->  the image's debconf database (oem-config/enable,
 #        ubiquity/success_command = finalize.sh, ...): the same database casper fills from
 #        'owner/key=value' kernel words, which the boot entries carry as well (belt and braces).
+#    /etc/systemd/system/ubiquity.service.d/10-lindos.conf  ->  Environment=GTK_THEME=Lindos-Setup for the
+#        'Install Lindos' session (only-ubiquity): the Lindos-Setup skin was only applied through the live
+#        desktop launcher's Exec, so ubiquity-dm - which starts its own X server, window manager and the GTK
+#        program with the environment of ubiquity.service - never got it.  (finalize.sh writes the same kind of
+#        drop-in for oem-config.service, the first-boot account wizard.)  The skin itself is 78's job; when 78
+#        did not install it (no Lindos-Dark on the image) it is installed here on GTK's built-in dark Adwaita.
 #
 #  What it does, in order: refuse to run outside the build chroot; assert Chrome/Edge are NOT on the
 #  image (their licences forbid it, SPEC §0.1); deploy the hook (name rule, mode, syntax); deploy the
@@ -59,6 +65,12 @@ DM_DIR="${ROOT}/usr/lib/ubiquity/dm-scripts/install"
 DM_NAME="50lindos-noblank"
 DM_HOOK="${DM_DIR}/${DM_NAME}"
 SUCCESS_COMMAND="/usr/libexec/lindos/installer/finalize.sh"
+SRC="${LINDOS_INSTALLER_SRC:-${LINDOS_STAGE_DIR}/installer}"
+SKIN="Lindos-Setup"
+SKIN_DIR="${ROOT}/usr/share/themes/${SKIN}/gtk-3.0"
+SKIN_DROPIN="${ROOT}/etc/systemd/system/ubiquity.service.d/10-lindos.conf"
+# what GTK ships inside libgtk-3: the dark Adwaita, the base the skin falls back to when Lindos-Dark is not on the image
+ADWAITA_DARK='resource:///org/gtk/libgtk/theme/Adwaita/gtk-contained-dark.css'
 
 # This hook rewrites system files; never let it run against a build host by accident.
 if [ -z "${ROOT}" ] && [ "${LINDOS_CHROOT:-}" != "1" ] && ! in_chroot; then
@@ -181,7 +193,61 @@ step_seed() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Audit: what Ubiquity will find
+# 5. The look of the installer: the skin and the drop-in that hands it to ubiquity-dm
+# ---------------------------------------------------------------------------
+# Cosmetic, so a problem here is a warning, never a failed build (the installer then keeps the default GTK theme).
+step_skin() {
+    local src="${SRC}/themes/${SKIN}/gtk-3.0/gtk.css"
+    if [ -f "${SKIN_DIR}/gtk.css" ]; then
+        log "GTK skin ${SKIN} is on the image already ($(rel "${SKIN_DIR}")/gtk.css)"
+        return 0
+    fi
+    if [ ! -f "${src}" ]; then
+        warn "no ${SKIN} skin on the image and none staged in ${SRC}: the installer and the account wizard keep the default GTK theme"
+        return 0
+    fi
+    mkdir -p "${SKIN_DIR}" && cp -f "${src}" "${SKIN_DIR}/gtk.css" || { warn "could not install the ${SKIN} skin"; return 0; }
+    if [ ! -f "${ROOT}/usr/share/themes/Lindos-Dark/gtk-3.0/gtk.css" ]; then
+        # 78-installer-brand.sh does not install the skin without Lindos-Dark (its @import would find nothing): here it is
+        # rebased on GTK's built-in dark theme, so the installer is still dark and readable
+        sed -i "s#^@import url(\"\\.\\./\\.\\./Lindos-Dark/gtk-3\\.0/gtk\\.css\");#@import url(\"${ADWAITA_DARK}\");#" "${SKIN_DIR}/gtk.css"
+        if grep -q "^@import url(\"${ADWAITA_DARK}\");" "${SKIN_DIR}/gtk.css"; then
+            warn "no Lindos-Dark GTK theme on the image (fetch-assets did not run?): the ${SKIN} skin is built on GTK's dark Adwaita instead"
+        else
+            warn "the ${SKIN} skin has no @import line to rebase: it may look unfinished without Lindos-Dark"
+        fi
+    fi
+    chmod 0755 "${ROOT}/usr/share/themes/${SKIN}" "${SKIN_DIR}" 2>/dev/null || true
+    chmod 0644 "${SKIN_DIR}/gtk.css"
+    log "installed the ${SKIN} GTK skin ($(rel "${SKIN_DIR}")/gtk.css)"
+}
+
+# ubiquity.service runs start-ubiquity-dm, which runs ubiquity-dm, which starts X, the window manager and the GTK program as
+# plain children with the environment it got (it only adds to os.environ): a variable of the unit reaches all of them.
+step_skin_dropin() {
+    if [ ! -f "${SKIN_DIR}/gtk.css" ]; then
+        rm -f "${SKIN_DROPIN}"
+        rmdir "$(dirname "${SKIN_DROPIN}")" 2>/dev/null || true
+        warn "no ${SKIN} skin: no GTK_THEME drop-in for ubiquity.service"
+        return 0
+    fi
+    if [ "$(id -u)" = "0" ]; then
+        install -d -m 0755 -o root -g root "$(dirname "${SKIN_DROPIN}")"
+    else
+        install -d -m 0755 "$(dirname "${SKIN_DROPIN}")"
+    fi
+    {
+        printf '%s\n' "# Written by build/chroot/79-installer-flow.sh: the installer ('Install Lindos' boot entries) uses the ${SKIN} look."
+        printf '%s\n' "# finalize.sh removes this file from the installed system."
+        printf '%s\n' "[Service]" "Environment=GTK_THEME=${SKIN}"
+    } >"${SKIN_DROPIN}"
+    chmod 0644 "${SKIN_DROPIN}"
+    grep -qx "Environment=GTK_THEME=${SKIN}" "${SKIN_DROPIN}" || die "the ubiquity.service drop-in was not written"
+    log "deployed $(rel "${SKIN_DROPIN}"): GTK_THEME=${SKIN} for the installer session"
+}
+
+# ---------------------------------------------------------------------------
+# 6. Audit: what Ubiquity will find
 # ---------------------------------------------------------------------------
 step_audit() {
     local ver
@@ -201,6 +267,8 @@ step_licence
 step_hook
 step_dm_hook
 step_seed
+step_skin
+step_skin_dropin
 step_audit
 
 log "installer flow wired"

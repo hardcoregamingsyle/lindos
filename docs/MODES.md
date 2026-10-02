@@ -66,7 +66,8 @@ shown by docklike until you install it.
 
 Honesty notes carried in the mode files themselves:
 * Gaming: *Valorant (Vanguard) and Fortnite (EAC-Linux disabled by Epic) do not run on any
-  Linux, Lindos included. Roblox runs through Sober, not the Windows client. Check protondb.com
+  Linux today, so they are not supported on Lindos yet: that is up to their publishers, and no
+  date is given. Roblox runs through Sober, not the Windows client. Check protondb.com
   and areweanticheatyet.com for Steam titles.*
 * Creator: *Photoshop/Illustrator CC 2019–2021 work through the shipped Wine recipes; newer
   Creative Cloud releases are unreliable (partial). Premiere and AutoCAD do not work — Kdenlive,

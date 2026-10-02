@@ -222,8 +222,10 @@ def plan_items(ctx: "Context") -> Tuple[List[Dict[str, Any]], List[Dict[str, str
         if block is not None:
             items.append(make_item(f"steam:{game.appid}", "steam-games", game.name, game.game_dir or game.manifest,
                                    dest, bytes_=game.size, selected=False,
-                                   notes=[f"{game.name} uses anti-cheat that blocks Linux - copying it would not make "
-                                          f"it run. Other ways to play: lindos-game route \"{block['route']}\""]))
+                                   notes=[f"{game.name} uses an anti-cheat that does not run on Linux today, so it is not "
+                                          f"supported on Lindos yet (that is up to its publisher, no date is given) - "
+                                          f"copying it would not make it run. Other ways to play: "
+                                          f"lindos-game route \"{block['route']}\""]))
             continue
         if game.game_dir is None:
             skipped.append({"path": str(game.manifest), "reason": f"{game.name}: game files are not in the transfer "
@@ -244,8 +246,9 @@ def run_item(item: Dict[str, Any], ctx: "Context") -> ItemResult:
         return ItemResult.skipped_item(item, "the game is no longer on the source")
     block = _blocked(ctx, game)
     if block is not None:
-        return ItemResult.skipped_item(item, f"not copied: anti-cheat blocks Linux. Other ways to play: "
-                                             f"lindos-game route \"{block['route']}\"")
+        return ItemResult.skipped_item(item, f"not copied: its anti-cheat does not run on Linux today, so the game is "
+                                             f"not supported on Lindos yet (up to its publisher). Other ways to "
+                                             f"play: lindos-game route \"{block['route']}\"")
     root = linux_steam_root(ctx.home)
     manifest_dest = root / "steamapps" / f"appmanifest_{game.appid}.acf"
     if os.path.lexists(manifest_dest):

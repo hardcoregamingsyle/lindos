@@ -195,6 +195,27 @@ def test_plan_items_lists_anticheat_blocked_game_unselected(tmp_path: Path, home
     assert len(items) == 1
     assert items[0]["selected"] is False
     assert "lindos-game route" in items[0]["notes"][0]
+    note = items[0]["notes"][0].lower()
+    assert "not supported on lindos yet" in note and "publisher" in note and "no date" in note
+    assert "blocks linux" not in note
+
+
+def test_run_item_skips_an_anticheat_blocked_game_with_the_honest_wording(tmp_path: Path, home) -> None:
+    source, steam_dir = _bundle_steam(tmp_path)
+    ctx = types.SimpleNamespace(source=source, home=home, which=lambda n: None)
+    import lindos_transfer.apps as apps_mod
+
+    monkey_orig = apps_mod.blocked_game
+    apps_mod.blocked_game = lambda ctx, *, appid="", name="": {"route": "Portal 2", "reason": "x", "anticheat": "TestAC"}
+    try:
+        items, _skipped, _warnings = plan_items(ctx)
+        res = run_item(items[0], ctx)
+    finally:
+        apps_mod.blocked_game = monkey_orig
+    assert res.status == "skipped"
+    text = res.notes[0].lower()
+    assert "not supported on lindos yet" in text and "publisher" in text and "lindos-game route" in text
+    assert "blocks linux" not in text
 
 
 def test_run_item_copies_game_and_rewrites_manifest(tmp_path: Path, home) -> None:

@@ -62,7 +62,7 @@ def test_hook_runs_after_every_package_hook_and_before_the_installer_hook_and_cl
     i = names.index(HOOK.name)
     before, after = names[:i], names[i + 1:]
     for h in ("00-repos.sh", "10-debloat.sh", "20-base.sh", "30-lindos-debs.sh", "40-theme.sh", "50-tune.sh",
-              "60-compat.sh", "70-gaming.sh", "75-vm.sh"):
+              "60-compat.sh", "70-gaming.sh", "75-vm.sh", "76-mint-purge.sh"):
         assert h in before, f"{HOOK.name} must run after {h}"
     for h in ("78-installer-brand.sh", "80-cleanup.sh"):
         assert h in after, f"{HOOK.name} must run before {h}"
@@ -112,7 +112,8 @@ def test_hook_syntax_and_shellcheck() -> None:
 def test_debloat_hook_also_hides_the_mint_welcome_autostart() -> None:
     body = _text(HOOK_DIR / "10-debloat.sh")
     assert re.search(r'^hide_autostart "mintwelcome"$', body, flags=re.M)
-    assert "mintwelcome" in body.split("PROTECTED=")[1].split("\n\n")[0], "the package stays installed (Mint's metapackages need it)"
+    # 76-mint-purge.sh removes the package; the autostart hide stays for the case that purge is skipped
+    assert "mintwelcome" not in body.split("PROTECTED=")[1].split("\n\n")[0].split()
 
 
 # --------------------------------------------------------------------------- behaviour
@@ -137,7 +138,7 @@ def _root(tmp: Path, *, with_scripts: bool = True) -> Path:
     _write(root, "etc/os-release", OS_RELEASE)
     _write(root, "etc/issue", "Linux Mint 22.2 Zara \\n \\l\n")
     _write(root, "etc/skel/.config/autostart/mintwelcome.desktop", "[Desktop Entry]\nName=x\nExec=true\nHidden=true\n")
-    _write(root, "etc/default/grub.d/49-lindos-distributor.cfg", 'GRUB_DISTRIBUTOR="Lindos"\n')
+    _write(root, "etc/default/grub.d/60-lindos-distributor.cfg", 'GRUB_DISTRIBUTOR="Lindos"\n')
     _write(root, "usr/share/lindos/os-release.d/lindos.conf", _text(DESKTOP / "usr/share/lindos/os-release.d/lindos.conf"))
     _write(root, "usr/share/lindos/branding/base-sweep.json", _text(DESKTOP / "usr/share/lindos/branding/base-sweep.json"))
     if with_scripts:
@@ -281,10 +282,10 @@ def test_missing_lindos_desktop_scripts_degrade_to_warnings_and_the_welcome_chec
 def test_missing_skel_override_and_grub_drop_in_are_reported(tmp_path: Path) -> None:
     root = _root(tmp_path)
     (root / "etc/skel/.config/autostart/mintwelcome.desktop").unlink()
-    (root / "etc/default/grub.d/49-lindos-distributor.cfg").unlink()
+    (root / "etc/default/grub.d/60-lindos-distributor.cfg").unlink()
     res = _run(tmp_path, root, installed="")
     assert res.returncode == 0
-    assert "mintwelcome.desktop missing" in res.stderr and "49-lindos-distributor.cfg missing" in res.stderr
+    assert "mintwelcome.desktop missing" in res.stderr and "60-lindos-distributor.cfg missing" in res.stderr
 
 
 @needs_bash

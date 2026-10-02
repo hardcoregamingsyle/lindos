@@ -5,9 +5,17 @@
 #  Usage: build/mkdeb.sh [options] [name…|all]
 #     name…        package directories under packages/ (default: all)
 #     --out DIR    output directory (default: ${DEBS_DIR:-out/debs})
+#     --version V  release version to stamp into every package (also LINDOS_PKG_VERSION);
+#                  default: the VERSION file at the repository root
 #     --lintian    run lintian on each result if lintian is installed
 #     --keep       keep the staging directory (out/work/deb-staging/<name>)
 #     -h, --help
+#
+#  Versions move in lock-step (docs/RELEASING.md): every lindos-* package of a release carries
+#  the same version, and lindos-meta pins its parts with exact '(= V)' dependencies. The version
+#  is stamped in the STAGING copy only - the Version fields, every exact 'lindos-x (= old)' pin
+#  in a relationship field, and lindos.__version__ - so the source tree (and its tests) keep the
+#  development version 1.0.0. LINDOS_PACKAGES_DIR points at another packages/ tree (the e2e job).
 #
 #  Per SPEC §1.1:
 #     * staging copy of root/ + DEBIAN/
@@ -31,21 +39,24 @@ LOG_PREFIX="mkdeb"
 ROOT="$(repo_root)"
 lindos_load_config
 
-PACKAGES_DIR="${ROOT}/packages"
+PACKAGES_DIR="${LINDOS_PACKAGES_DIR:-${ROOT}/packages}"
 OUT="${DEBS_DIR:-out/debs}"
 STAGING_BASE="${WORK_DIR:-out/work}/deb-staging"
 RUN_LINTIAN=0
 KEEP_STAGING=0
+PKG_VERSION="${LINDOS_PKG_VERSION:-}"
 NAMES=()
 
 usage() {
-    sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --out) [ $# -ge 2 ] || die "--out needs an argument" 2; OUT="$2"; shift 2 ;;
         --out=*) OUT="${1#*=}"; shift ;;
+        --version) [ $# -ge 2 ] || die "--version needs an argument" 2; PKG_VERSION="$2"; shift 2 ;;
+        --version=*) PKG_VERSION="${1#*=}"; shift ;;
         --lintian) RUN_LINTIAN=1; shift ;;
         --keep) KEEP_STAGING=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -60,6 +71,17 @@ APT_HINT_PACKAGES="dpkg-dev" require_cmd dpkg-deb find sed md5sum
 case "${OUT}" in /*) ;; *) OUT="${ROOT}/${OUT}" ;; esac
 case "${STAGING_BASE}" in /*) ;; *) STAGING_BASE="${ROOT}/${STAGING_BASE}" ;; esac
 ensure_dir "${OUT}" "${STAGING_BASE}"
+
+# One release version for every package: --version, else LINDOS_PKG_VERSION, else the VERSION file.
+valid_pkg_version() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)*([~+][A-Za-z0-9.+~]+)?$ ]]
+}
+if [ -z "${PKG_VERSION}" ] && [ -f "${ROOT}/VERSION" ]; then
+    PKG_VERSION="$(tr -d ' \r\n' < "${ROOT}/VERSION")"
+fi
+if [ -n "${PKG_VERSION}" ] && ! valid_pkg_version "${PKG_VERSION}"; then
+    die "invalid release version '${PKG_VERSION}' (want e.g. 1.2.3, or 1.2.3~rc1 / 1.2.3+ci.7)" 2
+fi
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -198,6 +220,38 @@ gen_md5sums() {
     chmod 0644 "${stage}/DEBIAN/md5sums"
 }
 
+stamp_version() {
+    # stamp_version STAGE VERSION - lock-step release version, in the staging copy only
+    local stage="$1" version="$2"
+    local ctl="${stage}/DEBIAN/control"
+    awk -v newv="${version}" '
+        /^[A-Za-z]/ {
+            field = $0
+            sub(/:.*/, "", field)
+            inrel = (field ~ /^(Depends|Pre-Depends|Recommends|Suggests|Breaks|Conflicts|Replaces|Enhances)$/)
+            if (field == "Version") { print "Version: " newv; next }
+        }
+        {
+            line = $0
+            if (inrel) {
+                out = ""
+                while (match(line, /lindos-[a-z0-9.+-]+ \(= [^)]*\)/)) {
+                    seg = substr(line, RSTART, RLENGTH)
+                    sub(/\(= [^)]*\)/, "(= " newv ")", seg)
+                    out = out substr(line, 1, RSTART - 1) seg
+                    line = substr(line, RSTART + RLENGTH)
+                }
+                line = out line
+            }
+            print line
+        }' "${ctl}" > "${ctl}.stamped"
+    mv -f "${ctl}.stamped" "${ctl}"
+    local init="${stage}/usr/lib/python3/dist-packages/lindos/__init__.py"
+    if [ -f "${init}" ]; then
+        sed -i -E "s/^__version__ = \".*\"\$/__version__ = \"${version}\"/" "${init}"
+    fi
+}
+
 build_one() {
     local name="$1"
     local src="${PACKAGES_DIR}/${name}"
@@ -205,12 +259,18 @@ build_one() {
     [ -d "${src}" ] || die "packages/${name}: no such package directory"
     validate_control "${ctl}" "${name}"
 
+    # The archive keyring: refuse a switched-on source without a real, pinned key, and never ship
+    # the placeholder that stands in for the key until the owner commits the real one.
+    local keyring_state=""
+    if [ "${name}" = "lindos-archive-keyring" ]; then
+        keyring_state="$(bash "${BUILD_DIR}/tools/check-archive-keyring.sh" "${src}/root")" ||
+            die "packages/${name}: refusing to build (see above; docs/RELEASING.md)"
+    fi
+
     local pkg ver arch
     pkg="$(control_field "${ctl}" Package)"
-    ver="$(control_field "${ctl}" Version)"
     arch="$(control_field "${ctl}" Architecture)"
     local stage="${STAGING_BASE}/${name}"
-    local out_deb="${OUT}/${pkg}_${ver}_${arch}.deb"
 
     timer_start "deb ${name}"
     rm -rf "${stage}"
@@ -231,6 +291,17 @@ build_one() {
     rm -f "${stage}/DEBIAN/md5sums"
 
     strip_crlf_tree "${stage}"
+    if [ -n "${PKG_VERSION}" ]; then
+        stamp_version "${stage}" "${PKG_VERSION}"
+        log "${name}: stamped release version ${PKG_VERSION}"
+    fi
+    ver="$(control_field "${stage}/DEBIAN/control" Version)"
+    [[ "${ver}" =~ ^[0-9][A-Za-z0-9.+~:-]*$ ]] || die "packages/${name}: invalid Version '${ver}' after stamping"
+    local out_deb="${OUT}/${pkg}_${ver}_${arch}.deb"
+    if [ "${keyring_state}" = "placeholder" ]; then
+        rm -f "${stage}/usr/share/keyrings/lindos-archive-keyring.gpg"
+        warn "${name}: built WITHOUT a signing key (the placeholder was dropped) - its source stays disabled"
+    fi
     fix_perms "${stage}"
     check_maintainer_scripts "${stage}" "${name}"
     gen_md5sums "${stage}"

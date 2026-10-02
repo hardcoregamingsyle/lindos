@@ -42,7 +42,9 @@ Description: Lindos Windows-app compatibility layer (Wine / Proton via umu, reci
                      Proton", "Open C:\ drive", "Run with PowerShell",
                      "Install into a C:\ drive (MSIX)", "Mount disk image",
                      "Merge into a C:\ drive (.reg)").
- Anti-cheat titles (Valorant, League of Legends, Fortnite, Roblox's Windows
- client) do not run through Wine on any Linux; lindos-run says so and points
- to 'lindos-game route <title>' (official cloud streaming where offered, or
- restarting into Windows) and to native alternatives.
+ Anti-cheat titles (Valorant, League of Legends, Fortnite) do not run through
+ Wine on any Linux today, so they are not supported on Lindos yet: that is up
+ to their publishers and no date is given (Roblox's Windows client is blocked
+ on Wine as well; Roblox itself works through Sober). lindos-run says so and
+ points to 'lindos-game route <title>' (official cloud streaming where offered,
+ or restarting into Windows) and to native alternatives.

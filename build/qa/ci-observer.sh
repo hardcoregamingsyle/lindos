@@ -33,7 +33,8 @@
 #  (probes between heartbeats), LINDOS_CI_MAX_TICKS (stop after that many probes; 0 = never),
 #  LINDOS_CI_HOOK_LOG, LINDOS_CI_UBIQUITY_DEBUG, LINDOS_CI_UBIQUITY_VERSION (the files 'live' reads),
 #  LINDOS_CI_CMDLINE (the kernel command line 'live' reads), LINDOS_CI_LIVE_CHECK_TICKS (probes before the one-shot
-#  session checks; 24 x 5 s = two minutes: Xorg and the installer window are up by then).
+#  session checks; 24 x 5 s = two minutes: Xorg and the installer window are up by then), LINDOS_CI_PROC (where the
+#  environment of the GTK programs is read: /proc), LINDOS_CI_DM_LOG (ubiquity-dm's log, whose tail is printed).
 # ============================================================================
 set -u
 
@@ -56,6 +57,8 @@ HOOK_LOG="${LINDOS_CI_HOOK_LOG:-/var/log/lindos/installer-hook.log}"
 UBIQUITY_DEBUG="${LINDOS_CI_UBIQUITY_DEBUG:-/var/log/installer/debug}"
 UBIQUITY_VERSION="${LINDOS_CI_UBIQUITY_VERSION:-/var/log/installer/version}"
 CMDLINE="${LINDOS_CI_CMDLINE:-/proc/cmdline}"
+PROC_DIR="${LINDOS_CI_PROC:-/proc}"
+DM_LOG="${LINDOS_CI_DM_LOG:-/var/log/installer/dm}"
 LIVE_CHECK_TICKS="${LINDOS_CI_LIVE_CHECK_TICKS:-24}"
 FAILS=0
 
@@ -71,9 +74,15 @@ running() {
     pgrep -f "$1" >/dev/null 2>&1
 }
 
-# running_x NAME - a process with exactly this name exists
+# running_x NAME... - a process whose NAME (the kernel's comm, never its command line) is exactly one of these exists.
+# By name on purpose: earlyoom's command line reads '--avoid (^|/)(Xorg|xfwm4|xfce4-panel|lightdm)$' and would make every
+# pattern match on command lines see a panel and a display manager that are not there.
 running_x() {
-    pgrep -x "$1" >/dev/null 2>&1
+    local name
+    for name in "$@"; do
+        pgrep -x "${name}" >/dev/null 2>&1 && return 0
+    done
+    return 1
 }
 
 # verdict NAME RC [WHY...] - one LINDOS_CHECK line (the format build/qa/boot_test.py and install_test.py parse)
@@ -113,18 +122,36 @@ live_heartbeat() {
     echo "LINDOS_INSTALL_HEARTBEAT tick=${tick} ubiquity=${state:-unknown} target=${used:-not-mounted} procs=$(pgrep -fc ubiquity 2>/dev/null)"
 }
 
-# gone KIND PATTERN - no process matches on at least one of three looks (a short-lived helper is not a session).
-# KIND x: an exact process name, f: a pattern against the whole command line.
+# gone KIND WHAT... - no process matches on at least one of three looks (a short-lived helper is not a session).
+# KIND x: exact process names (one or more), f: one pattern against the whole command line.
 gone() {
-    local i=0
+    local kind="$1" i=0
+    shift
     while [ "${i}" -lt 3 ]; do
-        if [ "$1" = x ]; then
-            running_x "$2" || return 0
+        if [ "${kind}" = x ]; then
+            running_x "$@" || return 0
         else
-            running "$2" || return 0
+            running "$1" || return 0
         fi
         i=$((i + 1))
         [ "${i}" -lt 3 ] && sleep "${STEP}"
+    done
+    return 1
+}
+
+# ui_theme - the GTK_THEME of the installer's / account wizard's GTK program (the environment it was started with:
+# /proc/PID/environ), printed; fails when none of the processes matching PATTERN has one.  Ubiquity's GTK program
+# inherits the environment of its systemd unit through start-ubiquity-dm / oem-config-firstboot and ubiquity-dm: this is
+# what proves the drop-in with GTK_THEME=Lindos-Setup reached it.
+ui_theme() {
+    local pid value
+    for pid in $(pgrep -f "$1" 2>/dev/null); do
+        [ -r "${PROC_DIR}/${pid}/environ" ] || continue
+        value="$(tr '\0' '\n' <"${PROC_DIR}/${pid}/environ" 2>/dev/null | grep -m1 '^GTK_THEME=')"
+        if [ -n "${value}" ]; then
+            printf '%s\n' "${value#GTK_THEME=}"
+            return 0
+        fi
     done
     return 1
 }
@@ -147,15 +174,15 @@ live_inhibitor() {
 }
 
 live_diag() {
-    pgrep -af 'ubiquity|lightdm|xfce4|xfwm4|xfdesktop|lindos|pkexec|Xorg' 2>/dev/null | prefixed "LINDOS_INSTALL_DIAG ps:" 40
+    pgrep -af 'ubiquity|lightdm|xfce4|xfwm4|metacity|marco|xfsettingsd|xfdesktop|lindos|pkexec|Xorg' 2>/dev/null | prefixed "LINDOS_INSTALL_DIAG ps:" 40
     echo "LINDOS_INSTALL_DIAG inhibit: unit=$(systemctl is-active lindos-live-inhibit.service 2>&1) list=$(systemd-inhibit --list --no-legend 2>&1 | head -n 5 | tr '\n' ';')"
 }
 
 # live_checks - the session this installation runs in must be the default 'Install Lindos' boot entry and nothing else.
-# (xfwm4 is NOT a sign of a desktop here: ubiquity-dm starts its own window manager, 'xfwm4 --compositor=off', for the
-# installer window; the session proper is xfce4-session, its panel and xfdesktop.)
+# (A window manager is NOT a sign of a desktop here: ubiquity-dm starts its own for the installer window - metacity when
+# the image has it, else xfwm4; the session proper is xfce4-session, its panel and xfdesktop.)
 live_checks() {
-    local only=1 w
+    local only=1 w theme rc
     local -a words=()
     read -r -a words <"${CMDLINE}" 2>/dev/null || true       # no trailing newline makes read fail but still fill words
     for w in "${words[@]+"${words[@]}"}"; do
@@ -166,7 +193,7 @@ live_checks() {
     verdict live-installer-up $? "no Ubiquity process runs: the installer session never started"
     gone x lightdm
     verdict live-no-lightdm $? "LightDM is running: the installer boot must not start a display manager (or the installer already quit)"
-    gone f 'xfce4-session|xfce4-panel|xfdesktop'
+    gone x xfce4-session xfce4-panel xfdesktop
     verdict live-no-xfce-session $? "a desktop session runs (xfce4-session, xfce4-panel or xfdesktop): the installer boot must not start one"
     gone f 'lindos-setup'
     verdict live-no-lindos-setup $? "the first-run wizard runs in the installer session"
@@ -174,6 +201,13 @@ live_checks() {
     verdict live-no-pkexec $? "pkexec is running: something asks for privileges inside the installer session"
     live_inhibitor
     verdict live-inhibitor-active $? "no sleep inhibitor: lindos-live-inhibit.service is not active or systemd-inhibit does not list it"
+    theme="$(ui_theme 'usr/lib/ubiquity/bin/ubiquity|bin/ubiquity ')"
+    echo "LINDOS_INFO installer_gtk_theme=${theme:-none}"
+    rc=1
+    [ "${theme}" = Lindos-Setup ] && rc=0
+    verdict live-installer-theme "${rc}" "the installer's GTK program has GTK_THEME='${theme:-unset}', not Lindos-Setup: the ubiquity.service drop-in did not reach it, so the installer shows Ubiquity's light default"
+    # ubiquity-dm's own log: which window manager and settings daemon it started (evidence for the installer's look)
+    [ ! -r "${DM_LOG}" ] || tail -n 40 "${DM_LOG}" 2>/dev/null | prefixed "LINDOS_INSTALL_DM" 40
     if [ "${FAILS}" -gt 0 ]; then
         live_diag
     fi
@@ -234,7 +268,7 @@ oem_wizard_up() {
 }
 
 oem_checks() {
-    local v rc
+    local v rc theme
     v="$(systemctl get-default 2>/dev/null)"
     rc=1
     [ "${v}" = "oem-config.target" ] && rc=0
@@ -256,7 +290,15 @@ oem_checks() {
     echo "LINDOS_INFO oem_account=$(id oem 2>&1 | tr '\n' ' ')"
     echo "LINDOS_INFO oem_os_release=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null | head -n 1)"
     echo "LINDOS_INFO oem_wizard_strings lindos=$(grep -c 'Lindos' /var/cache/debconf/templates.dat 2>/dev/null) mint=$(grep -c 'Linux Mint' /var/cache/debconf/templates.dat 2>/dev/null)"
-    pgrep -af 'ubiquity|oem-config|Xorg|lightdm|xfwm4' 2>/dev/null | prefixed "LINDOS_OEM_PS" 30
+    theme="$(ui_theme 'sbin/oem-config --only')"
+    echo "LINDOS_INFO oem_wizard_gtk_theme=${theme:-none}"
+    rc=1
+    [ "${theme}" = Lindos-Setup ] && rc=0
+    verdict oem-wizard-theme "${rc}" "the account wizard's GTK program has GTK_THEME='${theme:-unset}', not Lindos-Setup: the oem-config.service drop-in did not reach it, so the wizard shows Ubiquity's light default"
+    echo "LINDOS_INFO oem_wizard_title=$(echo 'GET ubiquity/custom_title_text' | debconf-communicate 2>/dev/null | tr '\n' ' ')"
+    echo "LINDOS_INFO oem_wizard_wm=$(pgrep -a 'metacity|marco|xfwm4|mutter' 2>/dev/null | head -n 2 | tr '\n' ';')"
+    [ ! -r "${DM_LOG}" ] || tail -n 40 "${DM_LOG}" 2>/dev/null | prefixed "LINDOS_OEM_DM" 40
+    pgrep -af 'ubiquity|oem-config|Xorg|lightdm|xfwm4|metacity|marco|xfsettingsd' 2>/dev/null | prefixed "LINDOS_OEM_PS" 30
 }
 
 oem_diag() {
@@ -265,7 +307,7 @@ oem_diag() {
     systemctl --failed --no-legend --plain 2>&1 | prefixed "LINDOS_OEM_DIAG failed:" 20
     journalctl -b -u oem-config --no-pager 2>&1 | tail -n 40 | prefixed "LINDOS_OEM_DIAG journal:" 40
     tail -n 40 /var/log/oem-config.log 2>&1 | prefixed "LINDOS_OEM_DIAG oem-config.log:" 40
-    ps -eo user,pid,comm,args --no-headers 2>&1 | grep -E 'ubiquity|oem|Xorg|lightdm|xfwm4|plymouth' | prefixed "LINDOS_OEM_DIAG ps:" 30
+    ps -eo user,pid,comm,args --no-headers 2>&1 | grep -E 'ubiquity|oem|Xorg|lightdm|xfwm4|metacity|xfsettingsd|plymouth' | prefixed "LINDOS_OEM_DIAG ps:" 30
 }
 
 oem_mode() {

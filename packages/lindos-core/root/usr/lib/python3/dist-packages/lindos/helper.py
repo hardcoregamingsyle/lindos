@@ -45,7 +45,16 @@ Payload shapes (all JSON objects)::
                         every entry is ``name=version`` (name: ``PACKAGE_RE``; version: a Debian-ish
                         version string); a ``linux-image-*``/``linux-headers-*``/``linux-modules-*``
                         entry is refused unless ``allow_kernel`` is also true
-    cleanup-old-packages {}                                          (``apt-get autoremove --purge``)
+    apt-full-upgrade    {"plan_digest": "sha256:<64 hex>", "allow_kernel"?: bool, "allow_removals"?: bool}
+                        the base-system upgrade: the helper simulates ``apt-get dist-upgrade`` as root, refuses
+                        unless the result has exactly the digest of the plan the user was shown
+                        (``lindos.updatestate.Plan.digest``), refuses protected removals, kernel packages
+                        without ``allow_kernel`` and any removal without ``allow_removals``, downloads first,
+                        sets an in-progress marker, upgrades, then always repairs (``dpkg --configure -a``,
+                        ``apt-get -f install``)
+    cleanup-old-packages {}                                          (a SAFE autoremove: the helper simulates it,
+                        leaves out protected packages and the running/newest/previous kernel, and proves the
+                        rest removes nothing else - see ``lindos.updatestate.decide_cleanup``)
     install-local-debs  {"files": ["/abs/path/lindos-core_1.0.1_all.deb", ...]}
                         every path must be absolute, exist, and end ``.deb``; the *filename* must
                         start with ``lindos-`` (a cheap client-side proxy — the helper itself
@@ -97,7 +106,7 @@ ACTIONS: List[str] = [
     "install-drivers", "set-fan-profile", "set-sched", "write-system-config", "enable-earlyoom",
     "reboot-to-windows", "firmware-setup", "import-wifi", "set-binfmt",
     "apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs",
-    "run-batch",
+    "apt-full-upgrade", "run-batch",
 ]
 
 # --- run-batch (one pkexec = one password prompt for a whole list of actions) -----------------
@@ -183,6 +192,8 @@ KERNEL_PACKAGE_NAME_RE = re.compile(r"^(?:linux-image|linux-headers|linux-module
 #: re-verifies the *real* embedded ``Package:`` control field via ``dpkg-deb --field`` before
 #: ever running ``dpkg -i`` on it, since a filename on its own proves nothing.
 LINDOS_DEB_BASENAME_RE = re.compile(r"^lindos-.*\.deb$", re.IGNORECASE)
+#: ``apt-full-upgrade``'s ``plan_digest``: ``lindos.updatestate.Plan.digest`` of the plan the user was shown.
+PLAN_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class PayloadError(ValueError):
@@ -583,8 +594,15 @@ def validate_payload(action: str, payload: Any) -> Dict[str, Any]:
         allow_kernel = _bool(p, "allow_kernel", False)
         out["packages"] = _system_upgrade_packages(p, allow_kernel=allow_kernel)
         out["allow_kernel"] = allow_kernel
+    elif action == "apt-full-upgrade":
+        digest = p.get("plan_digest")
+        _expect(isinstance(digest, str) and bool(PLAN_DIGEST_RE.match(digest)),
+                "'plan_digest' must be 'sha256:' plus 64 hex digits (the digest of the plan you were shown)")
+        out["plan_digest"] = digest
+        out["allow_kernel"] = _bool(p, "allow_kernel", False)
+        out["allow_removals"] = _bool(p, "allow_removals", False)
     elif action == "cleanup-old-packages":
-        pass  # no fields — a plain 'apt-get autoremove --purge'
+        pass  # no fields — the helper decides what is safe to remove
     elif action == "install-local-debs":
         out["files"] = _local_deb_files(p)
     elif action == "run-batch":
@@ -1102,7 +1120,7 @@ __all__ = [
     "COMPOSITORS", "SCHED_PROFILES", "GAMING_ITEMS", "COMPAT_ITEMS", "DRIVER_ARGS", "SERVICE_WHITELIST",
     "REMOTE_NAME_RE", "REMOTE_URL_RE", "REBOOT_METHODS", "BOOTENTRY_RE", "OSPROBER_ID_RE",
     "WIFI_SECURITY", "WIFI_MAX_NETWORKS", "WIFI_SSID_MAX_BYTES", "WIFI_PSK_PASSPHRASE_RE", "WIFI_PSK_HEX_RE",
-    "SYSTEM_UPGRADE_VERSION_RE", "KERNEL_PACKAGE_NAME_RE", "LINDOS_DEB_BASENAME_RE",
+    "SYSTEM_UPGRADE_VERSION_RE", "KERNEL_PACKAGE_NAME_RE", "LINDOS_DEB_BASENAME_RE", "PLAN_DIGEST_RE",
     "PayloadError", "HelperResult", "validate_payload", "normalize_unit", "unit_allowed",
     "helper_path", "is_root", "dry_run_enabled", "build_command", "run_privileged",
     "apply_mode", "install_browser", "install_packages", "install_flatpaks", "set_governor",

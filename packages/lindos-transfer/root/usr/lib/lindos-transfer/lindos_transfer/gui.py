@@ -110,8 +110,10 @@ ACTION_TYPE_TEXT: Dict[str, str] = {
     "web": "Added as a shortcut to the website (no install needed)",
     "winapps": "Opened from your own licensed Windows over Lindos WinApps",
     "vm": "Opened in the Lindos Windows VM",
-    "not_possible": "Cannot run on Linux (see the game routes in Lindos Settings > Gaming)",
+    "not_possible": "Not supported on Lindos yet (see the game routes in Lindos Settings > Gaming)",
 }
+#: A not_possible action whose own note does not say "yet" (the Xbox app: Store licensing, not an anti-cheat).
+NOT_POSSIBLE_PLAIN_TEXT = "Not supported on Linux (see the game routes in Lindos Settings > Gaming)"
 
 #: Wizard page ids, in order (SPEC-WINDOWS §29.12).
 PAGE_IDS: Tuple[str, ...] = ("welcome", "source", "user", "bring", "apps", "transfer", "done")
@@ -476,6 +478,9 @@ def app_action_summary(app: Dict[str, Any]) -> str:
     act = actions[idx]
     label = str(act.get("label") or "")
     kind = action_type_text(act.get("type"))
+    says_yet = str(act.get("note") or "").lower().startswith("not supported on lindos yet")
+    if act.get("type") == "not_possible" and not says_yet:
+        kind = NOT_POSSIBLE_PLAIN_TEXT
     return f"{label} - {kind}" if label else kind
 
 

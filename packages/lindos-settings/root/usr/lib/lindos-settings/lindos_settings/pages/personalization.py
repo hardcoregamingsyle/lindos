@@ -81,7 +81,7 @@ class PersonalizationPage(PageBase):
 
         # -- taskbar
         tsec = self.add_section("Taskbar")
-        self.align_card = ComboCard("Taskbar alignment", "Centre (Windows 11) or left (Windows 10)", ("view-list-details",), ("taskbar", "panel", "center", "left"), options=[("center", "Center"), ("left", "Left")], on_change=self._set_alignment, active_id=b.taskbar_alignment())
+        self.align_card = ComboCard("Taskbar alignment", model.taskbar_alignment_hint(b.taskbar_can_centre()), ("view-list-details",), ("taskbar", "panel", "center", "left"), options=[("center", "Center"), ("left", "Left")], on_change=self._set_alignment, active_id=b.taskbar_alignment())
         tsec.add(self.align_card)
         self.pos_card = ComboCard("Taskbar position", "Bottom (default) or top of the screen", ("view-list-details",), ("taskbar", "panel", "top", "bottom", "position"), options=[("bottom", "Bottom"), ("top", "Top")], on_change=self._set_position, active_id=b.taskbar_position())
         tsec.add(self.pos_card)
@@ -101,7 +101,7 @@ class PersonalizationPage(PageBase):
         cursors = b.cursor_themes()
         cur = b.cursor_theme()
         opts = [(c, c) for c in cursors] or [(cur or "default", cur or "default")]
-        self.cursor_card = ComboCard("Mouse pointer", "Cursor theme (Fluent-dark-cursors / Fluent-cursors ship with Lindos)", ("input-mouse",), ("cursor", "pointer", "mouse"), options=opts, on_change=self._set_cursor, active_id=cur if cur in dict(opts) else None)
+        self.cursor_card = ComboCard("Mouse pointer", "Cursor theme (Lindos-Cursors-Dark / Lindos-Cursors ship with Lindos)", ("input-mouse",), ("cursor", "pointer", "mouse"), options=opts, on_change=self._set_cursor, active_id=cur if cur in dict(opts) else None)
         fsec.add(self.cursor_card)
 
         fsec.add(ButtonCard("Fonts", "Font family, hinting and anti-aliasing (XFCE Appearance)", ("preferences-desktop-font",), ("hinting", "antialias", "font family"), "Open", self._open_fonts))

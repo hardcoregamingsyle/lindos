@@ -25,8 +25,14 @@
 #       image bakes it true so that the temporary account needs no password; the first-boot wizard
 #       reads the same database and must not accept an empty password for the real account) - on EVERY
 #       installation, armed or not, right at the start;
-#    6. remove what the installer left behind: the hook copy, the ubiquity-dm hook copy, the version pin,
-#       holds that a killed hook could not release, install-state entries the hook never recorded.
+#    6. remove what the installer left behind: the hook copy, the ubiquity-dm hook copy, the installer's
+#       GTK_THEME drop-in, the version pin, holds that a killed hook could not release, install-state entries
+#       the hook never recorded; and look again at what every 'done' step promised (Ubiquity's own package
+#       clean-up ran after the hook: a step whose result was removed again is 'failed', not 'done');
+#    7. give the first-boot account wizard the Lindos look (armed path only): a GTK_THEME drop-in for
+#       oem-config.service, the window title "Lindos Setup" (ubiquity/custom_title_text) and an
+#       oem-config/late_command that removes the drop-in when the wizard has finished;
+#    8. tidy /run/mount and /run/adduser, which Ubiquity's own user setup leaves in the new system's /run.
 #  If oem-config is NOT there (or arming failed), the machine still boots into the temporary account's
 #  desktop - the autologin stays, a machine nobody can log in to is worse - but that account is never left
 #  open: it has an EMPTY password when the user followed the installer page's advice, it is a sudo user and
@@ -265,22 +271,79 @@ fin_fallback() {
 }
 
 # --- 5. answers that were baked for the installer only ------------------------------------------
+# fin_debconf_set - stdin goes to debconf-set-selections inside the NEW system (a subshell without Ubiquity's own
+# debconf variables: they may point at the live system's database).
+fin_debconf_set() {
+    local v
+    (
+        for v in $(compgen -v DEBCONF_); do unset "${v}"; done
+        unset DEBIAN_HAS_FRONTEND DEBIAN_FRONTEND
+        timeout -k 2 10 chroot "${TGT}" debconf-set-selections >>"${LI_LOG_LIVE}" 2>&1 3>&-
+    )
+}
+
 # 79-installer-flow.sh bakes lindos.seed into the image, so the new system's debconf database carries the
 # same answers - and Ubiquity's first-boot wizard reads that database too.  user-setup/allow-password-empty
 # lets the TEMPORARY account be created without a password; it must not stay true for the REAL account.
 fin_reset_seed() {
-    local v
-    # (a subshell without Ubiquity's own debconf variables: they may point at the live system's database)
-    if (
-        for v in $(compgen -v DEBCONF_); do unset "${v}"; done
-        unset DEBIAN_HAS_FRONTEND DEBIAN_FRONTEND
-        printf 'd-i user-setup/allow-password-empty boolean false\n' \
-            | timeout -k 2 10 chroot "${TGT}" debconf-set-selections >>"${LI_LOG_LIVE}" 2>&1 3>&-
-    ); then
+    if printf 'd-i user-setup/allow-password-empty boolean false\n' | fin_debconf_set; then
         li_log "finalize: user-setup/allow-password-empty is false again in the new system"
     else
         li_log "finalize: WARNING - could not reset user-setup/allow-password-empty (the first-boot wizard may accept an empty password)"
     fi
+    return 0
+}
+
+# --- 5b. the look of the first-boot account wizard ------------------------------------------------
+# The wizard is Ubiquity's oem-config: ubiquity-dm starts its own X server and the GTK program, and everything is
+# inherited from the environment of oem-config.service (start-ubiquity-dm / oem-config-firstboot / ubiquity-dm do
+# not clear it; ubiquity-dm adds to os.environ, and the GTK process is a plain child).  So GTK_THEME in a drop-in
+# of that unit reaches the GTK program, and GTK honours it over xsettings and settings.ini.  The drop-in lives in
+# /etc (oem-config-firstboot deletes /lib/systemd/system/oem-config.*, not /etc drop-ins) and is not owned by a
+# package (Ubiquity purges lindos-installer): oem-config/late_command, which the wizard runs as root when it has
+# finished, removes it again.  The window title is Ubiquity's own debconf answer ubiquity/custom_title_text.
+FIN_SKIN="Lindos-Setup"
+FIN_WIZARD_TITLE="Lindos Setup"
+FIN_DROPIN_DIR="/etc/systemd/system/oem-config.service.d"
+fin_brand_wizard() {
+    local d="${TGT}${FIN_DROPIN_DIR}"
+    if [ -f "${TGT}/usr/share/themes/${FIN_SKIN}/gtk-3.0/gtk.css" ]; then
+        if mkdir -p "${d}" && {
+            printf '%s\n' "# Written by the Lindos installer: the account wizard gets the Lindos Setup look." \
+                "# Removed again by oem-config/late_command when the wizard has finished." \
+                "[Service]" "Environment=GTK_THEME=${FIN_SKIN}"
+        } >"${d}/10-lindos.conf" 2>/dev/null; then
+            li_log "finalize: the account wizard will use the ${FIN_SKIN} GTK skin (${FIN_DROPIN_DIR}/10-lindos.conf)"
+        else
+            li_log "finalize: WARNING - could not write the wizard's theme drop-in: it keeps the default look"
+        fi
+    else
+        li_log "finalize: WARNING - the ${FIN_SKIN} GTK skin is not in the new system: the account wizard keeps the default look"
+    fi
+    if printf '%s\n' "ubiquity ubiquity/custom_title_text string ${FIN_WIZARD_TITLE}" \
+        "oem-config oem-config/late_command string rm -rf ${FIN_DROPIN_DIR}" | fin_debconf_set; then
+        li_log "finalize: the account wizard's window is called \"${FIN_WIZARD_TITLE}\""
+    else
+        li_log "finalize: WARNING - could not set the account wizard's window title"
+    fi
+    return 0
+}
+
+# --- 5c. /run ---------------------------------------------------------------------------------------
+# Ubiquity's own chroot work (user-setup-apply runs 'mount -t proc proc /proc' and adduser inside a bare chroot, before
+# /run is bound) leaves /run/mount and /run/adduser in the new system's /run.  The hook is not their writer (all its
+# commands see a private tmpfs there).  Harmless - /run is a tmpfs at boot - but tidied, and only when /run is a plain
+# directory of the target: a mount here would be the LIVE system's /run.
+fin_tidy_run() {
+    local run="${TGT}/run" a b
+    [ -d "${run}" ] || return 0
+    a="$(stat -c %d "${run}" 2>/dev/null)"
+    b="$(stat -c %d "${TGT}" 2>/dev/null)"
+    if [ -z "${a}" ] || [ "${a}" != "${b}" ]; then
+        li_log "finalize: /run of the new system is a mount (or cannot be inspected) - left alone"
+        return 0
+    fi
+    rm -rf "${run}/adduser" "${run}/mount" 2>/dev/null
     return 0
 }
 
@@ -294,6 +357,9 @@ fin_cleanup() {
     # the directories only when nothing else is in them (no file of any package is touched)
     rmdir "${TGT}/usr/lib/ubiquity/dm-scripts/install" "${TGT}/usr/lib/ubiquity/dm-scripts" 2>/dev/null
     rmdir "${TGT}/usr/lib/ubiquity/target-config" "${TGT}/usr/lib/ubiquity" 2>/dev/null
+    # the installer's own GTK_THEME drop-in (79-installer-flow.sh): the installed system has no ubiquity.service run
+    rm -f "${TGT}/etc/systemd/system/ubiquity.service.d/10-lindos.conf"
+    rmdir "${TGT}/etc/systemd/system/ubiquity.service.d" 2>/dev/null
     rm -f "${TGT}${LI_PIN_FILE_REL}" "${TGT}${LI_APT_CONF_REL}"
     rm -rf "${TGT}/var/cache/lindos-installer"
     # a hook that was killed could not release its holds: do it here (a held Ubiquity could not be removed)
@@ -323,6 +389,10 @@ fin_main() {
     fin_cleanup
     li_load_status
     li_mark_missing pending "the installer hook did not record a result"
+    # Ubiquity's own package clean-up ran after the hook: what a step called 'done' has to be there still
+    li_extras_load
+    li_verify_steps
+    fin_tidy_run
 
     # The installer's account page has been through by now (the account exists), and the seed that let it accept an
     # empty password is only for that page: back to false in the new system on EVERY path below - armed, fallback
@@ -349,6 +419,7 @@ fin_main() {
     if [ "${armed}" = 1 ]; then
         fin_strip_autologin
         fin_lock_oem
+        fin_brand_wizard
         rm -f "${TGT}/var/lib/lindos/oem-config-not-armed"
         li_log "finalize: oem-config is armed - the first start asks for the account and the computer name"
     else

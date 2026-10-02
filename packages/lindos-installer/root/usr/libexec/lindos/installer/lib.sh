@@ -58,6 +58,10 @@ LI_STEPS=(browser drivers updates compat gaming mode_extras flatpaks)
 # for the kernel that is on the image), and the packages an upgrade would pull those along with.
 LI_HOLD_RE='^(ubiquity|oem-config|casper|linux-(image|modules|headers|signed|generic|hwe|oem|tools|lowlatency)|lindos-kernel|grub|shim|mokutil|efibootmgr|os-prober|initramfs-tools|plymouth)'
 
+# What an install of extras may REMOVE without being refused (li_guard): Ubuntu's own wine is what winehq-staging
+# replaces on purpose.  Everything Ubiquity removes anyway (filesystem.manifest-remove) is allowed as well.
+LI_REMOVE_OK_RE='^(wine|wine32|wine64|libwine|fonts-wine)$'
+
 LI_STATE_DIR_REL="/var/lib/lindos"
 LI_HOLD_FILE_REL="/var/lib/lindos/installer-holds"
 LI_APT_CONF_REL="/var/lib/lindos/installer-apt.conf"
@@ -111,6 +115,7 @@ li_cmdline_value() {
 # What the hook (or finalize.sh) knows about the steps is kept in LI_ST as well, so nothing has to ask
 # the file again; every change still goes through 'lindos.installstate mark', one atomic write each.
 declare -A LI_ST=()
+declare -A LI_DT=()   # the detail text that goes with each recorded status
 
 # li_mark STEP STATUS [DETAIL] - record an outcome (never fatal).  'done' only ever after a verified success.
 li_mark() {
@@ -118,6 +123,7 @@ li_mark() {
     shift 2
     li_log "step ${step}: ${status}${1:+ - $*}"
     LI_ST["${step}"]="${status}"
+    LI_DT["${step}"]="$*"
     "${LI_PY}" -m lindos.installstate --root "${TGT}" mark "${step}" "${status}" "$*" \
         </dev/null >>"${LI_LOG_LIVE}" 2>&1 3>&- || li_log "could not record ${step}=${status} in install-state.json"
     return 0
@@ -128,11 +134,14 @@ li_status() {
     printf '%s\n' "${LI_ST[$1]:-}"
 }
 
-# li_load_status - fill LI_ST from the state file (one read); finalize.sh needs what the hook recorded.
+# li_load_status - fill LI_ST and LI_DT from the state file (one read); finalize.sh needs what the hook recorded.
 li_load_status() {
-    local step status
-    while read -r step status; do
-        [ -n "${step}" ] && LI_ST["${step}"]="${status}"
+    local step status detail tab=$'\t'
+    while IFS="${tab}" read -r step status detail; do
+        if [ -n "${step}" ]; then
+            LI_ST["${step}"]="${status}"
+            LI_DT["${step}"]="${detail}"
+        fi
     done < <("${LI_PY}" - "${TGT}" 3>&- <<'PYEOF' 2>/dev/null | tr -d '\r'
 import sys
 
@@ -140,7 +149,8 @@ try:
     from lindos import installstate
 
     for step, entry in installstate.load(sys.argv[1])["steps"].items():
-        sys.stdout.buffer.write(("%s %s\n" % (step, entry["status"])).encode("utf-8"))
+        detail = " ".join(str(entry.get("detail", "")).split())
+        sys.stdout.buffer.write(("%s\t%s\t%s\n" % (step, entry["status"], detail)).encode("utf-8"))
 except Exception:
     pass
 PYEOF
@@ -169,12 +179,16 @@ LI_X_COMPAT=()
 LI_X_GAMING=()
 LI_X_FLATPAKS=()
 LI_X_FIRMWARE=()
+declare -A LI_X_MODES=()   # apt package -> the Modes that want it (space separated), from extras.json "apt_sources"
+declare -A LI_X_EVID=()    # "compat/wine" -> what proves it is installed: "pkg:NAME file:PATH flatpak:ID ..." (extras.json "evidence")
 
-# li_extras_load - read extras.json once into LI_X_APT, LI_X_COMPAT, LI_X_GAMING, LI_X_FLATPAKS, LI_X_FIRMWARE.
+# li_extras_load - read extras.json once into LI_X_APT, LI_X_COMPAT, LI_X_GAMING, LI_X_FLATPAKS, LI_X_FIRMWARE,
+# LI_X_MODES and LI_X_EVID.
 li_extras_load() {
-    local key item tab=$'\t'
+    local key item rest tab=$'\t'
     LI_X_APT=(); LI_X_COMPAT=(); LI_X_GAMING=(); LI_X_FLATPAKS=(); LI_X_FIRMWARE=()
-    while IFS="${tab}" read -r key item; do
+    LI_X_MODES=(); LI_X_EVID=()
+    while IFS="${tab}" read -r key item rest; do
         [ -n "${item}" ] || continue
         case "${key}" in
             apt) LI_X_APT+=("${item}") ;;
@@ -182,10 +196,17 @@ li_extras_load() {
             gaming) LI_X_GAMING+=("${item}") ;;
             flatpaks) LI_X_FLATPAKS+=("${item}") ;;
             firmware) LI_X_FIRMWARE+=("${item}") ;;
+            modes) LI_X_MODES["${item}"]="${rest}" ;;
+            evidence) LI_X_EVID["${item}"]="${rest}" ;;
         esac
     done < <("${LI_PY}" - "${LI_EXTRAS}" 3>&- <<'PYEOF' 2>/dev/null | tr -d '\r'
 import json
 import sys
+
+
+def out(*cols):
+    sys.stdout.buffer.write(("\t".join(cols) + "\n").encode("utf-8"))
+
 
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
@@ -195,7 +216,17 @@ try:
     for key, items in lists.items():
         for item in items or []:
             if isinstance(item, str) and item.strip():
-                sys.stdout.buffer.write(("%s\t%s\n" % (key, item.strip())).encode("utf-8"))
+                out(key, item.strip())
+    for pkg, modes in (doc.get("apt_sources") or {}).items():
+        words = [m for m in modes if isinstance(m, str) and m.strip()] if isinstance(modes, list) else []
+        if isinstance(pkg, str) and pkg.strip() and words:
+            out("modes", pkg.strip(), " ".join(words))
+    for step, items in (doc.get("evidence") or {}).items():
+        for item, ev in (items or {}).items():
+            tokens = ["pkg:" + p for p in ev.get("pkgs", [])] + ["file:" + f for f in ev.get("files", [])] \
+                + ["flatpak:" + a for a in ev.get("flatpaks", [])]
+            if tokens:
+                out("evidence", "%s/%s" % (step, item), " ".join(tokens))
 except Exception:
     pass
 PYEOF
@@ -311,8 +342,15 @@ li_settle() {
     sleep "$(li_scale 3)"
 }
 
-# The apt configuration every apt call inside the target uses (APT_CONFIG): the 'deb cdrom:' source is
-# never consulted, the medium's lists are never cleaned, waiting for a lock beats failing.
+# The apt configuration the hook's own apt calls inside the target use: the 'deb cdrom:' source is never
+# consulted, the medium's lists are never cleaned, waiting for a lock beats failing.  It reaches apt as
+# '-c FILE' on the command line (LI_APTC) - NEVER as the APT_CONFIG environment variable: that would be
+# inherited by dpkg's maintainer scripts, and google-chrome-stable's postinst assigns APT_CONFIG=/usr/bin/apt-config
+# (a shell variable it later runs), which turns into "E: Syntax error /usr/bin/apt-config:13" once the variable
+# is already exported.  The two helpers that start apt themselves (ubuntu-drivers, lindos-drivers) get it as an
+# 'env APT_CONFIG=...' prefix on their own command only (LI_APTENV).
+LI_APTC=()
+LI_APTENV=()
 li_apt_conf_write() {
     local f="${TGT}${LI_APT_CONF_REL}"
     mkdir -p "${TGT}${LI_STATE_DIR_REL}" 2>/dev/null
@@ -331,13 +369,15 @@ DPkg::Lock::Timeout "120";
 Dpkg::Options { "--force-confdef"; "--force-confold"; };
 CONFEOF
     [ -s "${f}" ] || return 1
-    export LINDOS_CHROOT_APT_CONFIG="${LI_APT_CONF_REL}"
+    LI_APTC=(-c "${LI_APT_CONF_REL}")
+    LI_APTENV=(env "APT_CONFIG=${LI_APT_CONF_REL}")
     return 0
 }
 
 li_apt_conf_remove() {
     rm -f "${TGT}${LI_APT_CONF_REL}" 2>/dev/null
-    unset LINDOS_CHROOT_APT_CONFIG
+    LI_APTC=()
+    LI_APTENV=()
     return 0
 }
 
@@ -372,7 +412,7 @@ li_apt_update() {
         out="${LI_TMPD}/apt-update.out"
     fi
     LI_CHILD_OUT="${out}"
-    li_dl "$1" apt-get -y -q update
+    li_dl "$1" apt-get "${LI_APTC[@]}" -y -q update
     rc=$?
     LI_CHILD_OUT=""
     if [ -n "${out}" ]; then
@@ -420,7 +460,7 @@ LI_CAND=()
 li_candidates() {
     local policy rc
     LI_CAND=()
-    policy="$(li_run_out 120 apt-cache policy "$@")"
+    policy="$(li_run_out 120 apt-cache "${LI_APTC[@]}" policy "$@")"
     rc=$?
     [ "${rc}" -eq 0 ] || return "${rc}"
     mapfile -t LI_CAND < <(printf '%s\n' "${policy}" | awk '
@@ -575,40 +615,90 @@ li_manifest_remove_file() {
     printf '%s\n' "${f}"
 }
 
-# li_hold - 'apt-mark hold' the installed packages that must stay exactly as the medium has them until
-# Ubiquity has finished: the LI_HOLD_RE families and everything in filesystem.manifest-remove (Ubiquity
-# removes those from the new system, so upgrading them would only waste the download).  With these held,
-# plain 'apt-get upgrade' is safe AND consistent: apt keeps back whatever cannot be upgraded next to a held
+# li_hold_names KIND - the installed packages to hold, one per line.  KIND 'families': the LI_HOLD_RE families
+# that must stay exactly as the medium has them until Ubiquity has finished (its own files, the kernel, the boot
+# loader).  KIND 'removable': everything in filesystem.manifest-remove that is not a family already - Ubiquity
+# removes those from the new system, so upgrading them would only waste the download.
+li_hold_names() {
+    local rows
+    rows="$(li_run_out 60 dpkg-query -W -f='${binary:Package} ${db:Status-Want} ${db:Status-Status}\n')" || return 1
+    # (the list is read in BEGIN: an empty list file must not be mistaken for the first file of 'NR == FNR')
+    printf '%s\n' "${rows}" | awk -v re="${LI_HOLD_RE}" -v kind="$1" -v rmfile="$(li_manifest_remove_file)" '
+        BEGIN { while ((getline line < rmfile) > 0) { split(line, a, /[: \t]/); if (a[1] != "") skip[a[1]] = 1 } close(rmfile) }
+        $2 == "install" && $3 == "installed" {
+            n = $1; sub(/:.*/, "", n)
+            if (kind == "families" && n ~ re) print $1
+            if (kind == "removable" && n !~ re && (n in skip)) print $1
+        }'
+}
+
+# li_hold - 'apt-mark hold' the installed packages of the LI_HOLD_RE families for the whole hook.  With these
+# held, plain 'apt-get upgrade' is safe AND consistent: apt keeps back whatever cannot be upgraded next to a held
 # package, where an explicit package list would fail as a whole on a single 'Breaks' (libplymouth5 against
 # a held plymouth).  The names are written to a file BEFORE the hold, so li_unhold (the exit trap) and
 # finalize.sh can always undo exactly this.  LI_HOLD_OK=1 only when the holds are in place.
 LI_HOLD_OK=0
 li_hold() {
-    local rows names f="${TGT}${LI_HOLD_FILE_REL}"
+    local names f="${TGT}${LI_HOLD_FILE_REL}"
     local -a arr
     LI_HOLD_OK=0
-    rows="$(li_run_out 60 dpkg-query -W -f='${binary:Package} ${db:Status-Want} ${db:Status-Status}\n')" || return 1
-    # (the list is read in BEGIN: an empty list file must not be mistaken for the first file of 'NR == FNR')
-    names="$(printf '%s\n' "${rows}" | awk -v re="${LI_HOLD_RE}" -v rmfile="$(li_manifest_remove_file)" '
-        BEGIN { while ((getline line < rmfile) > 0) { split(line, a, /[: \t]/); if (a[1] != "") skip[a[1]] = 1 } close(rmfile) }
-        $2 == "install" && $3 == "installed" { n = $1; sub(/:.*/, "", n); if (n ~ re || (n in skip)) print $1 }')"
+    names="$(li_hold_names families)" || return 1
     if [ -z "${names}" ]; then
         return 1
     fi
     mkdir -p "${TGT}${LI_STATE_DIR_REL}" 2>/dev/null
     printf '%s\n' "${names}" >"${f}"
     mapfile -t arr <<<"${names}"
-    li_log "holding ${#arr[@]} package(s): the installer, kernel and boot-loader families and what the installer removes anyway"
+    li_log "holding ${#arr[@]} package(s): the installer, kernel and boot-loader families"
     li_run 120 apt-mark hold "${arr[@]}" || return 1
     LI_HOLD_OK=1
     return 0
 }
 
-# li_unhold - undo li_hold; the list file stays when apt-mark fails, so finalize.sh can try again.
+# li_hold_removable / li_unhold_removable - the packages Ubiquity removes anyway are held ONLY while the updates
+# step upgrades everything else (nothing is downloaded for them).  They must never be held while extras are
+# installed: an exact-version dependency of a held libreoffice-l10n-* / -help-* pack on libreoffice-common made
+# apt refuse every libreoffice-* extra ("pkgProblemResolver::Resolve generated breaks, this may be caused by held
+# packages").  Holding them is best effort - a failure only means some wasted downloads.
+LI_REMOVABLE=()
+li_hold_removable() {
+    local names f="${TGT}${LI_HOLD_FILE_REL}"
+    LI_REMOVABLE=()
+    names="$(li_hold_names removable)" || return 0
+    [ -n "${names}" ] || return 0
+    mapfile -t LI_REMOVABLE <<<"${names}"
+    mkdir -p "${TGT}${LI_STATE_DIR_REL}" 2>/dev/null
+    printf '%s\n' "${names}" >>"${f}"
+    li_log "holding ${#LI_REMOVABLE[@]} more package(s) for the updates step: what the installer removes anyway"
+    li_run 120 apt-mark hold "${LI_REMOVABLE[@]}" || li_log "could not hold the packages the installer removes anyway (only some downloads are wasted)"
+    return 0
+}
+
+li_unhold_removable() {
+    local f="${TGT}${LI_HOLD_FILE_REL}" tmp
+    [ "${#LI_REMOVABLE[@]}" -gt 0 ] || return 0
+    if li_run 120 apt-mark unhold "${LI_REMOVABLE[@]}"; then
+        tmp="${f}.new"
+        if [ -f "${f}" ] && printf '%s\n' "${LI_REMOVABLE[@]}" | grep -vxFf - "${f}" >"${tmp}" 2>/dev/null; then
+            mv -f "${tmp}" "${f}"
+        elif [ -f "${f}" ]; then
+            # nothing else was in the list (grep found no line left): the file is empty, not missing
+            : >"${f}"
+        fi
+        rm -f "${tmp}" 2>/dev/null
+        li_log "released the holds on the packages the installer removes anyway"
+        LI_REMOVABLE=()
+        return 0
+    fi
+    li_log "WARNING: could not release the holds on the packages the installer removes anyway (they stay listed for the final release)"
+    return 1
+}
+
+# li_unhold - undo every hold; the list file stays when apt-mark fails, so finalize.sh can try again.
 li_unhold() {
     local f="${TGT}${LI_HOLD_FILE_REL}"
     local -a arr
-    [ -s "${f}" ] || return 0
+    [ -s "${f}" ] || { rm -f "${f}" 2>/dev/null; return 0; }
     mapfile -t arr <"${f}"
     if li_run 120 apt-mark unhold "${arr[@]}"; then
         rm -f "${f}"
@@ -676,7 +766,7 @@ li_rollback_new() {
 li_repair() {
     li_log "repair: dpkg --configure -a, apt-get -f install, dpkg --audit"
     li_inst 900 dpkg --configure -a --force-confold
-    li_inst 600 apt-get -y -q -f install --no-download || li_dl 300 apt-get -y -q -f install
+    li_inst 600 apt-get "${LI_APTC[@]}" -y -q -f install --no-download || li_dl 300 apt-get "${LI_APTC[@]}" -y -q -f install
     if li_audit; then
         li_log "dpkg is clean"
         return 0
@@ -689,6 +779,167 @@ li_repair() {
     fi
     li_log "WARNING: dpkg is still not clean - Ubiquity's later package steps may skip work"
     return 1
+}
+
+# --- what an install of extras may remove -----------------------------------------------------
+# An apt transaction that installs one package can remove another that conflicts with it, silently, because
+# 'apt-get -y' agrees to everything: 'apt-get install steam-devices' removed Valve's steam-launcher (the step
+# for the Steam launcher had just said "done").  li_guard simulates the install first; a removal is only fine
+# when it is on purpose (LI_REMOVE_OK_RE) or Ubiquity removes that package from the new system anyway.
+declare -A LI_RM_OK=()
+LI_RM_OK_LOADED=0
+LI_REMOVES=()
+LI_GUARD_WHY=""
+
+li_removal_set_load() {
+    local line name
+    [ "${LI_RM_OK_LOADED}" = 0 ] || return 0
+    LI_RM_OK_LOADED=1
+    while read -r line; do
+        name="${line%%[:[:space:]]*}"
+        [ -z "${name}" ] || LI_RM_OK["${name}"]=1
+    done <"$(li_manifest_remove_file)"
+    return 0
+}
+
+# li_removal_allowed NAME - true when removing NAME (an installed package) as a side effect is acceptable.
+li_removal_allowed() {
+    local n="${1%%:*}"
+    [[ "${n}" =~ ${LI_REMOVE_OK_RE} ]] && return 0
+    li_removal_set_load
+    [ -n "${LI_RM_OK[${n}]:-}" ]
+}
+
+# li_guard PKG... - simulate 'apt-get install --no-install-recommends PKG...'.  0 = safe.  1 = it would remove an
+# installed package that has to stay (LI_REMOVES: everything it would remove, LI_GUARD_WHY: "would remove X Y").
+# 2 = apt cannot resolve the request at all (LI_GUARD_WHY: apt's first error line; what a held package that breaks
+# the request looks like) - the caller must not try to install it.
+li_guard() {
+    local out="" rc n
+    local -a bad=()
+    LI_REMOVES=()
+    LI_GUARD_WHY=""
+    if [ -n "${LI_TMPD:-}" ] && : >"${LI_TMPD}/guard.out" 2>/dev/null; then
+        out="${LI_TMPD}/guard.out"
+    else
+        li_log "WARNING: no scratch space to check what installing $* would remove - not checked"
+        return 0
+    fi
+    LI_CHILD_OUT="${out}"
+    li_run 180 apt-get "${LI_APTC[@]}" -q -s install --no-install-recommends "$@"
+    rc=$?
+    LI_CHILD_OUT=""
+    grep -E '^(Remv |E: )' "${out}" >>"${LI_LOG_LIVE}" 2>/dev/null
+    mapfile -t LI_REMOVES < <(awk '/^Remv / { n = $2; sub(/:.*/, "", n); print n }' "${out}" 2>/dev/null | sort -u)
+    if [ "${rc}" -ne 0 ]; then
+        LI_GUARD_WHY="$(grep -m1 '^E: ' "${out}" 2>/dev/null | cut -c1-110 | tr '\r\n' '  ')"
+        [ -n "${LI_GUARD_WHY}" ] || LI_GUARD_WHY="apt cannot resolve it (exit ${rc})"
+        rm -f "${out}"
+        return 2
+    fi
+    rm -f "${out}"
+    for n in "${LI_REMOVES[@]}"; do
+        li_removal_allowed "${n}" || bad+=("${n}")
+    done
+    if [ "${#bad[@]}" -gt 0 ]; then
+        LI_GUARD_WHY="would remove ${bad[*]}"
+        return 1
+    fi
+    return 0
+}
+
+# --- did a step's result survive the later steps? ----------------------------------------------
+# A step records 'done' when ITS check passes; a later step (or Ubiquity's own package clean-up, before
+# finalize.sh) can undo it.  li_verify_steps asks the new system again, once, at the end, and turns a 'done'
+# that no longer holds into 'failed' - so the silent retry and Settings > Apps see the truth.
+declare -A LI_INSTALLED=()
+
+# li_installed_load - LI_INSTALLED[name]=1 for every installed package of the new system ('name:arch' for foreign
+# architectures).  Fails when the list cannot be read (then nothing is judged).
+li_installed_load() {
+    local rows name status
+    LI_INSTALLED=()
+    rows="$(li_run_out 30 dpkg-query -W -f='${binary:Package} ${db:Status-Status}\n')" || return 1
+    [ -n "${rows}" ] || return 1
+    while read -r name status; do
+        [ "${status}" = installed ] && LI_INSTALLED["${name}"]=1
+    done <<<"${rows}"
+    return 0
+}
+
+# li_have_evidence KEY - 0: something that proves the item is installed exists (extras.json "evidence"), 1: nothing
+# does, 2: no evidence is known for KEY (not judged).
+li_have_evidence() {
+    local tok
+    [ -n "${LI_X_EVID[$1]+x}" ] || return 2
+    for tok in ${LI_X_EVID[$1]}; do
+        case "${tok}" in
+            pkg:*) [ -z "${LI_INSTALLED[${tok#pkg:}]:-}" ] || return 0 ;;
+            file:*) [ ! -e "${TGT}/${tok#file:}" ] || return 0 ;;
+            flatpak:*) [ ! -d "${TGT}/var/lib/flatpak/app/${tok#flatpak:}" ] || return 0 ;;
+        esac
+    done
+    return 1
+}
+
+li_verify_steps() {
+    local step item detail missing excused any=0
+    for step in "${LI_STEPS[@]}"; do
+        case "${step}:$(li_status "${step}")" in
+            browser:done|compat:done|gaming:done|mode_extras:done) any=1 ;;
+        esac
+    done
+    [ "${any}" = 1 ] || return 0            # nothing that could have been undone (an offline install asks no question)
+    if ! li_installed_load; then
+        li_log "final check: the package list of the new system cannot be read - the recorded results stay as they are"
+        return 0
+    fi
+    for step in "${LI_STEPS[@]}"; do
+        [ "$(li_status "${step}")" = "done" ] || continue
+        missing=""
+        case "${step}" in
+            browser)
+                [ -n "${LI_INSTALLED[google-chrome-stable]:-}" ] || missing="google-chrome-stable"
+                ;;
+            compat|gaming)
+                if [ "${step}" = compat ]; then
+                    for item in "${LI_X_COMPAT[@]}"; do
+                        li_have_evidence "compat/${item}"
+                        [ $? -ne 1 ] || missing="${missing} ${item}"
+                    done
+                else
+                    for item in "${LI_X_GAMING[@]}"; do
+                        li_have_evidence "gaming/${item}"
+                        [ $? -ne 1 ] || missing="${missing} ${item}"
+                    done
+                fi
+                ;;
+            mode_extras)
+                detail="${LI_DT[mode_extras]:-}"
+                case "${detail}" in
+                    "none of the extra apps"*|"no extra packages defined"*) continue ;;
+                esac
+                excused=" "
+                case "${detail}" in
+                    *"not in the archives: "*) excused=" ${detail##*not in the archives: } " ;;
+                esac
+                for item in "${LI_X_APT[@]}"; do
+                    case "${excused}" in *" ${item} "*) continue ;; esac
+                    [ -n "${LI_INSTALLED[${item}]:-}" ] || missing="${missing} ${item}"
+                done
+                ;;
+            *) continue ;;
+        esac
+        missing="${missing# }"
+        [ -n "${missing}" ] || continue
+        li_mark "${step}" failed "no longer installed at the end of the installation: ${missing:0:140}"
+        if [ "${step}" = browser ]; then
+            # the marker says "handled": without it the silent first-boot retry installs Chrome again
+            rm -f "${TGT}/var/lib/lindos/browser-firstboot.done" 2>/dev/null
+        fi
+        li_log "final check: step ${step} said done but ${missing} is not installed (something removed it again)"
+    done
+    return 0
 }
 
 # --- the runner that enters the new system (bash lib.sh --enter TARGET CMD...) ----------------
@@ -706,7 +957,7 @@ li_enter_main() {
           LINDOS_INSTALLER=1)
     [ -z "${http_proxy:-}" ] || envv+=("http_proxy=${http_proxy}")
     [ -z "${https_proxy:-}" ] || envv+=("https_proxy=${https_proxy}")
-    [ -z "${LINDOS_CHROOT_APT_CONFIG:-}" ] || envv+=("APT_CONFIG=${LINDOS_CHROOT_APT_CONFIG}")
+    # (no APT_CONFIG here: see li_apt_conf_write - every maintainer script of every package would inherit it)
     mount -t proc proc "${t}/proc" || exit 97
     mount -t sysfs sysfs "${t}/sys" || exit 97
     mount --rbind /dev "${t}/dev" || exit 97

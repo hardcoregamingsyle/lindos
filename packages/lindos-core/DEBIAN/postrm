@@ -5,6 +5,8 @@ set -e
 PYLIB="/usr/lib/python3/dist-packages/lindos"
 USER_TIMER_LINK="/usr/lib/systemd/user/timers.target.wants/lindos-update-notify.timer"
 LIVE_INHIBIT_LINK="/usr/lib/systemd/system/multi-user.target.wants/lindos-live-inhibit.service"
+UPDATE_REFRESH_LINK="/usr/lib/systemd/system/timers.target.wants/lindos-update-refresh.timer"
+UPDATE_REPAIR_LINK="/usr/lib/systemd/system/multi-user.target.wants/lindos-update-repair.service"
 
 case "$1" in
     remove|upgrade|deconfigure|abort-install|abort-upgrade|disappear|failed-upgrade)
@@ -25,6 +27,8 @@ case "$1" in
         # a dangling systemd --user enablement symlink behind.
         [ -L "$USER_TIMER_LINK" ] && rm -f "$USER_TIMER_LINK" 2>/dev/null || true
         [ -L "$LIVE_INHIBIT_LINK" ] && rm -f "$LIVE_INHIBIT_LINK" 2>/dev/null || true
+        [ -L "$UPDATE_REFRESH_LINK" ] && rm -f "$UPDATE_REFRESH_LINK" 2>/dev/null || true
+        [ -L "$UPDATE_REPAIR_LINK" ] && rm -f "$UPDATE_REPAIR_LINK" 2>/dev/null || true
         ;;
 esac
 
@@ -36,6 +40,7 @@ case "$1" in
         rm -f /etc/lindos/system.json 2>/dev/null || true
         rmdir /etc/lindos 2>/dev/null || true
         rm -f /etc/sysctl.d/90-lindos-mode.conf 2>/dev/null || true
+        rm -f /var/lib/lindos/update-state.json /var/lib/lindos/update-in-progress 2>/dev/null || true
         ;;
 esac
 

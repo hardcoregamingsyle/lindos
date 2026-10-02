@@ -33,6 +33,8 @@ from . import model
 log = logging.getLogger("lindos.settings.backend")
 
 DEFAULT_TIMEOUT = 20
+#: lindos-update: 0 = something to do, 3 = nothing to do (EXIT_NOTHING); both come with a full JSON document
+UPDATE_CLI_OK_CODES = (0, 3)
 
 # SPEC §4.2 defaults (used only when lindos-core is unavailable)
 CONFIG_DEFAULTS: dict[str, Any] = {
@@ -662,7 +664,7 @@ class Backend:
             ok = self.xfconf_set("xsettings", "/Net/ThemeName", gtk)
             self.xfconf_set("xsettings", "/Net/IconThemeName", "Lindos")
             self.xfconf_set("xfwm4", "/general/theme", gtk)
-            self.xfconf_set("xsettings", "/Gtk/CursorThemeName", "Fluent-dark-cursors" if dark else "Fluent-cursors")
+            self.xfconf_set("xsettings", "/Gtk/CursorThemeName", model.CURSOR_DARK if dark else model.CURSOR_LIGHT)
         self.config_set("theme", "dark" if dark else "light")
         return bool(ok)
 
@@ -739,14 +741,20 @@ class Backend:
                 log.warning("lindos-mangohud sync failed: %s", (r.err or r.out).strip())
         return ok
 
+    def taskbar_can_centre(self) -> bool:
+        """False without xfce4-docklike-plugin: the stand-in task list fills the bar (see lindos-desktop)."""
+        return os.path.isfile(_sys_root() + model.DOCKLIKE_PLUGIN_DESKTOP)
+
     def taskbar_alignment(self) -> str:
+        if not self.taskbar_can_centre():
+            return "left"
         return str(self.config_get("taskbar_alignment", "center") or "center")
 
     def taskbar_position(self) -> str:
         return str(self.config_get("taskbar_position", "bottom") or "bottom")
 
     def cursor_theme(self) -> str:
-        return self.xfconf_get("xsettings", "/Gtk/CursorThemeName") or ""
+        return model.canonical_cursor_theme(self.xfconf_get("xsettings", "/Gtk/CursorThemeName") or "")
 
     def set_cursor_theme(self, name: str) -> bool:
         return self.xfconf_set("xsettings", "/Gtk/CursorThemeName", name)
@@ -1144,6 +1152,16 @@ class Backend:
             log.warning("compat matrix unreadable (%s): %s", path, exc)
             return []
 
+    def compat_disclaimer(self) -> dict[str, Any]:
+        """The matrix' "Not supported yet" wording (badge/short/long/via/kinds); ``{}`` when absent."""
+        path = _sys_root() + model.COMPAT_MATRIX_JSON
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return model.parse_compat_disclaimer(json.load(fh))
+        except (OSError, ValueError) as exc:
+            log.warning("compat matrix unreadable (%s): %s", path, exc)
+            return {}
+
     def flatpak_apps(self) -> set[str]:
         now = time.monotonic()
         if self._flatpak_cache and now - self._flatpak_cache[0] < 30:
@@ -1257,8 +1275,9 @@ class Backend:
 
     # ------------------------------------------------------------------ play-anywhere (SPEC-WINDOWS §30)
     def not_possible_games(self) -> list[dict[str, str]]:
-        """Titles from the compat matrix that need Windows (kernel anti-cheat with no Linux
-        build) -- the "Games that need Windows" card."""
+        """Titles from the compat matrix that need Windows (kernel anti-cheat, a publisher's choice,
+        or Store licensing; the ``kind`` key marks the "Not supported yet" ones) -- the "Games that
+        need Windows" card."""
         return [g for g in self.compat_matrix() if g.get("status") == "not-possible"]
 
     def game_route(self, title: str) -> dict[str, Any]:
@@ -1320,15 +1339,17 @@ class Backend:
         return HelperResult(r.ok, r.out, r.err, r.code)
 
     # ------------------------------------------------------------------ Lindos updates (SPEC-UPDATE §36/§37)
-    def _update_cli_json(self, argv: Sequence[str], tool: str, timeout: float, normalize: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
+    def _update_cli_json(self, argv: Sequence[str], tool: str, timeout: float, normalize: Callable[[Any], dict[str, Any]],
+                         ok_codes: Sequence[int] = (0,)) -> dict[str, Any]:
         """Run ``argv`` (a read-only ``--json`` query) and hand the parsed/failed result to
-        *normalize* -- defensive against a missing binary, non-zero exit or bad JSON, exactly
-        like :meth:`formats`/:meth:`binfmt_status` above: never an exception, always an honest
-        dict the page can render."""
+        *normalize* -- defensive against a missing binary, an exit code outside *ok_codes* or bad
+        JSON, exactly like :meth:`formats`/:meth:`binfmt_status` above: never an exception, always
+        an honest dict the page can render.  ``lindos-update`` exits 3 ("nothing to do") after
+        printing a complete document, so that is a normal answer, not a failure."""
         if not self.which(str(argv[0])):
             return normalize({"_missing": True})
         r = self.run(list(argv), timeout=timeout)
-        if not r.ok or not r.out.strip():
+        if r.code not in ok_codes or not r.out.strip():
             return normalize({"_error": (r.err or r.out).strip() or f"{tool} exited {r.code}"})
         try:
             return normalize(json.loads(r.out))
@@ -1340,17 +1361,21 @@ class Backend:
         """``lindos-update check --json`` (SPEC-UPDATE §36.1/§36.2): every ``lindos-*``
         package's installed/available version, the booted/available kernel, and whether an apt
         repo is configured. Read-only, no root, safe to call as often as the UI wants."""
-        return self._update_cli_json(["lindos-update", "check", "--json"], "lindos-update", 30, model.normalize_update_status)
+        return self._update_cli_json(["lindos-update", "check", "--json"], "lindos-update", 30, model.normalize_update_status,
+                                     ok_codes=UPDATE_CLI_OK_CODES)
 
     def update_kernel_status(self) -> dict[str, Any]:
         """``lindos-update kernel-status --json`` (SPEC-UPDATE §36.1) -- booted vs. installed vs.
         available kernel version for the Kernel card."""
-        return self._update_cli_json(["lindos-update", "kernel-status", "--json"], "lindos-update", 20, model.normalize_kernel_status)
+        return self._update_cli_json(["lindos-update", "kernel-status", "--json"], "lindos-update", 20, model.normalize_kernel_status,
+                                     ok_codes=UPDATE_CLI_OK_CODES)
 
     def update_repo_status(self) -> dict[str, Any]:
         """``lindos-update repo status --json`` (SPEC-UPDATE §36.1) -- is ``LINDOS_APT_REPO_URL``
         configured and reachable."""
-        return self._update_cli_json(["lindos-update", "repo", "status", "--json"], "lindos-update", 20, model.normalize_repo_status)
+        # exit 1 = configured but unreachable: the document (reachable=false) is still complete
+        return self._update_cli_json(["lindos-update", "repo", "status", "--json"], "lindos-update", 20, model.normalize_repo_status,
+                                     ok_codes=(*UPDATE_CLI_OK_CODES, 1))
 
     def secureboot_status(self) -> dict[str, Any]:
         """``lindos-kernel secureboot status --json`` (SPEC-WINDOWS §31.3, shipped by

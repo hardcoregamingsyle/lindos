@@ -1,0 +1,44 @@
+#!/bin/bash
+# update-repair - finish an update that was interrupted (lindos-update-repair.service, at boot).
+#
+# apt-full-upgrade (lindos-helper) writes /var/lib/lindos/update-in-progress before it lets dpkg
+# run and removes it after its own repair pass. If the machine lost power in between, the marker
+# is still there at the next boot and this finishes the job: dpkg --configure -a, then
+# apt-get -f install. It removes the marker only when both succeeded; otherwise it fails (so the
+# problem is visible in `systemctl --failed`) and the next boot tries again. Nothing new is
+# installed on purpose here: only what apt itself calls repairing.
+# Test seams: LINDOS_ROOT, LINDOS_APT_SERIALISE; dpkg and apt-get come from PATH.
+set -Eeuo pipefail
+
+ROOT="${LINDOS_ROOT:-}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MARKER="${ROOT}/var/lib/lindos/update-in-progress"
+APT_SERIALISE="${LINDOS_APT_SERIALISE:-/usr/libexec/lindos/apt-serialise}"
+[ -f "${APT_SERIALISE}" ] || APT_SERIALISE="${SELF_DIR}/apt-serialise"
+
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none UCF_FORCE_CONFFOLD=1
+
+note() { printf 'lindos update-repair: %s\n' "$*"; }
+
+[ -f "${MARKER}" ] || exit 0
+note "an earlier update did not finish - repairing"
+
+serial() {
+    if [ -f "${APT_SERIALISE}" ]; then
+        bash "${APT_SERIALISE}" -- "$@"
+    else
+        "$@"
+    fi
+}
+
+rc=0
+serial dpkg --configure -a --force-confdef --force-confold || rc=1
+serial apt-get -f install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold || rc=1
+
+if [ "${rc}" -eq 0 ]; then
+    rm -f "${MARKER}"
+    note "repaired"
+else
+    note "could not repair everything - will try again at the next start"
+fi
+exit "${rc}"

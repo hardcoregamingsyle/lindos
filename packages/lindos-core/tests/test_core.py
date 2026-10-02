@@ -121,7 +121,7 @@ def test_helper_actions_match_spec() -> None:
                                "write-system-config", "enable-earlyoom",
                                "reboot-to-windows", "firmware-setup", "import-wifi", "set-binfmt",
                                "apt-get-update", "system-upgrade", "cleanup-old-packages", "install-local-debs",
-                               "run-batch"]
+                               "apt-full-upgrade", "run-batch"]
     assert lhelper.POLKIT_ACTION_ID == "org.lindos.helper"
 
 

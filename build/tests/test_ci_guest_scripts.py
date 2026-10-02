@@ -55,8 +55,9 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-n=0
+n=0; ln=0
 while IFS='|' read -r u comm args; do
+    ln=$((ln + 1))
     [ -n "$comm" ] || continue
     if [ -n "$user" ] && [ "$u" != "$user" ]; then continue; fi
     if [ "$exact" = 1 ]; then
@@ -67,7 +68,8 @@ while IFS='|' read -r u comm args; do
         [[ "$comm" =~ $pat ]] || continue
     fi
     n=$((n + 1))
-    if [ "$list" = 1 ]; then printf '%s %s %s\n' 1 "$comm" "$args"; fi
+    # (a pid is the line number in the table: the tests put /proc/<line>/environ files there)
+    if [ "$list" = 1 ]; then printf '%s %s %s\n' 1 "$comm" "$args"; elif [ "$count" = 0 ]; then echo "$ln"; fi
 done < "$FAKE_PROCS"
 if [ "$count" = 1 ]; then echo "$n"; fi
 [ "$n" -gt 0 ]
@@ -142,6 +144,8 @@ class Guest:
         self.xfconf.mkdir()
         self.home = tmp_path / "home" / "liveuser"
         (self.home / "Desktop").mkdir(parents=True)
+        self.proc = tmp_path / "proc"
+        self.proc.mkdir()
         self.cmdline = tmp_path / "cmdline"
         self.cmdline.write_text("boot=casper username=liveuser hostname=lindos\n", encoding="utf-8")
         self.is_live = tmp_path / "is-live"
@@ -160,6 +164,12 @@ class Guest:
     def state(self, name: str, value: str) -> None:
         (self.systemd / name).write_text(value + "\n", encoding="utf-8")
 
+    def process_env(self, line: int, **variables: str) -> None:
+        """/proc/<line>/environ of the process on that line of the process table (NUL separated, like the kernel's)."""
+        d = self.proc / str(line)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "environ").write_bytes(b"".join(("%s=%s" % kv).encode() + b"\0" for kv in variables.items()))
+
     def power(self, **values: str) -> None:
         for k, v in values.items():
             (self.xfconf / k.replace("_", "-")).write_text(v + "\n", encoding="utf-8")
@@ -174,6 +184,7 @@ class Guest:
                    LINDOS_CI_CONSOLE="-", LINDOS_CI_OUT="-", LINDOS_CI_CMDLINE=self.cmdline.as_posix(),
                    LINDOS_CI_IS_LIVE_SESSION=self.is_live.as_posix(), LINDOS_CI_LIVE_USER="liveuser",
                    LINDOS_CI_LIVE_HOME=self.home.as_posix(), LINDOS_CI_PANEL_WAIT="3", LINDOS_CI_SETTLE="0",
+                   LINDOS_CI_PROC=self.proc.as_posix(),
                    LINDOS_CI_TICK="0.01", LINDOS_CI_STEP="0.01", LINDOS_CI_OEM_WAIT="3", LINDOS_CI_MAX_TICKS="2",
                    LINDOS_CI_BEAT_EVERY="1000")
         env.update(extra)
@@ -429,7 +440,8 @@ def test_the_smoke_test_starts_the_live_watch_after_the_desktop_watch():
 # ============================================================================================ ci-observer.sh (oem)
 OEM_PROCS = ["root|ubiquity-dm|/usr/bin/python3 /usr/bin/ubiquity-dm vt7 :0 oem /usr/sbin/oem-config-wrapper --only",
              "root|oem-config-first|/bin/bash /usr/sbin/oem-config-firstboot", "root|Xorg|/usr/lib/xorg/Xorg :0 vt7",
-             "oem|xfwm4|xfwm4 --compositor=off"]
+             "oem|xfwm4|xfwm4 --compositor=off", "root|python3|/usr/bin/python3 /usr/sbin/oem-config --only"]
+OEM_GTK_LINE = 5          # the line of the wizard's own GTK program in the table above: /proc/5/environ
 
 
 def oem_guest(tmp_path: Path) -> Guest:
@@ -437,6 +449,7 @@ def oem_guest(tmp_path: Path) -> Guest:
     g.set_procs(OEM_PROCS)
     g.state("default", "oem-config.target")
     g.state("active.oem-config.service", "activating")
+    g.process_env(OEM_GTK_LINE, PATH="/usr/bin", GTK_THEME="Lindos-Setup")
     return g
 
 
@@ -444,7 +457,8 @@ def test_the_first_boot_into_oem_config_is_recognised(tmp_path):
     out = oem_guest(tmp_path).run(OBSERVER, "oem")
     got = checks_of(out)
     assert got == {name: "OK" for name in ("oem-default-target", "oem-config-service", "oem-wizard-process", "oem-x-server",
-                                           "oem-no-lightdm", "oem-no-lindos-setup", "oem-no-installs")}
+                                           "oem-no-lightdm", "oem-no-lindos-setup", "oem-no-installs", "oem-wizard-theme")}
+    assert "LINDOS_INFO oem_wizard_gtk_theme=Lindos-Setup" in out
     assert "LINDOS_OBSERVER_STARTED mode=oem" in out and "LINDOS_OEM_READY fails=0" in out and "LINDOS_OEM_TIMEOUT" not in out
     parsed = it.parse_oem_serial(out)                       # the harness reads exactly what the script prints
     assert parsed["observer"] and parsed["ready"] and parsed["fails"] == 0 and not ic_failures(it.judge_first_boot(parsed, screenshot_ok=True))
@@ -466,6 +480,26 @@ def test_a_first_boot_that_is_not_the_wizard_fails_the_matching_check(tmp_path, 
     assert checks_of(out)[check] == "FAIL" and needle in why(out, check) and "LINDOS_OEM_READY fails=1" in out
     findings = it.judge_first_boot(it.parse_oem_serial(out), screenshot_ok=True)
     assert "first-boot-" + check in {f.name for f in findings if f.level == "fail"}
+
+
+@pytest.mark.parametrize("environment", [{"PATH": "/usr/bin"}, {"GTK_THEME": "Adwaita"}, {"GTK_THEME": "Lindos-Dark"}])
+def test_a_wizard_whose_gtk_program_did_not_get_the_skin_fails_the_theme_check(tmp_path, environment):
+    """The systemd drop-in's GTK_THEME must reach the GTK program (through oem-config-firstboot and ubiquity-dm): the
+    observer reads the environment the program was started with."""
+    g = oem_guest(tmp_path)
+    g.process_env(OEM_GTK_LINE, **environment)
+    out = g.run(OBSERVER, "oem")
+    assert checks_of(out)["oem-wizard-theme"] == "FAIL" and "not Lindos-Setup" in why(out, "oem-wizard-theme")
+    assert "LINDOS_OEM_READY fails=1" in out
+    findings = it.judge_first_boot(it.parse_oem_serial(out), screenshot_ok=True)
+    assert "first-boot-oem-wizard-theme" in {f.name for f in findings if f.level == "fail"}
+
+
+def test_no_environment_to_read_is_a_failed_theme_check_not_a_silent_pass(tmp_path):
+    g = oem_guest(tmp_path)
+    (g.proc / str(OEM_GTK_LINE) / "environ").unlink()
+    out = g.run(OBSERVER, "oem")
+    assert checks_of(out)["oem-wizard-theme"] == "FAIL" and "oem_wizard_gtk_theme=none" in out
 
 
 def test_an_unarmed_system_that_boots_the_normal_target_fails_the_default_target_check(tmp_path):
@@ -571,7 +605,7 @@ SESSION_PROCS = [
     "root|xfwm4|xfwm4 --compositor=off",
 ]
 SESSION_CHECKS = ("live-only-ubiquity", "live-installer-up", "live-no-lightdm", "live-no-xfce-session", "live-no-lindos-setup",
-                  "live-no-pkexec", "live-inhibitor-active")
+                  "live-no-pkexec", "live-inhibitor-active", "live-installer-theme")
 INHIBIT_LIST = ("Lindos 0 root 512 systemd-inhibit sleep:idle:handle-lid-switch:handle-suspend-key:handle-hibernate-key "
                 "Live session: do not interrupt the installation block")
 
@@ -583,7 +617,30 @@ def install_session_guest(tmp_path: Path) -> Guest:
                          "hostname=lindos lindos.ci_install_test --\n", encoding="utf-8")
     g.state("active.lindos-live-inhibit.service", "active")
     g.state("inhibit", INHIBIT_LIST)
+    for line in (1, 2):       # ubiquity-dm and the GTK program: both were started with the environment of ubiquity.service
+        g.process_env(line, PATH="/usr/bin", GTK_THEME="Lindos-Setup")
     return g
+
+
+def test_an_installer_that_did_not_get_the_skin_fails_the_theme_check(tmp_path):
+    g = install_session_guest(tmp_path)
+    for line in (1, 2):
+        g.process_env(line, PATH="/usr/bin")
+    out = session_run(g, tmp_path)
+    assert checks_of(out)["live-installer-theme"] == "FAIL" and "not Lindos-Setup" in why(out, "live-installer-theme")
+    assert "LINDOS_INFO installer_gtk_theme=none" in out
+    findings = it.judge_install_phase({"outcome": "exited", "seconds": 1800}, completed(it.parse_install_serial(out)))
+    assert "install-live-installer-theme" in {f.name for f in ic_failures(findings)}
+
+
+def test_a_process_that_only_mentions_the_desktop_in_its_arguments_is_not_a_desktop_session(tmp_path):
+    """earlyoom's own command line names xfce4-panel in its --avoid regular expression (first real install: a false FAIL)."""
+    g = install_session_guest(tmp_path)
+    g.set_procs(SESSION_PROCS + ["root|earlyoom|/usr/bin/earlyoom -m 4 -s 100 --avoid (^|/)(Xorg|xfwm4|xfce4-panel|lightdm)$"])
+    out = session_run(g, tmp_path)
+    got = checks_of(out)
+    assert got["live-no-xfce-session"] == "OK" and got["live-no-lightdm"] == "OK", why(out, "live-no-xfce-session")
+    assert out.count("LINDOS_INSTALL_SESSION_CHECKED fails=0") == 1
 
 
 def session_run(g: Guest, tmp_path: Path, **extra: str) -> str:
