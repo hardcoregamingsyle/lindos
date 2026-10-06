@@ -111,8 +111,8 @@ your first login, and only asks about Modes, browser and looks.
 ### Why does the installer ask for a temporary account (and a password)?
 Lindos uses Ubiquity's *OEM mode* so that the installer can do its downloads first and the real account is
 created at the first boot. Ubiquity always shows a page for the temporary account (named `oem`) and cannot be
-told to skip it: leave the password empty and press Continue. The account is locked when the installation
-ends and deleted at the first boot. Its wording ("OEM mode, for manufacturers only") is Ubiquity's own.
+told to skip it: leave the password empty and press Continue (if the installer stops at "Creating user", type any
+password there). The account is created locked and deleted at the first boot. Its wording ("OEM mode, for manufacturers only") is Ubiquity's own.
 
 ### Why did the installer download things? Does it need internet?
 Some software cannot be on the disc: Google's Chrome licence forbids it, and Wine's newest builds, Steam,

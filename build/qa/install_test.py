@@ -224,6 +224,7 @@ class SeedOptions:
     username: str = "oem"
     fullname: str = "OEM Configuration (temporary user)"
     poweroff: bool = True
+    empty_password: bool = False   # True = what a person does on the temporary-account page: types nothing
 
 
 def early_command() -> str:
@@ -242,7 +243,7 @@ def early_command() -> str:
 
 def seed_lines(opts: SeedOptions, *, redact: bool = False) -> List[Tuple[str, str, str, str]]:
     """(owner, question, type, value) for every CI answer, in the order a reader follows the installer."""
-    pw = "<redacted>" if redact else opts.password
+    pw = "" if opts.empty_password else ("<redacted>" if redact else opts.password)
     q: List[Tuple[str, str, str, str]] = [
         # language, keyboard, clock
         ("d-i", "debian-installer/locale", "string", opts.locale),
@@ -1165,6 +1166,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--boot-timeout", type=int, default=900, help="seconds to wait for the first boot's oem-config")
     p.add_argument("--grace", type=int, default=20, help="seconds between 'wizard is up' and the screenshot")
     p.add_argument("--shots-every", type=int, default=600, help="seconds between progress screenshots of the install")
+    p.add_argument("--typed-password", action="store_true",
+                   help="answer the temporary-account page with a random password (default: leave it EMPTY, the path a person takes)")
     p.add_argument("--ubiquity-mode", choices=("automatic", "noninteractive"), default="automatic",
                    help="automatic-ubiquity (GTK, needs X) or noninteractive (no window at all)")
     p.add_argument("--firmware", choices=("bios", "uefi"), default="bios")
@@ -1279,7 +1282,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("install_test: failed to extract casper kernel/initrd: %s" % exc, file=sys.stderr)
         return 2
     password = secrets.token_hex(12)
-    opts = SeedOptions(password=password)
+    opts = SeedOptions(password=password, empty_password=not ns.typed_password)
     preseed = build_preseed(opts)
     (out_dir / "preseed.redacted.seed").write_text(build_preseed(opts, redact=True), encoding="utf-8")
     observer = OBSERVER_SCRIPT.read_bytes()

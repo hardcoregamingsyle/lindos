@@ -13,17 +13,24 @@
 #   1. flock(1) on <root>/run/lindos/apt.lock - every command started through this helper takes its
 #      turn, waiting at most --wait seconds (default 180); when the turn does not come in time the
 #      command runs anyway (2. still applies) instead of never.
-#   2. Unless the caller already has an APT_CONFIG (the installer's own apt.conf sets the same option),
-#      APT_CONFIG points to a one-line file that sets DPkg::Lock::Timeout (default 300 s), so EVERY
-#      apt-get the command starts - also the ones inside lindos-drivers or ubuntu-drivers, which this
-#      package does not control - waits for a lock somebody else (unattended upgrades, the Update
-#      Manager) holds instead of failing at once.
+#   2. A one-line apt configuration file that sets DPkg::Lock::Timeout (default 300 s), so an apt-get
+#      waits for a lock somebody else (unattended upgrades, the Update Manager) holds instead of failing at
+#      once.  Its path is LINDOS_APT_CONF in the command's environment: a wrapped command that starts apt-get
+#      itself passes '-c "$LINDOS_APT_CONF"' (or '-o DPkg::Lock::Timeout=N').  It is NOT exported as APT_CONFIG,
+#      which every child inherits - dpkg's maintainer scripts included - and Google Chrome's postinst assigns
+#      APT_CONFIG=/usr/bin/apt-config (a shell variable it later runs): with the variable already exported that
+#      assignment changes the exported value and apt-config then fails with "Syntax error /usr/bin/apt-config:13"
+#      (the same failure the installer hook avoids with '-c FILE').  Only a command that starts apt through tools
+#      whose command line this package does not control (lindos-drivers, ubuntu-drivers) asks for it with
+#      --apt-config, and then APT_CONFIG is exported - unless the caller already has one.
 #   3. LINDOS_APT_SERIALISED=1 in the command's environment: a wrapped script that calls another wrapped
 #      script (or re-runs itself) never waits for a lock its own parent holds - nested calls only run.
 #
-# Usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--] COMMAND [ARGS...]
+# Usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--apt-config] [--] COMMAND [ARGS...]
 #   --wait N        seconds to wait for our turn            (default $LINDOS_APT_LOCK_WAIT, else 180; 0 = do not queue)
 #   --dpkg-wait N   DPkg::Lock::Timeout for the command     (default $LINDOS_APT_DPKG_WAIT, else 300; 0 = leave apt's own)
+#   --apt-config    also export APT_CONFIG=$LINDOS_APT_CONF (only for a command that cannot be given '-c FILE' and
+#                   runs no package maintainer scripts that read APT_CONFIG; never for a Chrome/browser install)
 # Exit status: the command's own status; 2 = usage.
 # Best effort by design: no flock(1) or an unwritable lock directory only means the command runs
 # without queueing (2. still applies) - this helper never stops a job from running.
@@ -38,11 +45,12 @@ FLOCK="${LINDOS_FLOCK:-flock}"
 GAVE_UP=199
 WAIT="${LINDOS_APT_LOCK_WAIT:-180}"
 DPKG_WAIT="${LINDOS_APT_DPKG_WAIT:-300}"
+EXPORT_APT_CONFIG=0
 
 note() { printf 'lindos apt-serialise: %s\n' "$*" >&2; }
 
 usage() {
-    printf 'usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--] COMMAND [ARGS...]\n' >&2
+    printf 'usage: apt-serialise [--wait SECONDS] [--dpkg-wait SECONDS] [--apt-config] [--] COMMAND [ARGS...]\n' >&2
     exit 2
 }
 
@@ -57,6 +65,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --wait) [ $# -ge 2 ] || usage; WAIT="$2"; shift 2 ;;
         --dpkg-wait) [ $# -ge 2 ] || usage; DPKG_WAIT="$2"; shift 2 ;;
+        --apt-config) EXPORT_APT_CONFIG=1; shift ;;
         --) shift; break ;;
         -h|--help) usage ;;
         -*) usage ;;
@@ -67,7 +76,8 @@ done
 is_number "${WAIT}" || WAIT=180
 is_number "${DPKG_WAIT}" || DPKG_WAIT=300
 
-# Nested: the outer helper holds the lock and set APT_CONFIG - just run (waiting for our own parent's lock would deadlock).
+# Nested: the outer helper holds the lock and has set up the configuration - just run (waiting for our own parent's
+# lock would deadlock).
 if [ "${LINDOS_APT_SERIALISED:-}" = 1 ]; then
     exec "$@"
 fi
@@ -75,8 +85,10 @@ export LINDOS_APT_SERIALISED=1
 
 mkdir -p "${LOCK_DIR}" 2>/dev/null || true
 
-# 2. patience for the dpkg lock, for every apt-get the command starts.  The file lives on /run (a tmpfs:
-# gone at the next boot even if this shell is killed before it can clean up).
+# 2. patience for the dpkg lock: the one-line configuration file, handed over as LINDOS_APT_CONF (for '-c FILE'),
+# and as APT_CONFIG only on request (--apt-config) and only when the caller has none of its own - see the header for
+# why the environment variable is not the default.  The file lives on /run (a tmpfs: gone at the next boot even if
+# this shell is killed before it can clean up).
 conf=""
 cleanup() {
     if [ -n "${conf}" ]; then
@@ -84,11 +96,15 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-if [ -z "${APT_CONFIG:-}" ] && [ "${DPKG_WAIT}" -gt 0 ]; then
+unset LINDOS_APT_CONF          # never point the command at the file of some earlier, finished helper
+if [ "${DPKG_WAIT}" -gt 0 ]; then
     conf="$(mktemp "${LOCK_DIR}/apt-config.XXXXXX" 2>/dev/null || mktemp 2>/dev/null || true)"
     if [ -n "${conf}" ] && printf '// Written by lindos apt-serialise for one command; removed afterwards.\nDPkg::Lock::Timeout "%s";\n' "${DPKG_WAIT}" >"${conf}" 2>/dev/null; then
         chmod 0644 "${conf}" 2>/dev/null || true
-        export APT_CONFIG="${conf}"
+        export LINDOS_APT_CONF="${conf}"
+        if [ "${EXPORT_APT_CONFIG}" -eq 1 ] && [ -z "${APT_CONFIG:-}" ]; then
+            export APT_CONFIG="${conf}"
+        fi
     else
         rm -f "${conf}" 2>/dev/null || true
         conf=""

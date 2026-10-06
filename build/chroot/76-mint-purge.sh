@@ -11,7 +11,10 @@
 #                  mintsystem/ubuntu-system-adjustments chain that Mint's Firefox
 #                  Pre-Depends on, the interim update/store/driver tools, the
 #                  XApp plumbing, Thunar ...) and for everything mint-meta-*
-#                  Depends on: a purge must never orphan the desktop
+#                  Depends on: a purge must never orphan the desktop.  The packages a graphical
+#                  session cannot start without (lib.sh SESSION_PKGS: xfce4-session, xfwm4, the
+#                  panel, xfdesktop4, xfconf, xfce4-settings, the session bus, lightdm, the
+#                  greeter, Xorg ...) are marked manual explicitly as well
 #    2. purge      in small groups, each behind a simulation:
 #                    mint-meta-xfce / mint-meta-core        (nothing depends on them)
 #                    the artwork stack (mint-artwork is what puts Mint's xfconf
@@ -21,12 +24,16 @@
 #                      their replacement (mousepad / ristretto / evince / vlc)
 #                      is installed
 #                  A group is purged only when 'apt-get -s purge' would remove
-#                  NOTHING outside the group.  Otherwise the group is skipped,
-#                  MINT-PURGE-SKIPPED is logged loudly and the build goes on: this
-#                  hook never fails the ISO build (only the host guard dies).
-#    3. afterwards a leftover /etc/xdg/xdg-{xfce,default,default.desktop} symlink into
-#                  mint-artwork is moved aside (MINT-XDG-FIXED), the Matrix web app of
-#                  /etc/skel goes, caches are rebuilt, dpkg is audited.
+#                  NOTHING outside the group AND 'apt-get -s --auto-remove purge' would not
+#                  leave a session package behind as an autoremove candidate (it is marked
+#                  manual first; the group is skipped when that does not help).  Otherwise
+#                  the group is skipped, MINT-PURGE-SKIPPED is logged loudly and the build
+#                  goes on: this hook never fails the ISO build (only the host guard dies).
+#    3. afterwards the session packages are checked once more (a simulated autoremove
+#                  must not list one: MINT-SESSION-OK / MINT-SESSION-KEPT), a leftover
+#                  /etc/xdg/xdg-{xfce,default,default.desktop} symlink into mint-artwork
+#                  is moved aside (MINT-XDG-FIXED), the Matrix web app of /etc/skel goes,
+#                  caches are rebuilt, dpkg is audited.
 #
 #  Deliberately NOT purged (no Lindos replacement yet, or the base needs them):
 #    mintupdate mintinstall mintdrivers mintsources mintreport   interim tools, re-skinned by the sweep
@@ -94,6 +101,16 @@ sim_removals() {
     apt-get -s purge "$@" 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' | sed 's/:.*$//' | sort -u || true
 }
 
+# sim_orphans PKG… — names 'apt-get -s --auto-remove purge' would remove: the packages plus everything that is unneeded afterwards.
+sim_orphans() {
+    { apt-get -s --auto-remove purge "$@" 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' | sed 's/:.*$//' | sort -u; } || true
+}
+
+# session_hits LIST — the lines of LIST (names, one per line) that are session packages (lib.sh SESSION_PKGS)
+session_hits() {
+    grep -E "$(session_pkg_re)" <<< "$1" || true
+}
+
 # purge_group NAME REQUIRES PATTERN…
 #   REQUIRES  space separated packages that must be installed first ("-" = none): the replacements
 #   PATTERN   dpkg-query globs; the installed packages they match are purged together, and are also
@@ -102,7 +119,7 @@ sim_removals() {
 purge_group() {
     local name="$1" requires="$2" r
     shift 2
-    local targets=() sim extra
+    local targets=() sim extra orph hits=()
     if [ "${requires}" != "-" ]; then
         for r in ${requires}; do
             if ! pkg_installed "${r}"; then
@@ -126,6 +143,22 @@ purge_group() {
         skip_group "${name}" "purging ${targets[*]} would also remove: ${extra}"
         return 0
     fi
+    # the purge itself touches nothing else; what would be left unneeded afterwards (an autoremove, here or in the installer)?
+    # a session package on that list is kept first (manual); the group is skipped when apt still lists it
+    orph="$(comm -13 <(printf '%s
+' "${targets[@]}" | sort -u) <(sim_orphans "${targets[@]}") || true)"
+    mapfile -t hits < <(session_hits "${orph}")
+    if [ "${#hits[@]}" -gt 0 ]; then
+        warn "MINT-PURGE-SESSION-KEPT group '${name}': purging ${targets[*]} would leave session package(s) unneeded (${hits[*]}) - marking them manual"
+        mark_manual_installed "${hits[@]}"
+        orph="$(comm -13 <(printf '%s
+' "${targets[@]}" | sort -u) <(sim_orphans "${targets[@]}") || true)"
+        mapfile -t hits < <(session_hits "${orph}")
+        if [ "${#hits[@]}" -gt 0 ]; then
+            skip_group "${name}" "purging ${targets[*]} would still leave session package(s) as autoremove candidates: ${hits[*]}"
+            return 0
+        fi
+    fi
     log "group ${name}: apt-get purge ${targets[*]}"
     if apt-get "${APT_ARGS[@]}" purge "${targets[@]}"; then
         PURGED+=("${targets[@]}")
@@ -145,6 +178,7 @@ step_keep() {
     mapfile -t globbed < <(pkgs_installed_matching "${KEEP_GLOBS[@]}")
     [ "${#globbed[@]}" -eq 0 ] || mark_manual_installed "${globbed[@]}"
     mark_meta_deps_manual
+    mark_session_manual
 }
 
 # ---------------------------------------------------------------------------
@@ -181,6 +215,27 @@ step_purge() {
 # ---------------------------------------------------------------------------
 # 3. after the purges
 # ---------------------------------------------------------------------------
+# What would an autoremove take now (here at the end of the build, or Ubiquity's in the target)?  The session packages
+# are manual since step_keep, so this only fires when apt still lists one (an apt-mark that failed, a hook that installed
+# one afterwards).  It keeps them; it never fails the build (82-session-sanity.sh checks what is installed at the very end).
+step_session_guard() {
+    local hits=() un
+    un="$(unneeded_pkgs)"
+    mapfile -t hits < <(session_hits "${un}")
+    if [ "${#hits[@]}" -eq 0 ]; then
+        log "MINT-SESSION-OK: no session package is an autoremove candidate"
+        return 0
+    fi
+    warn "MINT-SESSION-KEPT: apt would autoremove session package(s) (${hits[*]}) - marking them manual"
+    mark_manual_installed "${hits[@]}"
+    un="$(unneeded_pkgs)"
+    mapfile -t hits < <(session_hits "${un}")
+    if [ "${#hits[@]}" -gt 0 ]; then
+        warn "MINT-SESSION-AT-RISK: apt still lists session package(s) as autoremove candidates: ${hits[*]}"
+    fi
+    return 0
+}
+
 # The Debian Xsession script prepends /etc/xdg/xdg-$DESKTOP_SESSION to XDG_CONFIG_DIRS, and mint-artwork makes
 # that (and xdg-default*) a symlink to its own xfconf defaults, which then outrank the Lindos ones in /etc/xdg.
 # lindos-desktop diverts the symlinks; if one still points into mint-artwork, move it aside here.
@@ -266,6 +321,7 @@ step_dpkg_audit() {
 
 step_keep          || warn "keep-set step failed (continuing)"
 step_purge         || warn "purge step failed (continuing)"
+step_session_guard || warn "session package check failed (continuing)"
 step_xdg_shadow    || warn "xdg check failed (continuing)"
 step_skel_webapps  || warn "skel web app step failed (continuing)"
 step_default_apps  || warn "default app check failed (continuing)"

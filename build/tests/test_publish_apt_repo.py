@@ -760,7 +760,6 @@ def test_the_same_file_name_from_two_directories_of_the_release_is_refused_not_o
 
 @pytest.mark.parametrize("previous, message", [
     ({"foo_0.9.0_all.deb": None}, "not a lindos-* package"),                                          # any name
-    ({"lindos-evil_0.9.0_all.deb": None}, "not a package of the release being published"),            # a new name
     ({"lindos-core_9.9.9_all.deb": None}, "not older"),                                                # a higher version
     ({"lindos-core_1.0.10_all.deb": None}, "the same file name twice"),                                # the same file
     ({"lindos-core_1.0.9~rc1_all.deb": None}, "not a plain X.Y.Z"),
@@ -770,6 +769,51 @@ def test_the_same_file_name_from_two_directories_of_the_release_is_refused_not_o
 def test_a_previous_deb_that_is_not_an_older_file_of_the_release_is_refused(tmp_path: Path, previous, message: str, release: bool) -> None:
     e, res, _now, _prev = _previous_run(tmp_path, previous, release=release)
     assert res.returncode != 0 and message in (res.stdout + res.stderr), res.stdout + res.stderr
+    _nothing_was_published(e)
+
+
+# A package the release being published no longer ships (retired or renamed in this release): the older releases'
+# metadata legitimately vouches for it, and refusing it made the release impossible until those releases were deleted by
+# hand. It is left out (warned about, never signed); everything else in the run keeps every safety check.
+@pytest.mark.parametrize("release", [False, True])
+def test_a_verified_previous_package_the_release_no_longer_ships_is_warned_about_and_dropped(tmp_path: Path, release: bool) -> None:
+    e, res, _now, _prev = _previous_run(tmp_path, {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_1.0.9_all.deb": None,
+                                                   "lindos-meta_1.0.9_all.deb": None}, release=release)
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, out
+    assert sorted(p.name for p in e.repo.glob("*.deb")) == [
+        "lindos-core_1.0.10_all.deb", "lindos-core_1.0.9_all.deb", "lindos-meta_1.0.10_all.deb", "lindos-meta_1.0.9_all.deb"]
+    assert "lindos-winapps_1.0.9_all.deb" in out and "left out" in out and "not signed" in out, out
+    assert (e.repo / "InRelease").exists() and (e.repo / "Release.gpg").exists(), "the release is still signed"
+
+
+def test_a_dropped_package_is_never_in_the_index_the_signature_covers(tmp_path: Path) -> None:
+    e, res, _now, _prev = _previous_run(tmp_path, {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_1.0.9_all.deb": None})
+    assert res.returncode == 0, res.stdout + res.stderr
+    packages = (e.repo / "Packages").read_text(encoding="utf-8")
+    assert "lindos-winapps" not in packages and "lindos-core_1.0.9_all.deb" in packages and "lindos-core_1.0.10_all.deb" in packages
+    assert not list(e.repo.glob("lindos-winapps*")), "the copy is removed, not just hidden"
+
+
+def test_dropping_a_retired_package_keeps_every_other_previous_release_check(tmp_path: Path) -> None:
+    """A retired package next to a bad one: the retired one is dropped, the bad one still stops the run."""
+    for case, previous, message in (
+            ("not_lindos", {"lindos-winapps_1.0.9_all.deb": None, "foo_0.9.0_all.deb": None}, "not a lindos-* package"),
+            ("not_older", {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_9.9.9_all.deb": None}, "not older"),
+            ("not_plain", {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_1.0_all.deb": None}, "not a plain X.Y.Z"),
+            ("collision", {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_1.0.10_all.deb": None}, "the same file name twice"),
+            ("lies", {"lindos-winapps_1.0.9_all.deb": None, "lindos-core_0.9.0_all.deb": "lindos-evil|9.9.9|all"}, "does not match its content")):
+        sub = tmp_path / case
+        sub.mkdir()
+        e, res, _now, _prev = _previous_run(sub, previous)
+        assert res.returncode != 0 and message in (res.stdout + res.stderr), (case, res.stdout + res.stderr)
+        _nothing_was_published(e)
+
+
+def test_a_retired_package_whose_content_is_not_what_its_name_says_is_still_refused(tmp_path: Path) -> None:
+    """Dropping is only for a package whose identity was verified: a name that lies is refused before anything else."""
+    e, res, _now, _prev = _previous_run(tmp_path, {"lindos-winapps_1.0.9_all.deb": "lindos-core|1.0.9|all"})
+    assert res.returncode != 0 and "does not match its content" in (res.stdout + res.stderr)
     _nothing_was_published(e)
 
 

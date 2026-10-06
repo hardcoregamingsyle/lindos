@@ -172,11 +172,24 @@ def test_a_password_the_user_chose_is_kept_and_a_locked_account_stays_locked(san
     notice = (sandbox.target / NOTICE).read_text(encoding="utf-8")
     assert "keeps the password chosen" in notice and "$6$" not in notice
     assert not (sandbox.target / "var/lib/lindos/oem-temporary-password").exists()
-    other = Sandbox(sandbox.root / "second")
-    other.make_oem_target(with_oem_config=False, shadow="oem:!:19000:0:99999:7:::")
-    _finalize(other)
-    assert _shadow_field(other) == "!" and not other.calls_of("chpasswd")
-    assert "the temporary account is locked" in (other.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+
+
+def test_a_locked_temporary_account_gets_a_password_when_it_is_the_only_account(sandbox: Sandbox) -> None:
+    # the image seed creates the temporary account LOCKED (pre-crypted '!'): in the normal path the wizard deletes it, but when
+    # oem-config could not be armed it is the person's only account, and a locked one would leave them without sudo or screen lock
+    sandbox.make_oem_target(with_oem_config=False, shadow="oem:!:19000:0:99999:7:::")
+    _finalize(sandbox)
+    assert _shadow_field(sandbox) != "!" and sandbox.calls_of("chpasswd")
+    assert (sandbox.target / "var/lib/lindos/oem-temporary-password").exists()
+    marker = (sandbox.target / "var/lib/lindos/oem-config-not-armed").read_text(encoding="utf-8")
+    assert "random password" in marker
+
+
+def test_a_locked_temporary_account_is_left_alone_when_the_wizard_is_armed(sandbox: Sandbox) -> None:
+    sandbox.make_oem_target(with_oem_config=True, shadow="oem:!:19000:0:99999:7:::")
+    _finalize(sandbox)
+    assert _shadow_field(sandbox).startswith("!") and not sandbox.calls_of("chpasswd")   # still locked ('passwd -l' may stack another '!')
+    assert not (sandbox.target / "var/lib/lindos/oem-temporary-password").exists()
 
 
 def test_when_chpasswd_fails_the_temporary_account_is_locked_instead(sandbox: Sandbox) -> None:

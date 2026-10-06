@@ -16,6 +16,15 @@
 #   * Mint's command wrappers ("This is the Linux Mint apt command", search, highlight-mint, rtfm and
 #     the apt-linux-mint completion) - only when they exist.
 # The list is kept in sync with postrm (a test compares them).
+#
+# Four of the diverted xfconf defaults - xfce4-session.xml, xsettings.xml, xfce4-keyboard-shortcuts.xml and
+# xfce4-power-manager.xml - are ALSO conffiles of stock packages (xfce4-session, xfce4-settings, libxfce4ui-common,
+# xfce4-power-manager).  They must not be conffiles of this package: dpkg then takes over the stock package's recorded
+# hash, finds the file gone (the diversion just renamed it) and, under --force-confold, "keeps the old file" - which
+# is no file at all.  Lindos's copy ended up as *.dpkg-dist and /etc/xdg had no xfce4-session.xml, so xfce4-session
+# reported "Unable to determine failsafe session name" (CI boot test of 7fc3aae; it was masked before by Mint's
+# /etc/xdg/xdg-xfce).  They are plain files of this package now (DEBIAN/conffiles lists none of them), and the
+# postinst restores one from *.dpkg-dist should it still be missing.
 # LINDOS_ROOT prefixes the paths this script touches itself (test seam; unset on a real system).
 set -e
 

@@ -184,11 +184,14 @@ fin_shadow_lock_empty() {
 # was done, for the marker and the note: no secret in it).  Returns 1 only when the account may still be open.
 FIN_TEMP_PW=""
 FIN_TEMP_NOTE=""
+FIN_PW_IF_LOCKED=0   # the fallback path sets 1: there the temporary account is the person's only account, so a locked one needs a password
 fin_secure_temp_account() {
-    local field pw
+    local field pw locked=0
     FIN_TEMP_PW=""
     FIN_TEMP_NOTE=""
-    if field="$(fin_shadow_field oem)" && [ -n "${field}" ]; then
+    field="$(fin_shadow_field oem)" || field=""
+    case "${field}" in '!'*|'*'*) locked=1 ;; esac
+    if [ -n "${field}" ] && { [ "${locked}" = 0 ] || [ "${FIN_PW_IF_LOCKED}" != 1 ]; }; then
         # a password chosen during the installation (or an already locked account): not open, not touched
         case "${field}" in
             '!'*|'*'*) FIN_TEMP_NOTE="the temporary account is locked" ;;
@@ -262,6 +265,7 @@ fin_write_notice() {
 
 # fin_fallback REASON - oem-config could not be armed: keep the desktop, close the account, say so loudly.
 fin_fallback() {
+    FIN_PW_IF_LOCKED=1
     local reason="$1"
     li_log "finalize: CRITICAL - ${reason}. The first start will NOT ask for an account: the machine signs in as the temporary 'oem' account. Fix: install oem-config and run oem-config-prepare as root."
     fin_secure_temp_account
@@ -388,6 +392,10 @@ fin_main() {
 
     fin_cleanup
     li_load_status
+    # the hook's last progress note (one line, see li_progress): when the hook did not get to the end, this is where it stopped
+    if [ -s "${TGT}${LI_PROGRESS_REL}" ]; then
+        li_log "finalize: the hook's last progress note: $(head -n 1 "${TGT}${LI_PROGRESS_REL}" 2>/dev/null | cut -c1-300)"
+    fi
     li_mark_missing pending "the installer hook did not record a result"
     # Ubiquity's own package clean-up ran after the hook: what a step called 'done' has to be there still
     li_extras_load

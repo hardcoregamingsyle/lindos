@@ -423,6 +423,74 @@ def screenshot_has_content(path: Path, *, min_stddev: float = 4.0, min_colors: i
     return True, stats
 
 
+def _diag_by_label(report: dict) -> dict:
+    """The LINDOS_DESKTOP_DIAG lines as {label: [text, ...]} (the label is what precedes the first ': ')."""
+    by: dict = {}
+    for line in report.get("desktop_diag", []):
+        label, sep, rest = line.partition(": ")
+        if sep:
+            by.setdefault(label.strip(), []).append(rest)
+    return by
+
+
+def session_diagnosis(report: dict) -> List[str]:
+    """Name the cause of a session that did not come up, from the LINDOS_DESKTOP_DIAG lines ci-live-checks.sh prints when
+    live-panel / live-desktop fails (its desktop_diag()).  One sentence per finding; [] when those lines are absent (the
+    session came up, or the ISO predates them) or point at nothing this function knows.  It never raises: a diagnosis is
+    a help for the reader of the log, not part of the verdict."""
+    by = _diag_by_label(report)
+    if "live-session-failed" not in by:
+        return []
+    out: List[str] = []
+    xfconf_dir = by.get("xfconf-dir", [])
+    if any("No such file" in ln or "cannot access" in ln for ln in xfconf_dir):
+        out.append("/etc/xdg/xfce4/xfconf/xfce-perchannel-xml does not exist: xfconf has no system defaults at all")
+    elif xfconf_dir and not any(re.search(r"(?:^|\s)xfce4-session\.xml(?:\s|$)", ln) for ln in xfconf_dir):
+        names = sorted({ln.split()[-1] for ln in xfconf_dir if ln.split() and ln.split()[-1].endswith((".dpkg-dist", ".lindos-orig", ".xml"))})
+        out.append("xfce4-session.xml is missing from /etc/xdg/xfce4/xfconf/xfce-perchannel-xml (there: %s): xfce4-session cannot read "
+                   "/general/FailsafeSessionName and ends in 'Unable to determine failsafe session name' - dpkg keeps a stock "
+                   "conffile as deleted when a package ships the same path as a conffile too (docs/BUILDING.md, 'Session sanity')"
+                   % (", ".join(names) or "no channel file"))
+    probe = " ".join(by.get("failsafe-probe", []))
+    if probe:
+        if re.search(r"does not exist|doesn't exist|Property .* not", probe, flags=re.I):
+            out.append("xfconf answers that /general/FailsafeSessionName does not exist: the xfce4-session channel has no defaults")
+        elif probe.strip() in ("<empty>",) or re.search(r"cannot|can't|failed|error|refused|timed out|no such|not run", probe, flags=re.I):
+            out.append("xfconf could not be asked for the live user (%s): its session bus or xfconfd is not usable" % probe.strip()[:120])
+        elif "Failsafe" in probe:
+            out.append("xfconf now answers FailsafeSessionName=Failsafe: the defaults are in place, so the session failed for another "
+                       "reason - compare xfce4-session-env, ps-user (was xfconfd started at login?) and journal-user")
+    env = by.get("xfce4-session-env", [])
+    if any("does not run" in ln for ln in env):
+        out.append("xfce4-session itself is not running for the live user")
+    for ln in env:
+        if ln.startswith("DBUS_SESSION_BUS_ADDRESS is not set"):
+            out.append("xfce4-session was started without DBUS_SESSION_BUS_ADDRESS: the session bus was not set up before it "
+                       "(dbus-user-session / dbus-x11 and /etc/X11/Xsession.d)")
+        if ln.startswith("XDG_CONFIG_DIRS is not set"):
+            out.append("xfce4-session was started without XDG_CONFIG_DIRS (Xsession.d/60x11-common_xdg_path did not run?)")
+        m = re.match(r"XDG_CONFIG_DIRS=(.*)$", ln)
+        if m and "/etc/xdg" not in m.group(1).split(":") and "/etc" not in m.group(1).split(":"):
+            out.append("XDG_CONFIG_DIRS=%s does not include /etc/xdg" % m.group(1))
+    missing: List[str] = []
+    for ln in by.get("pkg", []):
+        parts = ln.split()
+        if "no packages found matching" in ln:
+            missing.append(parts[-1])
+        elif len(parts) >= 2 and parts[0] in ("not-installed", "config-files", "half-installed", "half-configured", "unpacked"):
+            missing.append("%s (%s)" % (parts[1], parts[0]))
+    if missing:
+        out.append("session package(s) not installed properly: %s" % ", ".join(sorted(set(missing))))
+    if any(ln.startswith("MISSING") for ln in by.get("xfconfd-binary", [])):
+        out.append("the xfconfd binary is missing (the xfconf package is broken or was removed)")
+    if any(ln.startswith("MISSING") for ln in by.get("xfconf-dbus-service", [])):
+        out.append("xfconf's D-Bus activation file org.xfce.Xfconf.service is missing: xfconfd cannot be started on demand")
+    ps = by.get("ps-user", [])
+    if any(re.search(r"\sxfce4-session\s", ln) for ln in ps) and not any(re.search(r"\sxfconfd\s", ln) for ln in ps):
+        out.append("xfconfd was not running when xfce4-session sat in its error dialog (D-Bus activation never started it)")
+    return out
+
+
 def live_verdict(report: dict) -> List[str]:
     """Why the LIVE-SESSION part of a boot fails (empty = it passes).
 
@@ -556,9 +624,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"  desktop watch started: {report['desktop_watch_started']}")
     print(f"  desktop ready: {report['desktop_ready_line'] or 'never seen (timeout)'}")
     if report["desktop_diag"]:
-        print("  desktop-watch diagnostics (LINDOS_DESKTOP_DIAG):")
+        print("  desktop diagnostics (LINDOS_DESKTOP_DIAG: the desktop watcher, then ci-live-checks.sh when the panel or desktop failed):")
         for line in report["desktop_diag"]:
             print(f"    {line}")
+    for finding in session_diagnosis(report):
+        print(f"  diagnosis: {finding}")
     if report["live_diag"]:
         print("  live-session diagnostics (LINDOS_LIVE_DIAG):")
         for line in report["live_diag"]:

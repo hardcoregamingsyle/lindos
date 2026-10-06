@@ -9,9 +9,11 @@
 #                       nothing else may ever replace one of them
 #     --previous DIR    directory of an OLDER release's .deb files, kept so a bad update can be
 #                       rolled back (repeatable). Treated as untrusted input: every file must be a
-#                       lindos-* package of the current release, its name must say what is inside
-#                       (dpkg-deb -f), its version must be a plain X.Y.Z older than the one being
-#                       published, and a file name that exists already is refused, never overwritten
+#                       lindos-* package, its name must say what is inside (dpkg-deb -f), its version
+#                       must be a plain X.Y.Z older than the one being published, and a file name that
+#                       exists already is refused, never overwritten. A package the release being
+#                       published no longer ships (retired or renamed) is warned about and left out of
+#                       the repository - it is never signed and it does not stop the release
 #     --kernel-in DIR   directory of the tuned kernel's linux-image/-headers/-modules
 #                       .deb files to include too (default: out/kernel; skipped when it
 #                       does not exist - a kernel build is optional, everything else is not)
@@ -275,8 +277,16 @@ for d in ${PREVIOUS_ABS[@]+"${PREVIOUS_ABS[@]}"}; do
         b="$(basename "${f}")"
         deb_identity "${REPO_DIR}/${b}"
         [[ "${D_PKG}" =~ ${PKG_NAME_RE} ]] || die "previous release, ${b}: ${D_PKG} is not a lindos-* package" 1
-        [ -n "${CUR_VER[${D_PKG}]:-}" ] \
-            || die "previous release, ${b}: ${D_PKG} is not a package of the release being published (only its packages may stay for rollback)" 1
+        if [ -z "${CUR_VER[${D_PKG}]:-}" ]; then
+            # A verified older lindos-* package that the release being published no longer ships (a retired or renamed
+            # package): it can only be for rollback of something that no longer exists, so it is left out - warned about,
+            # not signed - and the release goes on. Dropping keeps the safety property: what is in the repository is
+            # exactly what was checked above, and nothing else is ever signed. (Dying here made one retired package
+            # block every release until the older releases were deleted by hand.)
+            warn "previous release, ${b}: ${D_PKG} is not a package of the release being published any more - left out of the repository (it is not signed)"
+            rm -f "${REPO_DIR}/${b}"
+            continue
+        fi
         [[ "${D_VER}" =~ ${PLAIN_VERSION_RE} ]] || die "previous release, ${b}: the version ${D_VER} is not a plain X.Y.Z" 1
         version_lt "${D_VER}" "${CUR_VER[${D_PKG}]}" \
             || die "previous release, ${b}: version ${D_VER} is not older than ${CUR_VER[${D_PKG}]}, the release being published" 1

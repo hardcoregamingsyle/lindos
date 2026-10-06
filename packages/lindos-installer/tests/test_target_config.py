@@ -72,7 +72,9 @@ def test_steps_run_in_order_and_every_download_precedes_its_install(full) -> Non
         marks[key] = next((i for i, c in enumerate(calls) if c.startswith(prefix) or (prefix == "apt-cache policy gimp" and c.startswith("apt-cache policy") and "gimp" in c)), -1)
         assert marks[key] > 0, key
     order = sorted(marks, key=lambda k: marks[k])
-    assert order == ["browser", "drivers", "updates", "compat", "gaming", "extras", "flatpaks"]
+    # the priority order is the run order: the system updates first, then what the user needs at once, the big optional
+    # downloads after that and the Flatpaks last (the first to be skipped when the disk is too small)
+    assert order == ["updates", "browser", "drivers", "compat", "gaming", "extras", "flatpaks"]
     for script in ("install-browser.sh", "install-compat.sh", "install-gaming.sh"):
         mine = [c for c in calls if c.startswith(script)]
         assert len(mine) == 2 and "--in-installer --download-only" in mine[0] and "--in-installer --no-download" in mine[1], mine

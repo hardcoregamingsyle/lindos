@@ -1227,3 +1227,15 @@ def test_a_light_first_boot_wizard_is_a_warning_a_dark_one_passes_and_an_unjudge
     assert look((None, "nothing but black"))["boot-wizard-look"].level == ic.INFO
     assert "boot-wizard-look" not in look(None)
     assert not ic.failures(it.judge_first_boot(serial, screenshot_ok=True, light=(0.9, "s"))), "a heuristic never fails the run"
+
+
+def test_the_default_ci_run_leaves_the_temporary_account_password_empty():
+    empty = it.SeedOptions(password="0123456789abcdef01234567", empty_password=True)
+    lines = {(q): v for _o, q, _t, v in it.seed_lines(empty)}
+    assert lines["passwd/user-password"] == "" and lines["passwd/user-password-again"] == ""
+    text = it.build_preseed(empty)
+    assert "0123456789abcdef01234567" not in text                      # the typed secret is not in an empty-password seed
+    assert "d-i passwd/user-password password" + chr(10) in text      # empty value, still a parseable line
+    assert "user-setup/allow-password-empty" not in text               # the IMAGE seed must stay what decides this
+    typed = {q: v for _o, q, _t, v in it.seed_lines(OPTS)}
+    assert typed["passwd/user-password"] == OPTS.password             # --typed-password keeps the old behaviour

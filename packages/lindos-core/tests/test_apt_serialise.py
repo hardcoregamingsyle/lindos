@@ -73,6 +73,10 @@ PROBE = r'''
     if [ -n "${APT_CONFIG:-}" ] && [ -f "${APT_CONFIG}" ]; then
         printf 'apt_config_text=%s\n' "$(tr '\n' ' ' <"${APT_CONFIG}")"
     fi
+    printf 'apt_conf=%s\n' "${LINDOS_APT_CONF:-}"
+    if [ -n "${LINDOS_APT_CONF:-}" ] && [ -f "${LINDOS_APT_CONF}" ]; then
+        printf 'apt_conf_text=%s\n' "$(tr '\n' ' ' <"${LINDOS_APT_CONF}")"
+    fi
 } >>"${PROBE_LOG}"
 exit "${PROBE_RC:-0}"
 '''
@@ -95,7 +99,7 @@ class Sandbox:
 
     def env(self, **extra: str) -> Dict[str, str]:
         env = dict(os.environ)
-        for name in ("APT_CONFIG", "LINDOS_APT_SERIALISED", "LINDOS_FLOCK", "FAKE_FLOCK_BUSY", "LINDOS_APT_LOCK_WAIT",
+        for name in ("APT_CONFIG", "LINDOS_APT_CONF", "LINDOS_APT_SERIALISED", "LINDOS_FLOCK", "FAKE_FLOCK_BUSY", "LINDOS_APT_LOCK_WAIT",
                      "LINDOS_APT_DPKG_WAIT", "LINDOS_APT_LOCK_TIMEOUT", "LINDOS_APT_UPDATE_TRIES",
                      "LINDOS_APT_UPDATE_RETRY_DELAY", "LINDOS_ROOT", "LINDOS_INSTALLER"):
             env.pop(name, None)
@@ -132,7 +136,8 @@ def test_apt_serialise_is_a_shipped_lf_bash_script_with_the_house_style() -> Non
     raw = SERIALISE.read_bytes()
     assert raw.startswith(b"#!/bin/bash\n") and b"\r" not in raw and b"set -Eeuo pipefail" in raw
     text = raw.decode("utf-8")
-    for needle in ("flock", "DPkg::Lock::Timeout", "APT_CONFIG", "LINDOS_APT_SERIALISED", "LINDOS_ROOT", "/run/lindos"):
+    for needle in ("flock", "DPkg::Lock::Timeout", "APT_CONFIG", "LINDOS_APT_CONF", "--apt-config", "LINDOS_APT_SERIALISED",
+                   "LINDOS_ROOT", "/run/lindos"):
         assert needle in text, needle
     assert "sudo " not in text
 
@@ -163,12 +168,71 @@ def test_the_command_takes_its_turn_and_apt_gets_a_dpkg_lock_wait(sb: Sandbox) -
     lock = _posix(sb.root / "run" / "lindos" / "apt.lock")
     assert calls[0].startswith("-o -w 180 -E 199 " + lock + " "), calls
     assert calls[0].endswith("probe.sh one two")
-    # every apt-get the command starts (also inside lindos-drivers / ubuntu-drivers) waits for the dpkg lock
+    # the lock wait is a one-line configuration file whose path is LINDOS_APT_CONF (the command passes it as '-c FILE') ...
     probe = "\n".join(sb.probe_lines())
     assert "args=one two" in probe and "serialised=1" in probe
-    assert 'apt_config_text=// Written by lindos apt-serialise for one command; removed afterwards. DPkg::Lock::Timeout "300";' in probe
-    # ... and the one-line config does not outlive the command
+    assert 'apt_conf_text=// Written by lindos apt-serialise for one command; removed afterwards. DPkg::Lock::Timeout "300";' in probe
+    # ... and NOT the APT_CONFIG environment variable: dpkg's maintainer scripts would inherit it (see below)
+    assert "apt_config=" in sb.probe_lines() and "apt_config_text" not in probe
+    # the one-line config does not outlive the command
     assert not list((sb.root / "run" / "lindos").glob("apt-config.*"))
+
+
+@needs_bash
+def test_apt_config_is_not_exported_by_default_because_every_maintainer_script_would_inherit_it(sb: Sandbox) -> None:
+    """Review finding: google-chrome-stable's postinst assigns APT_CONFIG=/usr/bin/apt-config (a shell variable it runs
+    later).  With APT_CONFIG already exported that assignment changes the exported value and apt-config reads its own
+    binary as a configuration file ('E: Syntax error /usr/bin/apt-config:13').  The installer hook avoids it with '-c FILE';
+    on the installed system the Chrome retry and 'lindos-browser install chrome' run under apt-serialise."""
+    postinst = _fake(sb.bin, "postinst-in-miniature", 'APT_CONFIG="$1"\n"${APT_CONFIG}" dump\n')
+    fake_apt_config = _fake(sb.bin, "fake-apt-config",
+                            'if [ -n "${APT_CONFIG:-}" ]; then\n'
+                            '    echo "E: Syntax error ${APT_CONFIG}:13: Extra junk after value" >&2\n'
+                            '    exit 100\n'
+                            'fi\n'
+                            'echo "Dir \\"/\\";"\n')
+    ok = sb.serialise("--", _posix(postinst), _posix(fake_apt_config))
+    assert ok.returncode == 0, ok.stderr
+    assert "Syntax error" not in ok.stderr
+    # the same helper with the opt-in flag documents the hazard it is for: never use --apt-config for an install of Chrome
+    bad = sb.serialise("--apt-config", "--", _posix(postinst), _posix(fake_apt_config))
+    assert bad.returncode == 100 and "Syntax error" in bad.stderr
+
+
+@needs_bash
+def test_apt_config_is_exported_on_request_for_commands_that_start_apt_through_tools_it_cannot_give_options_to(sb: Sandbox) -> None:
+    """lindos-drivers / ubuntu-drivers (the driver retry) start apt-get themselves: they get APT_CONFIG, and only they."""
+    proc = sb.serialise("--apt-config", "--", _posix(sb.probe), "drivers")
+    assert proc.returncode == 0, proc.stderr
+    probe = sb.probe_lines()
+    conf = next(ln for ln in probe if ln.startswith("apt_conf=")).split("=", 1)[1]
+    assert conf and f"apt_config={conf}" in probe, "APT_CONFIG is the same file as LINDOS_APT_CONF"
+    assert 'apt_config_text=// Written by lindos apt-serialise for one command; removed afterwards. DPkg::Lock::Timeout "300";' in "\n".join(probe)
+    assert not list((sb.root / "run" / "lindos").glob("apt-config.*")), "removed afterwards, also then"
+
+
+@needs_bash
+def test_a_callers_own_apt_config_wins_over_the_flag(sb: Sandbox) -> None:
+    mine = sb.tmp / "mine.conf"
+    mine.write_text('DPkg::Lock::Timeout "5";\n', encoding="utf-8")
+    proc = sb.serialise("--apt-config", "--", _posix(sb.probe), APT_CONFIG=_posix(mine))
+    assert proc.returncode == 0, proc.stderr
+    assert f"apt_config={_posix(mine)}" in sb.probe_lines()
+
+
+@needs_bash
+def test_no_dpkg_wait_means_no_configuration_at_all(sb: Sandbox) -> None:
+    proc = sb.serialise("--dpkg-wait", "0", "--apt-config", "--", _posix(sb.probe), LINDOS_APT_CONF="/stale/earlier.conf")
+    assert proc.returncode == 0, proc.stderr
+    assert "apt_conf=" in sb.probe_lines() and "apt_config=" in sb.probe_lines(), "a stale path from an earlier helper is dropped"
+
+
+@needs_bash
+def test_the_help_text_names_the_flag(sb: Sandbox) -> None:
+    proc = subprocess.run([BASH, str(SERIALISE), "--bogus"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 2 and "[--apt-config]" in proc.stderr
+    assert subprocess.run([BASH, str(SERIALISE), "--apt-config"], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL).returncode == 2, "the flag alone is no command"
 
 
 @needs_bash
@@ -279,6 +343,7 @@ def _browser_tools(sb: Sandbox) -> None:
     _fake(sb.bin, "apt-get",
           'printf "apt-get %s\\n" "$*" >>"${FAKE_CALLS}"\n'
           'printf "apt-config: %s\\n" "$( [ -f "${APT_CONFIG:-/nonexistent}" ] && tr "\\n" " " <"${APT_CONFIG}")" >>"${FAKE_CALLS}"\n'
+          'printf "env-apt-config: %s\\n" "${APT_CONFIG:-}" >>"${FAKE_CALLS}"\n'
           'printf "serialised: %s\\n" "${LINDOS_APT_SERIALISED:-}" >>"${FAKE_CALLS}"\n'
           'case " $* " in\n'
           '  *" update "*)\n'
@@ -347,7 +412,10 @@ def test_a_real_run_queues_behind_other_apt_jobs_and_every_apt_get_sees_the_lock
     for line in apt:
         assert "-o DPkg::Lock::Timeout=300" in line, line
     text = sb.calls.read_text(encoding="utf-8")
-    assert 'apt-config: // Written by lindos apt-serialise for one command; removed afterwards. DPkg::Lock::Timeout "300";' in text
+    # the lock wait reaches apt as the option above - NOT as an APT_CONFIG that dpkg's maintainer scripts (Google Chrome's
+    # postinst assigns its own APT_CONFIG and then fails with 'Syntax error /usr/bin/apt-config:13') would inherit
+    assert "env-apt-config: \n" in text and not re.search(r"^env-apt-config: .+$", text, re.M), text
+    assert "apt-config: // Written by lindos apt-serialise" not in text
     assert "serialised: 1" in text
     assert not list((sb.root / "run" / "lindos").glob("apt-config.*"))
 

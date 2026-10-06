@@ -84,8 +84,8 @@ out of the box.
   need a key enrolment. Details: [docs/INSTALLER.md](docs/INSTALLER.md).
 * **The new install flow is unproven on real hardware.** It was built and unit-tested without a
   Linux machine; it has not yet been run end to end (QEMU install or a real PC). The installer
-  still shows a page for a *temporary* account (just press Continue: your real account is
-  created on first boot), and the first-boot account screen looks like Ubiquity, not like Lindos
+  still shows a page for a *temporary* account (just press Continue, or type any password if it
+  stops at "Creating user": your real account is created on first boot), and the first-boot account screen looks like Ubiquity, not like Lindos
   Setup. The full list is in [docs/INSTALLER.md](docs/INSTALLER.md#known-limitations-and-what-is-unverified).
 * No telemetry, no ads, no crash uploads (apport/whoopsie/kerneloops are disabled).
 * **No kernel-level anti-cheat circumvention, ever.** Lindos ships nothing that emulates, forges
@@ -111,7 +111,7 @@ out of the box.
    desktop whose *Install Lindos* icon does the same thing). Connect to the internet first if you
    can: **Install Lindos does everything, including the downloads** — updates, drivers, Google
    Chrome, Wine/Proton, the game launchers and the apps of every Mode. Answer its questions
-   (language, keyboard, disk; ignore the temporary-account page: just press Continue).
+   (language, keyboard, disk; ignore the temporary-account page: just press Continue; if the installer stops at "Creating user", type any password there).
 2. When it says so, remove the USB stick and reboot. The first boot shows only the **account
    setup** (your name, password, computer name, time zone).
 3. On the desktop, **Lindos Setup** asks for a Mode, a browser and a few personal choices. It

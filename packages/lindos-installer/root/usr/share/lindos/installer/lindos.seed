@@ -37,3 +37,10 @@ d-i apt-setup/multiarch string i386
 # first-boot wizard reads the same database and must not accept an empty password for the real
 # account).
 d-i user-setup/allow-password-empty boolean true
+# The OEM temporary account is created by user-setup-apply. With an empty password it runs 'chpasswd',
+# which PAM refuses ("password not changed"), so the script fails under set -e and Ubiquity stops at
+# "Creating user". A pre-crypted value takes the other path (usermod --password=<value>, no PAM): '!' is a
+# locked password. Nobody needs to type this account's password: it signs in by itself and is deleted by
+# the account wizard. user-setup-apply clears the question afterwards.
+d-i passwd/user-password-crypted password !
+d-i user-setup/allow-password-weak boolean true

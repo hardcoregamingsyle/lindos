@@ -33,7 +33,18 @@
 #    * each step records its result in /var/lib/lindos/install-state.json (python3 -m
 #      lindos.installstate --root /target mark ...): 'done' only after a verified success; anything
 #      that could not be done (offline, timeout, failure) is 'pending'/'failed' and is retried
-#      silently by the first-boot units or from Settings > Apps.
+#      silently by the first-boot units or from Settings > Apps.  Every step is written as 'pending: the
+#      installer ended before this step' BEFORE the first one runs and on every exit path, so the file tells the
+#      truth even when the machine hangs hard;
+#    * the disk is never filled: the free space of /target is measured at the start and before EVERY step; a step
+#      runs only when it fits above a reserve kept free for the user (default the larger of 8 GB and 12 % of the
+#      partition, lindos.install_reserve=GB, never below 2 GB), otherwise it is 'pending' with the reason and the
+#      cheaper steps still get their turn; a partition below 40 GB gets no extra apps and no Flatpaks; apt's own
+#      "After this operation" figure is checked too, again between package groups, Flatpaks and before dpkg runs;
+#      the downloaded packages are cleaned out after every step (lib.sh: li_space_gate);
+#    * breadcrumbs: /var/lib/lindos/installer-progress holds one line (step, phase, free space, UTC time), rewritten
+#      before and after every step and package group and flushed with 'sync -f', so the last thing the installer was
+#      doing survives a crash (lib.sh: li_progress);
 #
 #  Progress text: one line per phase in the installer window (db_progress INFO with the template in
 #  /usr/share/lindos/installer/lindos-installer.templates); no progress bars of our own.
@@ -100,6 +111,7 @@ li_stdio() {
 
 # --- exit handling ------------------------------------------------------------------------
 LI_CLEANED=0
+LI_END_PHASE="interrupted"   # what the last breadcrumb says; 'finished' once li_main has returned on its own
 
 # li_cleanup - undo everything the hook changed in the target; runs on EVERY exit path.
 li_cleanup() {
@@ -119,6 +131,12 @@ li_cleanup() {
     li_apt_conf_remove
     li_prc_off
     li_dns_restore
+    # whatever way we got here, no step is left without a truthful status, and the breadcrumb says how it ended
+    li_mark_unfinished
+    if [ "${LI_STATE_ARMED}" = 1 ]; then
+        li_progress "${LI_CUR_STEP:--}" "${LI_END_PHASE}"
+    fi
+    li_sync_wait
     if [ -n "${LI_TMPD:-}" ]; then
         rm -rf "${LI_TMPD}"
     fi
@@ -147,23 +165,40 @@ li_on_signal() {
 # drivers) must not be recorded as a finished job.
 LI_LISTS_PARTIAL=0
 
-# li_step NAME MIN_SECONDS_LEFT FUNCTION - run one step if the budget allows, always record a result.
+# li_step NAME MIN_SECONDS_LEFT FUNCTION - run one step if the budget AND the disk allow, always record a result.
+# The disk is measured again right here, before every step (li_space_gate): the step runs only when the free space is at
+# least its estimate plus the reserve; otherwise it is 'pending' with the reason and the cheaper steps after it still get
+# their turn.  Breadcrumbs (li_progress) go before and after, and the downloaded packages are cleaned out afterwards.
 li_step() {
     local name="$1" min left
     min="$(li_scale "$2")"
     left="$(li_left)"
+    LI_CUR_STEP="${name}"
     if [ "${left}" -lt "${min}" ]; then
         li_mark "${name}" pending "time budget used up (${left}s left)"
+        li_progress "${name}" skipped "reason=time"
+        LI_CUR_STEP=""
         return 0
     fi
+    if ! li_space_gate "${name}"; then
+        li_mark "${name}" pending "${LI_SPACE_WHY}"
+        li_progress "${name}" skipped "reason=disk"
+        LI_CUR_STEP=""
+        return 0
+    fi
+    li_progress "${name}" start
     "$3"
     if [ -z "$(li_status "${name}")" ]; then
         li_mark "${name}" failed "no result was recorded"
     fi
     if [ "${LI_DIRTY}" = 1 ]; then
         LI_DIRTY=0
+        li_progress "${name}" repair
         li_repair
     fi
+    li_cache_clean
+    li_progress "${name}" end "result=$(li_status "${name}")"
+    LI_CUR_STEP=""
     return 0
 }
 
@@ -189,15 +224,16 @@ li_step_browser() {
         li_mark browser failed "install-browser.sh is missing"
         return 0
     fi
-    if ! li_free_ok 1500000; then
-        li_mark browser pending "not enough disk space for Google Chrome"
-        return 0
-    fi
     li_say "Downloading Google Chrome..."
     li_dl 900 "${ib}" chrome --in-installer --download-only
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         li_download_failed browser "${rc}" "the Chrome download"
+        return 0
+    fi
+    # dpkg is never stopped half way: before it starts, what is left of the job has to fit above the 2 GB floor
+    if ! li_room_left_ok "$(li_remaining_kb browser)"; then
+        li_mark browser pending "${LI_SPACE_WHY}"
         return 0
     fi
     li_say "Installing Google Chrome..."
@@ -222,10 +258,6 @@ li_step_browser() {
 # --- drivers: free drivers + firmware always; proprietary ones only with consent -------------
 li_step_drivers() {
     local consent=0 sb proprietary=0 note="" rc failed="" detail status detected=1
-    if ! li_free_ok 800000; then
-        li_mark drivers pending "not enough disk space for drivers"
-        return 0
-    fi
     li_say "Installing drivers..."
     # firmware: on the image already, this makes sure of it (a no-op when up to date); a package no archive
     # carries is left out instead of failing the whole install
@@ -237,8 +269,16 @@ li_step_drivers() {
                     0) ;;
                     *) failed="the firmware install (${LI_GUARD_WHY})" ;;
                 esac
+                if [ -z "${failed}" ] && ! li_sim_fits "the firmware" 0; then
+                    li_mark drivers pending "${LI_SPACE_WHY}"
+                    return 0
+                fi
                 if [ -z "${failed}" ]; then
                     if li_dl 600 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "${LI_CAND[@]}"; then
+                        if ! li_room_left_ok "${LI_SIM_ADD_KB}"; then
+                            li_mark drivers pending "${LI_SPACE_WHY}"
+                            return 0
+                        fi
                         if ! li_inst 900 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "${LI_CAND[@]}"; then
                             failed="the firmware install"
                             LI_DIRTY=1
@@ -253,6 +293,10 @@ li_step_drivers() {
         fi
     fi
     # free drivers: never anything proprietary here
+    if ! li_room_left_ok "$(li_remaining_kb drivers)"; then
+        li_mark drivers pending "${LI_SPACE_WHY}"
+        return 0
+    fi
     if [ -e "${TGT}/usr/bin/ubuntu-drivers" ]; then
         # "nothing to install" is not a failure (whether a given ubuntu-drivers version says it with exit 1 is not verified)
         li_inst 900 "${LI_APTENV[@]}" sh -c 'out="$(ubuntu-drivers install --free-only 2>&1)"; rc=$?; printf "%s\n" "${out}"; [ "${rc}" -eq 0 ] && exit 0; case "${out}" in *"No drivers found"*|*"already installed"*) exit 0 ;; esac; exit "${rc}"'
@@ -281,6 +325,11 @@ li_step_drivers() {
         fi
     fi
     if [ "${proprietary}" = 1 ] && [ -z "${failed}" ]; then
+        # the proprietary driver builds kernel modules and is the biggest thing this step does: ~1 GB over the floor
+        if ! li_room_left_ok 1048576; then
+            li_mark drivers pending "${LI_SPACE_WHY}"
+            return 0
+        fi
         li_say "Installing graphics drivers..."
         li_inst 1500 "${LI_APTENV[@]}" lindos-drivers install --auto
         rc=$?
@@ -340,10 +389,6 @@ li_step_updates() {
         li_mark updates pending "the installer, kernel and boot-loader packages could not be held, so nothing is upgraded now"
         return 0
     fi
-    if ! li_free_ok 3000000; then
-        li_mark updates pending "not enough disk space for the system updates"
-        return 0
-    fi
     li_hold_removable
     li_updates_run
     li_unhold_removable
@@ -351,7 +396,7 @@ li_step_updates() {
 }
 
 li_updates_run() {
-    local sim rc name bad=""
+    local sim rc name bad="" remaining
     local -a pkgs
     li_say "Checking for system updates..."
     sim="$(li_run_out 180 apt-get "${LI_APTC[@]}" -q -s upgrade)"
@@ -374,11 +419,28 @@ li_updates_run() {
         li_mark updates failed "the simulated upgrade would touch held packages:${bad}"
         return 0
     fi
+    # apt's own figures ("Need to get ... After this operation, ... of additional disk space"): the archives and the
+    # unpacked files are on the disk together, and both have to fit above the reserve before anything is downloaded
+    li_sim_parse "${sim}"
+    if ! li_sim_fits "the system updates" 0; then
+        li_mark updates pending "${LI_SPACE_WHY}"
+        return 0
+    fi
     li_say "Downloading ${#pkgs[@]} system updates..."
     li_dl 1500 apt-get "${LI_APTC[@]}" -y -q -d upgrade
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         li_download_failed updates "${rc}" "the update download"
+        return 0
+    fi
+    # dpkg is never stopped half way: what it still has to unpack must fit above the 2 GB floor
+    if [ "${LI_SIM_KNOWN}" = 1 ]; then
+        remaining="${LI_SIM_ADD_KB}"
+    else
+        remaining="$(li_remaining_kb updates)"
+    fi
+    if ! li_room_left_ok "${remaining}"; then
+        li_mark updates pending "${LI_SPACE_WHY}"
         return 0
     fi
     li_say "Installing system updates..."
@@ -394,10 +456,10 @@ li_updates_run() {
 }
 
 # --- compat and gaming: the install scripts' installer mode, download phase then dpkg phase ----
-# li_script_step STEP SCRIPT LABEL MINKB ITEM... - install-compat.sh / install-gaming.sh
+# li_script_step STEP SCRIPT LABEL ITEM... - install-compat.sh / install-gaming.sh (the disk was checked by li_step)
 li_script_step() {
-    local step="$1" script="$2" label="$3" minkb="$4" rc
-    shift 4
+    local step="$1" script="$2" label="$3" rc
+    shift 3
     if [ "$#" -eq 0 ]; then
         li_mark "${step}" "done" "nothing to install"
         return 0
@@ -406,15 +468,17 @@ li_script_step() {
         li_mark "${step}" failed "${script##*/} is missing"
         return 0
     fi
-    if ! li_free_ok "${minkb}"; then
-        li_mark "${step}" pending "not enough disk space for ${label}"
-        return 0
-    fi
     li_say "Downloading ${label}..."
     li_dl 1800 "${script}" --in-installer --download-only "$@"
     rc=$?
     if [ "${rc}" -eq 3 ] || [ "${rc}" -eq 124 ] || [ "${rc}" -eq 137 ] || [ "${rc}" -eq 125 ]; then
         li_download_failed "${step}" "${rc}" "the ${label} download"
+        return 0
+    fi
+    # dpkg is never stopped half way: what is left of the estimate (the download has used part of it) has to fit above
+    # the 2 GB floor before it starts
+    if ! li_room_left_ok "$(li_remaining_kb "${step}")"; then
+        li_mark "${step}" pending "${LI_SPACE_WHY}"
         return 0
     fi
     # exit 1 = one item could not be downloaded: the rest still installs, the outcome is 'failed'
@@ -431,17 +495,19 @@ li_script_step() {
 }
 
 li_step_compat() {
-    li_script_step compat /usr/libexec/lindos/install-compat.sh "Windows app support (Wine)" 2500000 "${LI_X_COMPAT[@]}"
+    li_script_step compat /usr/libexec/lindos/install-compat.sh "Windows app support (Wine)" "${LI_X_COMPAT[@]}"
 }
 
 li_step_gaming() {
-    li_script_step gaming /usr/libexec/lindos/install-gaming.sh "game launchers" 1500000 "${LI_X_GAMING[@]}"
+    li_script_step gaming /usr/libexec/lindos/install-gaming.sh "game launchers" "${LI_X_GAMING[@]}"
 }
 
 # --- mode_extras: the union of every Mode's apt packages ------------------------------------
 LI_DONE_PKGS=()   # what the step installed / what it could not (LI_BAD_WHY: "pkg: why", same order)
 LI_BAD_PKGS=()
 LI_BAD_WHY=()
+LI_SKIP_PKGS=()   # what was left out because the disk has no room for it (not a failure: 'pending')
+LI_SKIP_SHORT=""  # the first reason, "not enough disk space: needs ~X GB, Y GB free"
 LI_XRC=0          # the exit status of the download that timed out (li_extras_install returns 4)
 
 # li_group_of PKG - the Mode PKG belongs to for grouping ('other' for one that no Mode names).
@@ -451,19 +517,53 @@ li_group_of() {
     printf '%s\n' "${m:-other}"
 }
 
+# li_extras_estimate N - the share of the step's estimate that N of the extra apps stand for (used when apt's own
+# simulation has no figures).
+li_extras_estimate() {
+    local total="${#LI_X_APT[@]}" need="${LI_NEED_KB[mode_extras]}"
+    if [ "${total}" -eq 0 ]; then
+        printf '0\n'
+        return 0
+    fi
+    printf '%s\n' $(( need * $1 / total ))
+}
+
+# li_extras_skip PKG... - these are left out for lack of disk space (LI_SPACE_WHY says how much was missing); the step
+# ends 'pending' and names them.
+li_extras_skip() {
+    LI_SKIP_PKGS+=("$@")
+    [ -n "${LI_SKIP_SHORT}" ] || LI_SKIP_SHORT="${LI_SPACE_SHORT}"
+    li_log "extra apps (${*}): ${LI_SPACE_WHY} - left for later"
+}
+
 # li_extras_install PKG... - install these apt packages: as ONE transaction when apt agrees, package by package
 # when it does not, so one unresolvable package never takes the others along.  Every transaction is simulated
 # first (li_guard): one that would REMOVE an installed package (Valve's steam-launcher for steam-devices) or that
-# apt cannot resolve (a held package in the way) is not run; the packages then say why they were left out.
-# Fills LI_DONE_PKGS / LI_BAD_PKGS / LI_BAD_WHY.  Returns 0, 3 (the connection was lost: stop and stay pending)
-# or 4 (a download timed out or the budget is used up: LI_XRC has the exit status).
+# apt cannot resolve (a held package in the way) is not run; the packages then say why they were left out.  The
+# simulation's disk figures are checked against the free space above the reserve (a group that does not fit is left
+# out whole, LI_SKIP_PKGS) and again after the download, before dpkg starts.
+# Fills LI_DONE_PKGS / LI_BAD_PKGS / LI_BAD_WHY / LI_SKIP_PKGS.  Returns 0, 3 (the connection was lost: stop and stay
+# pending) or 4 (a download timed out or the budget is used up: LI_XRC has the exit status).
 li_extras_install() {
-    local n
+    local n add
     if [ "$#" -gt 1 ]; then
         li_guard "$@"
         if [ $? -eq 0 ]; then
+            if [ "${LI_SIM_KNOWN}" = 1 ]; then
+                add="${LI_SIM_ADD_KB}"
+            else
+                add="$(li_extras_estimate "$#")"
+            fi
+            if ! li_sim_fits "these extra apps" "${add}"; then
+                li_extras_skip "$@"
+                return 0
+            fi
             li_say "Downloading extra apps..."
             if li_dl 1500 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "$@"; then
+                if ! li_room_left_ok "${add}"; then
+                    li_extras_skip "$@"
+                    return 0
+                fi
                 li_say "Installing extra apps..."
                 if li_inst 2400 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "$@"; then
                     LI_DONE_PKGS+=("$@")
@@ -489,10 +589,29 @@ li_extras_install() {
             LI_BAD_WHY+=("${n}: ${LI_GUARD_WHY}")
             continue
         fi
+        if [ "${LI_SIM_KNOWN}" = 1 ]; then
+            add="${LI_SIM_ADD_KB}"
+        else
+            add="$(li_extras_estimate 1)"
+        fi
+        if ! li_sim_fits "${n}" "${add}"; then
+            li_extras_skip "${n}"
+            continue
+        fi
         li_say "Installing ${n}..."
-        if li_dl 600 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "${n}" \
-                && li_inst 900 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "${n}"; then
-            LI_DONE_PKGS+=("${n}")
+        li_progress mode_extras package "package=${n}"
+        if li_dl 600 apt-get "${LI_APTC[@]}" -y -q -d install --no-install-recommends "${n}"; then
+            if ! li_room_left_ok "${add}"; then
+                li_extras_skip "${n}"
+                continue
+            fi
+            if li_inst 900 apt-get "${LI_APTC[@]}" -y -q --no-download install --no-install-recommends "${n}"; then
+                LI_DONE_PKGS+=("${n}")
+            else
+                LI_BAD_PKGS+=("${n}")
+                LI_BAD_WHY+=("${n}: the install failed")
+                LI_DIRTY=1
+            fi
         else
             LI_BAD_PKGS+=("${n}")
             LI_BAD_WHY+=("${n}: the install failed")
@@ -503,16 +622,12 @@ li_extras_install() {
 }
 
 li_step_mode_extras() {
-    local rc n g why
+    local rc n g why i j
     local -a want avail missing groups gpk
     local -A gmap=()
     want=("${LI_X_APT[@]}")
     if [ "${#want[@]}" -eq 0 ]; then
         li_mark mode_extras "done" "no extra packages defined"
-        return 0
-    fi
-    if ! li_free_ok 1500000; then
-        li_mark mode_extras pending "not enough disk space for the extra apps"
         return 0
     fi
     li_say "Looking for extra apps..."
@@ -538,6 +653,8 @@ li_step_mode_extras() {
     LI_DONE_PKGS=()
     LI_BAD_PKGS=()
     LI_BAD_WHY=()
+    LI_SKIP_PKGS=()
+    LI_SKIP_SHORT=""
     # One Mode's apps at a time (the Modes' packages are independent): whatever one group cannot do never takes the
     # other groups along, and inside a group apt decides - a package apt cannot install goes on its own.
     for n in "${avail[@]}"; do
@@ -545,10 +662,25 @@ li_step_mode_extras() {
         [ -n "${gmap[${g}]:-}" ] || groups+=("${g}")
         gmap["${g}"]="${gmap[${g}]:-} ${n}"
     done
-    for g in "${groups[@]}"; do
+    for (( i = 0; i < ${#groups[@]}; i++ )); do
+        g="${groups[${i}]}"
+        # between the groups: the free space is looked at again, and the step stops cleanly (pending) once it is down to
+        # the reserve - the groups that did not start are named
+        if ! li_above_reserve "the next extra apps"; then
+            li_log "extra apps: ${LI_SPACE_WHY}"
+            for (( j = i; j < ${#groups[@]}; j++ )); do
+                read -r -a gpk <<<"${gmap[${groups[${j}]}]}"
+                li_extras_skip "${gpk[@]}"
+            done
+            break
+        fi
         read -r -a gpk <<<"${gmap[${g}]}"
+        li_progress mode_extras group-start "group=${g}"
         li_extras_install "${gpk[@]}"
-        case $? in
+        rc=$?
+        li_cache_clean
+        li_progress mode_extras group-end "group=${g}"
+        case "${rc}" in
             3)
                 li_mark mode_extras pending "${#LI_DONE_PKGS[@]} packages installed; the connection was lost during the download of the rest"
                 return 0 ;;
@@ -557,7 +689,12 @@ li_step_mode_extras() {
                 return 0 ;;
         esac
     done
-    if [ "${#LI_BAD_PKGS[@]}" -gt 0 ]; then
+    if [ "${#LI_SKIP_PKGS[@]}" -gt 0 ]; then
+        # not a failure: the reason first (Settings shows it; the state file keeps the first 200 characters), then the names
+        why=""
+        [ "${#LI_BAD_PKGS[@]}" -eq 0 ] || why="; not installed: ${LI_BAD_PKGS[*]}"
+        li_mark mode_extras pending "${LI_SKIP_SHORT}; left out: ${LI_SKIP_PKGS[*]}; ${#LI_DONE_PKGS[@]} packages installed${why}"
+    elif [ "${#LI_BAD_PKGS[@]}" -gt 0 ]; then
         # the names first (Settings shows them; the state file keeps the first 200 characters), then why
         why="$(printf '%s; ' "${LI_BAD_WHY[@]}")"
         li_mark mode_extras failed "not installed: ${LI_BAD_PKGS[*]}; ${why%; }"
@@ -572,9 +709,12 @@ li_step_mode_extras() {
 }
 
 # --- flatpaks: the Flathub remote and the Mode Flatpaks (best effort) ---------------------------
+# The biggest step and the last: the step gate wants all of the estimate (about 1.25 GB per app, runtimes included) above
+# the reserve, and before EVERY app the free space is looked at again; when it is down to the reserve (or the next app
+# would not fit above it) this and the apps after it are left out, and the step ends 'pending' naming them.
 li_step_flatpaks() {
-    local id rc
-    local -a ids missing
+    local id rc free per need
+    local -a ids missing nospace
     ids=("${LI_X_FLATPAKS[@]}")
     if [ "${#ids[@]}" -eq 0 ]; then
         li_mark flatpaks "done" "no Flatpak apps defined"
@@ -584,10 +724,8 @@ li_step_flatpaks() {
         li_mark flatpaks pending "flatpak is not installed"
         return 0
     fi
-    if ! li_free_ok 4000000; then
-        li_mark flatpaks pending "not enough disk space for the Flatpak apps"
-        return 0
-    fi
+    need="$(li_need_kb flatpaks)"
+    per=$(( need / ${#ids[@]} ))
     li_say "Adding Flatpak apps..."
     li_dl 300 flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
     rc=$?
@@ -596,21 +734,40 @@ li_step_flatpaks() {
         return 0
     fi
     missing=()
+    nospace=()
     for id in "${ids[@]}"; do
         if [ "$(li_left)" -lt "$(li_scale 120)" ]; then
             missing+=("${id}")
             continue
         fi
+        if [ "${#nospace[@]}" -eq 0 ]; then
+            free="$(li_free_kb)"
+            if [ -z "${free}" ]; then
+                li_space_unknown
+                nospace+=("${id}")
+            elif [ "${free}" -lt $(( per + LI_RESERVE_KB )) ]; then
+                li_space_fail "${id##*.}" "${per}" "${free}"
+                nospace+=("${id}")
+            fi
+            [ "${#nospace[@]}" -eq 0 ] || li_log "Flatpak apps: ${LI_SPACE_WHY} - this one and the ones after it are left for later"
+        else
+            nospace+=("${id}")
+        fi
+        if [ "${#nospace[@]}" -gt 0 ]; then
+            continue
+        fi
         li_say "Installing ${id##*.}..."
+        li_progress flatpaks app "app=${id}"
         li_dl 1500 flatpak install --system -y --noninteractive flathub "${id}"
         if ! li_run 60 flatpak info --system "${id}"; then
             missing+=("${id}")
         fi
     done
-    if [ "${#missing[@]}" -eq 0 ]; then
+    if [ "${#nospace[@]}" -gt 0 ]; then
+        li_mark flatpaks pending "${LI_SPACE_SHORT}; left out: ${nospace[*]}${missing[*]:+; not installed: ${missing[*]}}"
+    elif [ "${#missing[@]}" -eq 0 ]; then
         li_mark flatpaks "done" "${#ids[@]} Flatpak apps installed"
     else
-        # Flatpak inside the installer's chroot is unproven: whatever is missing is retried from Settings > Apps
         li_mark flatpaks pending "not installed: ${missing[*]}"
     fi
     return 0
@@ -655,6 +812,14 @@ li_main() {
         return 0
     fi
 
+    # From here on the hook owns the install state: every step already says 'pending: the installer ended before this
+    # step' on the disk (so a hard hang or a power cut still leaves the truth), every exit path settles the rest, and the
+    # disk is measured once for the policy below (li_disk_init) and noted in the breadcrumb (li_progress).
+    LI_STATE_ARMED=1
+    li_preseed_state
+    li_disk_init
+    li_progress - start
+
     # the user's consent is a fact about the user, not about the network: record it before any early return so
     # Settings and the silent retry still know it after an offline install
     if li_nonfree_consent; then
@@ -687,6 +852,7 @@ li_main() {
     # trust apt's exit status alone (apt exits 0 after transient fetch failures): a failed fetch in the
     # output, or no network list on disk, is a failed update too, and is retried once like a non-zero exit.
     li_say "Refreshing package lists..."
+    li_progress - package-lists
     li_apt_update 600
     rc=$?
     if [ "${rc}" -ne 0 ]; then
@@ -719,10 +885,11 @@ li_main() {
     done
 
     li_say "Finishing up..."
+    li_progress - finishing
     li_repair
     # a later step can undo an earlier one: what each 'done' promised is looked at again, once, at the very end
     li_verify_steps
-    li_mark_missing pending "the installer hook ended before this step"
+    li_mark_missing pending "the installer ended before this step"
     li_log "finished in $(( $(date +%s) - LI_T0 ))s"
     return 0
 }
@@ -737,4 +904,5 @@ trap li_on_exit EXIT
 trap li_on_signal HUP INT TERM
 export LINDOS_INSTALLER_PID=$$
 li_main
+LI_END_PHASE="finished"
 exit 0

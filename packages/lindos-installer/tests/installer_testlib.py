@@ -62,12 +62,71 @@ case "${name}" in
             exit 0
         fi
         exec /usr/bin/readlink "$@" ;;
+    date)
+        # Sandbox.enable_clock(): the clock the hook's time budget is measured with.  '+%s' is shifted by the seconds a fake
+        # command "spent" (FAKE_SIM_ADVANCE_CLOCK writes them to clock-offset); everything else is the real date.  Not
+        # logged: the hook asks for the time all the time.
+        real=/usr/bin/date
+        [ -x "${real}" ] || real=/bin/date
+        if [ "$1" = "+%s" ]; then
+            off=0
+            [ -f "${FAKE_STATE}/clock-offset" ] && off="$(cat "${FAKE_STATE}/clock-offset")"
+            echo $(( $("${real}" +%s) + off ))
+            exit 0
+        fi
+        exec "${real}" "$@" ;;
 esac
 printf '%s %s\n' "${name}" "$*" >>"${FAKE_CALLS}"
 st="${FAKE_STATE}"
 installed="${st}/installed"
 held="${st}/held"
 touch "${installed}" "${held}"
+
+# --- the fake disk (Sandbox.disk): df-free-kb / df-total-kb; what the fake commands "write" is taken off the free space
+eat() {   # eat KB [cache] - the disk fills up; with 'cache' it is downloaded packages, which 'apt-get clean' gives back
+    local kb="${1:-0}" f="${st}/df-free-kb" cur
+    case "${kb}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "${kb}" -gt 0 ] && [ -f "${f}" ] || return 0
+    cur=$(( $(cat "${f}") - kb ))
+    [ "${cur}" -ge 0 ] || cur=0
+    echo "${cur}" >"${f}"
+    if [ "${2:-}" = cache ]; then
+        echo $(( $(cat "${st}/df-cache-kb" 2>/dev/null || echo 0) + kb )) >"${st}/df-cache-kb"
+    fi
+}
+sum_kb() {   # sum_kb "pkg=KB ..." DEFAULT PKG... - the KB of every package, DEFAULT for one the table does not name
+    local table="$1" def="$2" total=0 p pair v
+    shift 2
+    for p in "$@"; do
+        v="${def}"
+        for pair in ${table}; do
+            [ "${pair%%=*}" = "${p}" ] && v="${pair#*=}"
+        done
+        total=$(( total + v ))
+    done
+    echo "${total}"
+}
+apt_size() {   # KB -> the way apt prints a size: powers of 1000, "1,234 MB", "12.3 kB", "512 B"
+    awk -v kb="$1" 'BEGIN {
+        a = kb * 1024; i = 0; split("B kB MB GB TB", U, " ")
+        while (1) {
+            if (a < 100 && i != 0) { s = sprintf("%.1f %s", a, U[i + 1]); break }
+            if (a < 10000) { s = sprintf("%.0f %s", a, U[i + 1]); break }
+            a = a / 1000; i++
+        }
+        print s }' | sed -E 's/^([0-9])([0-9]{3}) /\1,\2 /'
+}
+sim_sizes() {   # the two lines apt prints after a simulation, when a test gave sizes (FAKE_SIM_ADD_KB / FAKE_SIM_ADD_PKG, ..._GET_...)
+    [ -n "${FAKE_SIM_ADD_KB:-}${FAKE_SIM_ADD_PKG:-}" ] || return 0
+    echo "Need to get $(apt_size "$(sum_kb "${FAKE_SIM_GET_PKG:-}" "${FAKE_SIM_GET_KB:-0}" "$@")") of archives."
+    echo "After this operation, $(apt_size "$(sum_kb "${FAKE_SIM_ADD_PKG:-}" "${FAKE_SIM_ADD_KB:-0}" "$@")") of additional disk space will be used."
+}
+advance_clock() {   # advance_clock SECONDS - the fake clock (Sandbox.enable_clock) moves on
+    case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+    echo $(( $(cat "${st}/clock-offset" 2>/dev/null || echo 0) + $1 )) >"${st}/clock-offset"
+}
+# the packages dpkg-query shows as 'name:amd64' (Multi-Arch: same): libvulkan1 and mesa-vulkan-drivers on the real system
+qual() { case " ${FAKE_MULTIARCH-libvulkan1 mesa-vulkan-drivers} " in *" $1 "*) echo "$1:amd64" ;; *) echo "$1" ;; esac; }
 # what each command inherited: the hook must not hand the installer's apt configuration to dpkg's maintainer scripts
 echo "${name} APT_CONFIG=${APT_CONFIG:-}" >>"${st}/apt-config-seen"
 [ -f "${FAKE_TARGET}/var/lib/lindos/installer-apt.conf" ] && cp -f "${FAKE_TARGET}/var/lib/lindos/installer-apt.conf" "${st}/apt.conf.seen"
@@ -107,6 +166,17 @@ case "${name}" in
         if [ "$1" = "-u" ]; then echo 0; else echo root; fi
         exit 0 ;;
     sync|mount)
+        # FAKE_SYNC_SLEEP=N: 'sync -f' that does not come back for N seconds (a disk that stopped answering)
+        [ "${name}" = sync ] && [ -n "${FAKE_SYNC_SLEEP:-}" ] && sleep "${FAKE_SYNC_SLEEP}"
+        exit 0 ;;
+    df)
+        # Sandbox.disk(): 'df -Pk /target' of a fake disk (FAKE_DF_FAIL=1: df cannot say)
+        [ "${FAKE_DF_FAIL:-0}" = 1 ] && exit 1
+        [ -f "${st}/df-free-kb" ] && [ -f "${st}/df-total-kb" ] || exit 1
+        free="$(cat "${st}/df-free-kb")"
+        total="$(cat "${st}/df-total-kb")"
+        echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+        echo "/dev/fake ${total} $(( total - free )) ${free} 50% /target"
         exit 0 ;;
     lspci)
         printf '%s\n' "${FAKE_LSPCI-}"
@@ -117,6 +187,7 @@ case "${name}" in
         exit 0 ;;
     ubuntu-drivers)
         [ -z "${FAKE_UBUNTU_DRIVERS_OUT:-}" ] || echo "${FAKE_UBUNTU_DRIVERS_OUT}"
+        eat "${FAKE_EAT_DRIVERS_KB:-0}"
         exit "${FAKE_UBUNTU_DRIVERS_RC:-0}" ;;
     lindos-drivers)
         exit "${FAKE_LINDOS_DRIVERS_RC:-0}" ;;
@@ -177,6 +248,7 @@ case "${name}" in
                 id="${!#}"
                 case " ${FAKE_FLATPAK_FAIL:-} " in *" ${id} "*) exit 1 ;; esac
                 echo "${id}" >>"${fp}"
+                eat "${FAKE_EAT_FLATPAK_KB:-0}"
                 exit 0 ;;
             info)
                 id="${!#}"
@@ -213,12 +285,12 @@ case "${name}" in
                 printf '%s' "${FAKE_UBIQUITY_VERSION-24.04.3+mint18}"
                 exit 0 ;;
             *'${binary:Package} ${db:Status-Want}'*)
-                while read -r p; do [ -n "${p}" ] && echo "${p} install installed"; done <"${installed}"
+                while read -r p; do [ -n "${p}" ] && echo "$(qual "${p}") install installed"; done <"${installed}"
                 exit 0 ;;
             *'${binary:Package} ${db:Status-Status}'*)
                 # the final check of the steps: every installed package, 'name installed' (FAKE_DPKG_QUERY_FAIL: cannot read)
                 [ "${FAKE_DPKG_QUERY_FAIL:-0}" = 1 ] && exit 2
-                while read -r p; do [ -n "${p}" ] && echo "${p} installed"; done <"${installed}"
+                while read -r p; do [ -n "${p}" ] && echo "$(qual "${p}") installed"; done <"${installed}"
                 exit 0 ;;
             *'${Package}'*)
                 cat "${installed}"
@@ -274,7 +346,12 @@ case "${name}" in
                 fi
                 if [ "${n}" = 1 ] && [ -n "${FAKE_UPDATE_RC_FIRST:-}" ]; then exit "${FAKE_UPDATE_RC_FIRST}"; fi
                 exit "${FAKE_UPDATE_RC:-0}" ;;
-            clean) exit 0 ;;
+            clean)
+                if [ -f "${st}/df-cache-kb" ] && [ -f "${st}/df-free-kb" ]; then
+                    echo $(( $(cat "${st}/df-free-kb") + $(cat "${st}/df-cache-kb") )) >"${st}/df-free-kb"
+                    rm -f "${st}/df-cache-kb"
+                fi
+                exit 0 ;;
             upgrade)
                 if [ "${sim}" = 1 ]; then
                     for p in ${FAKE_UPGRADES:-}; do
@@ -282,14 +359,19 @@ case "${name}" in
                         if [ "${FAKE_IGNORE_HOLDS:-0}" != 1 ] && grep -qxF "${p}" "${held}"; then continue; fi
                         echo "Inst ${p} [1.0] (2.0 Ubuntu:24.04/noble-updates [amd64])"
                     done
+                    if [ -n "${FAKE_UPGRADE_ADD_KB:-}" ]; then
+                        echo "Need to get $(apt_size "${FAKE_UPGRADE_GET_KB:-0}") of archives."
+                        echo "After this operation, $(apt_size "${FAKE_UPGRADE_ADD_KB}") of additional disk space will be used."
+                    fi
                     exit "${FAKE_SIM_RC:-0}"
                 fi
                 if [ "${dl}" = 1 ]; then
                     if [ "${FAKE_KILL_HOOK:-0}" = 1 ]; then
-                        kill -TERM "${LINDOS_INSTALLER_PID}"
+                        kill -"${FAKE_KILL_SIGNAL:-TERM}" "${LINDOS_INSTALLER_PID}"
                         sleep 5
                     fi
                     [ "${FAKE_SLEEP_UPGRADE:-0}" = 1 ] && sleep 12
+                    eat "${FAKE_EAT_UPGRADE_DL_KB:-0}" cache
                     exit "${FAKE_DL_RC:-0}"
                 fi
                 rc="${FAKE_INST_RC:-0}"
@@ -297,6 +379,7 @@ case "${name}" in
                     for p in ${FAKE_UPGRADES:-}; do
                         grep -qxF "${p}" "${held}" || echo "${p}" >>"${st}/upgraded"
                     done
+                    eat "${FAKE_EAT_UPGRADE_KB:-0}"
                 fi
                 exit "${rc}" ;;
             install)
@@ -331,6 +414,8 @@ case "${name}" in
                         done
                         echo "Inst ${p} (1.0 Ubuntu:24.04/noble [amd64])"
                     done
+                    sim_sizes ${list}
+                    advance_clock "${FAKE_SIM_ADVANCE_CLOCK:-}"
                     exit 0
                 fi
                 for p in ${list}; do
@@ -338,12 +423,13 @@ case "${name}" in
                 done
                 if [ "${dl}" = 1 ]; then
                     if [ "${FAKE_KILL_HOOK:-0}" = 1 ]; then
-                        kill -TERM "${LINDOS_INSTALLER_PID}"
+                        kill -"${FAKE_KILL_SIGNAL:-TERM}" "${LINDOS_INSTALLER_PID}"
                         sleep 5
                     fi
                     for p in ${list}; do
                         case " ${FAKE_SLEEP_PKG:-} " in *" ${p} "*) sleep 12 ;; esac
                     done
+                    eat "$(( $(sum_kb "${FAKE_EAT_DL_PKG:-}" 0 ${list}) + ${FAKE_EAT_DL_KB:-0} ))" cache
                     # FAKE_DL_DROPS_NET=1: a failed download also takes the connection down (a lost network)
                     if [ "${FAKE_DL_RC:-0}" != 0 ] && [ "${FAKE_DL_DROPS_NET:-0}" = 1 ]; then touch "${st}/net-down"; fi
                     exit "${FAKE_DL_RC:-0}"
@@ -360,6 +446,7 @@ case "${name}" in
                             done
                         done
                     done
+                    eat "$(( $(sum_kb "${FAKE_EAT_PKG:-}" 0 ${list}) + ${FAKE_EAT_INSTALL_KB:-0} ))"
                 fi
                 exit "${rc}" ;;
         esac
@@ -398,6 +485,17 @@ for a in "$@"; do
 done
 rc_var="FAKE_${key}_${phase^^}_RC"
 rc="${!rc_var:-0}"
+# the disk it fills (FAKE_EAT_INSTALL_BROWSER_DL_KB / ..._INST_KB, once the fake disk exists: Sandbox.disk)
+eat_var="FAKE_EAT_${key}_${phase^^}_KB"
+eat_kb="${!eat_var:-0}"
+if [ "${eat_kb}" -gt 0 ] 2>/dev/null && [ -f "${FAKE_STATE}/df-free-kb" ]; then
+    cur=$(( $(cat "${FAKE_STATE}/df-free-kb") - eat_kb ))
+    [ "${cur}" -ge 0 ] || cur=0
+    echo "${cur}" >"${FAKE_STATE}/df-free-kb"
+    if [ "${phase}" = dl ]; then
+        echo $(( $(cat "${FAKE_STATE}/df-cache-kb" 2>/dev/null || echo 0) + eat_kb )) >"${FAKE_STATE}/df-cache-kb"
+    fi
+fi
 if [ "${phase}" = inst ] && [ "${rc}" = 0 ]; then
     # what the real script leaves installed (the hook's final check looks for it); FAKE_NO_EVIDENCE="install-gaming.sh ..."
     # plays a script that says it worked and did not
@@ -549,7 +647,8 @@ class Sandbox:
             "LINDOS_OEM_DEBS_DIR": (self.root / "oem-debs").as_posix(),
             "LINDOS_TIMEOUT_PCT": "100",
             "LINDOS_INSTALL_BUDGET": "900",
-            "LINDOS_FREE_KB": "60000000",
+            "LINDOS_FREE_KB": "60000000",       # a fixed answer: 60 GB free on a 100 GB partition (Sandbox.disk() makes a live one)
+            "LINDOS_TOTAL_KB": "104857600",
             "FAKE_CALLS": self.calls.as_posix(),
             "FAKE_STATE": self.state.as_posix(),
             "FAKE_TARGET": self.target.as_posix(),
@@ -567,6 +666,33 @@ class Sandbox:
 
     def run_finalize(self, **over: str) -> "subprocess.CompletedProcess[str]":
         return self.run(LIBEXEC / "finalize.sh", **over)
+
+    # -- a fake disk and a fake clock ----------------------------------------------------------
+    def disk(self, *, total_gb: float, free_gb: float) -> Dict[str, str]:
+        """A live fake disk: the hook's 'df -Pk /target' answers from it and the fake commands fill it up (FAKE_EAT_*).
+        Returns the environment that switches the hook from the fixed LINDOS_FREE_KB / LINDOS_TOTAL_KB to it."""
+        write_exec(self.bin / "df", FAKE_COMMAND)
+        (self.state / "df-total-kb").write_text(str(int(total_gb * GB)), encoding="utf-8")
+        (self.state / "df-free-kb").write_text(str(int(free_gb * GB)), encoding="utf-8")
+        return {"LINDOS_FREE_KB": "", "LINDOS_TOTAL_KB": ""}
+
+    def disk_kb(self, *, total_kb: int, free_kb: int) -> Dict[str, str]:
+        env = self.disk(total_gb=0, free_gb=0)
+        (self.state / "df-total-kb").write_text(str(total_kb), encoding="utf-8")
+        (self.state / "df-free-kb").write_text(str(free_kb), encoding="utf-8")
+        return env
+
+    def free_kb(self) -> int:
+        return int((self.state / "df-free-kb").read_text(encoding="utf-8").strip())
+
+    def enable_clock(self) -> None:
+        """A date(1) whose '+%s' the fake commands can move forward (FAKE_SIM_ADVANCE_CLOCK): the hook's time budget."""
+        write_exec(self.bin / "date", FAKE_COMMAND)
+
+    def breadcrumb(self) -> str:
+        """The one line of /var/lib/lindos/installer-progress ('' when there is none)."""
+        path = self.target / "var" / "lib" / "lindos" / "installer-progress"
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
 
     # -- observations --------------------------------------------------------------------------
     #: how the hook hands its apt configuration to apt (li_apt_conf_write): '-c FILE' on the command line
@@ -624,4 +750,8 @@ class Sandbox:
         self.cmdline.write_text(text + "\n", encoding="utf-8")
 
 
-ALL_STEPS = ["browser", "drivers", "updates", "compat", "gaming", "mode_extras", "flatpaks"]
+#: the steps in the order the hook runs them (and gives them the disk): updates first, the Flatpaks last
+ALL_STEPS = ["updates", "browser", "drivers", "compat", "gaming", "mode_extras", "flatpaks"]
+
+#: kilobytes in a gigabyte, the unit of the hook's disk policy
+GB = 1048576

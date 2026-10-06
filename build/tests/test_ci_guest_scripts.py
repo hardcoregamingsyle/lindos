@@ -383,6 +383,208 @@ def test_the_watcher_never_installs_or_modifies_anything():
         assert not re.search(pattern, code), pattern
 
 
+# ============================================================================================ ci-live-checks.sh: why the desktop did not come up
+FAKE_DPKG_QUERY = r"""#!/bin/bash
+# dpkg-query -W -f=FORMAT PKG...: lines "status name version" from $FAKE_DPKG; an unknown name is an error on stderr
+for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    if ! grep -E "^[a-z-]+ $a " "$FAKE_DPKG"; then echo "dpkg-query: no packages found matching $a" >&2; fi
+done
+exit 0
+"""
+
+SESSION_PACKAGES = ["xfconf", "xfce4-session", "xfce4-settings", "xfwm4", "xfce4-panel", "xfdesktop4", "dbus-x11", "dbus-user-session",
+                    "libpam-systemd", "lightdm", "slick-greeter"]
+XFCONF_DIR = "etc/xdg/xfce4/xfconf/xfce-perchannel-xml"
+
+
+def _diag_lines(out: str):
+    return [ln for ln in out.splitlines() if ln.startswith("LINDOS_DESKTOP_DIAG ")]
+
+
+def failsafe_guest(tmp_path: Path, *, xfce4_session_xml: bool = False, bus: bool = True, packages=None, probe: str = "") -> "tuple[Guest, Path]":
+    """The state of the CI failure: xfce4-session runs (and sits in its error dialog); no panel, no window manager, no desktop.
+    The perchannel directory holds the Lindos file only as *.dpkg-dist and the stock one as *.lindos-orig."""
+    g = Guest(tmp_path)
+    procs = ["liveuser|xfce4-session|xfce4-session", "root|Xorg|/usr/lib/xorg/Xorg :0", "root|lightdm|lightdm",
+             "liveuser|ssh-agent|/usr/bin/ssh-agent /usr/bin/im-launch startxfce4"]
+    g.set_procs(procs)
+    g.launcher(GOOD_LAUNCHER)
+    g.state("active.lindos-live-inhibit.service", "active")
+    g.power(inactivity_on_ac="14", inactivity_on_battery="14", lid_action_on_ac="0", lid_action_on_battery="0")
+    env = {"XDG_CONFIG_DIRS": "/etc/xdg/xdg-xfce:/etc/xdg", "XDG_RUNTIME_DIR": "/run/user/1000", "DESKTOP_SESSION": "xfce",
+           "DISPLAY": ":0", "LINDOS_TEST_SECRET": "hunter2-do-not-print", "SSH_AUTH_SOCK": "/tmp/ssh-secret/agent.1"}
+    if bus:
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/user/1000/bus"
+    g.process_env(1, **env)                       # the process table's line 1 is xfce4-session
+    root = tmp_path / "image"
+    d = root / XFCONF_DIR
+    d.mkdir(parents=True)
+    (d / "xfwm4.xml").write_text("<channel name='xfwm4'/>\n", encoding="utf-8")
+    (d / "xfce4-session.xml.dpkg-dist").write_text("<channel name='xfce4-session'/>\n", encoding="utf-8")
+    (d / "xfce4-session.xml.lindos-orig").write_text("<channel name='xfce4-session'/>\n", encoding="utf-8")
+    if xfce4_session_xml:
+        (d / "xfce4-session.xml").write_text("<channel name='xfce4-session'/>\n", encoding="utf-8")
+    (root / "etc/xdg/xdg-xfce").mkdir(parents=True)
+    (root / "etc/xdg/xdg-xfce/README").write_text("deliberately empty\n", encoding="utf-8")
+    (root / "run/user/1000").mkdir(parents=True)
+    (root / "run/user/1000/bus").write_text("", encoding="utf-8")
+    (root / "var/log/lightdm").mkdir(parents=True)
+    (root / "var/log/lightdm/lightdm.log").write_text("[+0.01s] DEBUG: Seat seat0: Starting\n[+1.20s] DEBUG: Session pid=1391: Started\n", encoding="utf-8")
+    (g.home / ".xsession-errors").write_text("xfce4-session: some warning\nsecret_token=abc123\nthe line with a Password=hunter2 in it\n", encoding="utf-8")
+    pk = tmp_path / "dpkg-table"
+    pk.write_text("".join("installed %s 1.0\n" % n for n in (SESSION_PACKAGES if packages is None else packages)), encoding="utf-8")
+    _tool(g.bin, "dpkg-query", FAKE_DPKG_QUERY)
+    if probe:
+        (g.xfconf / "FailsafeSessionName").write_text(probe + "\n", encoding="utf-8")
+    g.extra_env = {"LINDOS_CI_ROOT": root.as_posix(), "FAKE_DPKG": pk.as_posix(), "LINDOS_CI_DIAG_TIMEOUT": "5"}
+    return g, root
+
+
+def _run_failsafe(g: Guest) -> str:
+    return g.run(LIVE_CHECKS, **g.extra_env)
+
+
+def _labels(out: str) -> "Dict[str, list]":
+    by: Dict[str, list] = {}
+    for ln in _diag_lines(out):
+        label, _, rest = ln[len("LINDOS_DESKTOP_DIAG "):].partition(": ")
+        by.setdefault(label, []).append(rest)
+    return by
+
+
+def test_a_session_that_did_not_come_up_explains_itself_with_desktop_diag_lines(tmp_path):
+    g, _ = failsafe_guest(tmp_path)
+    out = _run_failsafe(g)
+    got = checks_of(out)
+    assert got["live-panel"] == "FAIL" and got["live-desktop"] == "FAIL"
+    by = _labels(out)
+    assert by["live-session-failed"][0].startswith("the live session did not come up (user=liveuser uid=1000)")
+    # the processes of the live user only
+    assert any("xfce4-session" in ln for ln in by["ps-user"]) and not any("lightdm" in ln for ln in by["ps-user"])
+    # the environment xfce4-session was started with: the names the failure message is about
+    env = by["xfce4-session-env"]
+    assert "XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg" in env
+    assert "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus" in env
+    # the directories xfconf reads
+    assert any(ln.endswith("README") for ln in by["xdg-xfce"])
+    names = [ln.split()[-1] for ln in by["xfconf-dir"]]
+    assert "xfce4-session.xml.dpkg-dist" in names and "xfce4-session.xml.lindos-orig" in names and "xfce4-session.xml" not in names
+    # the packages, the daemon, xfconf's own answer, the logs
+    assert "installed xfconf 1.0" in by["pkg"] and "installed dbus-user-session 1.0" in by["pkg"]
+    assert by["xfconfd-binary"] == ["MISSING"] and by["xfconf-dbus-service"][0].startswith("MISSING")
+    assert by["failsafe-probe"] == ["<empty>"]
+    assert any("some warning" in ln for ln in by["xsession-errors"])
+    assert any(ln.endswith("bus") for ln in by["run-user"]) and any("DEBUG: Session" in ln for ln in by["lightdm-log"])
+    assert out.rstrip().endswith("LINDOS_LIVE_CHECKS_DONE fails=2")
+    assert out.index("LINDOS_DESKTOP_DIAG live-session-failed") < out.index("LINDOS_DESKTOP_DIAG session-diag-done") < out.index("LINDOS_LIVE_CHECKS_DONE")
+
+
+def test_the_desktop_diag_never_prints_a_secret(tmp_path):
+    g, _ = failsafe_guest(tmp_path)
+    out = _run_failsafe(g)
+    assert "hunter2" not in out and "secret_token" not in out and "ssh-secret" not in out and "agent.1" not in out
+    assert "some warning" in out                           # the harmless line next to the filtered ones is there
+
+
+def test_every_desktop_diag_line_is_prefixed_and_capped(tmp_path):
+    g, _ = failsafe_guest(tmp_path)
+    (g.home / ".xsession-errors").write_text("".join("line %d %s\n" % (i, "x" * 1000) for i in range(500)), encoding="utf-8")
+    out = _run_failsafe(g)
+    diag = _diag_lines(out)
+    assert diag and len(diag) < 250
+    xs = [ln for ln in diag if ln.startswith("LINDOS_DESKTOP_DIAG xsession-errors: ")]
+    assert 1 <= len(xs) <= 30
+    assert all(len(ln) <= 300 + len("LINDOS_DESKTOP_DIAG xsession-errors: ") for ln in xs)
+    # nothing between the first and the last diag line escapes the prefix
+    first, last = out.index("LINDOS_DESKTOP_DIAG live-session-failed"), out.index("LINDOS_DESKTOP_DIAG session-diag-done")
+    for ln in out[first:last].splitlines():
+        assert ln.startswith(("LINDOS_DESKTOP_DIAG ", "LINDOS_LIVE_DIAG ")), ln
+
+
+def test_the_desktop_diag_appears_only_when_the_panel_or_the_desktop_failed(tmp_path):
+    out = live_guest(tmp_path).run(LIVE_CHECKS)
+    assert "LINDOS_DESKTOP_DIAG" not in out
+    other = tmp_path / "other"
+    other.mkdir()
+    g = live_guest(other)
+    g.set_procs(LIVE_SESSION_PROCS + ["liveuser|python3|python3 /usr/lib/lindos-setup/main.py --first-run"])
+    out = g.run(LIVE_CHECKS)
+    assert checks_of(out)["live-no-oobe"] == "FAIL" and "LINDOS_LIVE_DIAG ps:" in out
+    assert "LINDOS_DESKTOP_DIAG" not in out, "a failed wizard check is not a session that did not come up"
+    third = tmp_path / "third"
+    third.mkdir()
+    g = live_guest(third)
+    g.set_procs([p for p in LIVE_SESSION_PROCS if "xfwm4" not in p and "xfdesktop" not in p])       # the panel runs, the rest does not
+    out = g.run(LIVE_CHECKS)
+    assert checks_of(out)["live-desktop"] == "FAIL" and "LINDOS_DESKTOP_DIAG live-session-failed" in out
+
+
+def test_the_diagnosis_names_the_missing_xfce4_session_xml(tmp_path):
+    """The CI failure of 7fc3aae, end to end: the guest script's lines through the harness's own parser."""
+    g, _ = failsafe_guest(tmp_path)
+    out = _run_failsafe(g)
+    report = bt.parse_report(_serial(tmp_path, out))
+    assert report["desktop_diag"] and report["live_checks_done"]
+    diagnosis = bt.session_diagnosis(report)
+    text = "\n".join(diagnosis)
+    assert "xfce4-session.xml is missing" in text and "xfce4-session.xml.dpkg-dist" in text and "Unable to determine failsafe session name" in text
+    assert "xfconf could not be asked for the live user" in text            # the probe printed nothing
+    assert "the xfconfd binary is missing" in text and "org.xfce.Xfconf.service is missing" in text
+    assert "xfconfd was not running when xfce4-session sat in its error dialog" in text
+    assert "session package(s)" not in text and "XDG_CONFIG_DIRS" not in text and "DBUS_SESSION_BUS_ADDRESS" not in text
+
+
+def test_the_diagnosis_with_the_defaults_in_place_points_elsewhere(tmp_path):
+    g, root = failsafe_guest(tmp_path, xfce4_session_xml=True, probe="Failsafe")
+    (root / "usr/lib/x86_64-linux-gnu/xfce4/xfconf").mkdir(parents=True)
+    (root / "usr/lib/x86_64-linux-gnu/xfce4/xfconf/xfconfd").write_text("x", encoding="utf-8")
+    (root / "usr/share/dbus-1/services").mkdir(parents=True)
+    (root / "usr/share/dbus-1/services/org.xfce.Xfconf.service").write_text("x", encoding="utf-8")
+    out = _run_failsafe(g)
+    by = _labels(out)
+    assert by["xfconfd-binary"] == ["/usr/lib/x86_64-linux-gnu/xfce4/xfconf/xfconfd"] and by["xfconf-dbus-service"] == ["present"]
+    assert by["failsafe-probe"] == ["Failsafe"]
+    text = "\n".join(bt.session_diagnosis(bt.parse_report(_serial(tmp_path, out))))
+    assert "xfce4-session.xml is missing" not in text and "the defaults are in place" in text
+    assert "xfconfd was not running" in text
+
+
+def test_the_diagnosis_names_a_session_without_a_bus_and_without_etc_in_xdg_config_dirs(tmp_path):
+    g, _ = failsafe_guest(tmp_path, bus=False)
+    g.process_env(1, XDG_CONFIG_DIRS="/usr/share/xdg", DESKTOP_SESSION="xfce")
+    text = "\n".join(bt.session_diagnosis(bt.parse_report(_serial(tmp_path, _run_failsafe(g)))))
+    assert "started without DBUS_SESSION_BUS_ADDRESS" in text
+    assert "XDG_CONFIG_DIRS=/usr/share/xdg does not include /etc/xdg" in text
+
+
+def test_the_diagnosis_names_missing_session_packages(tmp_path):
+    g, _ = failsafe_guest(tmp_path, packages=[n for n in SESSION_PACKAGES if n not in ("xfconf", "dbus-x11")])
+    text = "\n".join(bt.session_diagnosis(bt.parse_report(_serial(tmp_path, _run_failsafe(g)))))
+    assert "session package(s) not installed properly: dbus-x11, xfconf" in text
+
+
+def test_no_desktop_diag_means_no_diagnosis(tmp_path):
+    out = live_guest(tmp_path).run(LIVE_CHECKS)
+    assert bt.session_diagnosis(bt.parse_report(_serial(tmp_path, out))) == []
+    assert bt.session_diagnosis({}) == []
+    # the desktop watcher's own lines (label 'session: c1 1000 liveuser ...') are not the live checks' lines
+    report = {"desktop_diag": ["session: c1 1000 liveuser seat0 tty7 active no -", "lightdm: x"]}
+    assert bt.session_diagnosis(report) == []
+
+
+def test_the_diagnosis_is_printed_in_the_harness_report(tmp_path, capsys):
+    g, _ = failsafe_guest(tmp_path)
+    out = _run_failsafe(g)
+    log = _serial(tmp_path, "LINDOS_SMOKE_START\n" + out + "LINDOS_SMOKE_DONE rc=0\n")
+    report = bt.parse_report(log)
+    lines = bt.session_diagnosis(report)
+    assert lines and all(isinstance(x, str) and x for x in lines)
+    import inspect
+    src = inspect.getsource(bt.main)
+    assert "session_diagnosis(report)" in src and "diagnosis: " in src
+
+
 # ============================================================================================ ci-boot-smoke-test.sh
 def _function(name: str) -> str:
     text = SMOKE.read_text(encoding="utf-8")

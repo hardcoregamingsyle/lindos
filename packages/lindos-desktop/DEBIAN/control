@@ -4,8 +4,8 @@ Section: x11
 Priority: optional
 Architecture: all
 Maintainer: Lindos Team <team@lindos.dev>
-Depends: xfce4-panel, xfce4-whiskermenu-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
-Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfdesktop4, xfce4-session, xfce4-terminal, mintinstall, mousepad, ristretto, evince, vlc, policykit-1-gnome | mate-polkit | lxpolkit
+Depends: xfce4-session, xfdesktop4, xfce4-panel, xfce4-whiskermenu-plugin, xfwm4, xfconf, xfce4-settings, xfce4-notifyd, picom, xfce4-panel-profiles, xfce4-clipman-plugin, xfce4-screenshooter, xfce4-taskmanager, lightdm, slick-greeter, plymouth, fontconfig, lindos-core, python3
+Recommends: xfce4-docklike-plugin, xfce4-pulseaudio-plugin, xfce4-power-manager, network-manager-gnome, librsvg2-bin, fonts-noto-color-emoji, fonts-noto-core, xfce4-appfinder, thunar, xfce4-terminal, mintinstall, mousepad, ristretto, evince, vlc, policykit-1-gnome | mate-polkit | lxpolkit
 Suggests: lindos-settings, lindos-setup, fonts-jetbrains-mono, emote
 Homepage: https://lindos.dev
 Description: Lindos desktop look and feel (Windows-11-style XFCE)

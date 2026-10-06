@@ -251,7 +251,8 @@ def test_no_accent_is_called_after_mint() -> None:
 def test_the_purge_and_the_gate_are_hooks_in_the_right_places_and_the_purge_names_the_researched_closed_set() -> None:
     names = sorted(p.name for p in (REPO / "build" / "chroot").glob("[0-9][0-9]-*.sh"))
     assert names.index("75-vm.sh") < names.index("76-mint-purge.sh") < names.index("77-mint-sweep.sh")
-    assert names[-1] == "81-unrecognisable-gate.sh" and names.index("80-cleanup.sh") < names.index("81-unrecognisable-gate.sh")
+    assert names[-2:] == ["81-unrecognisable-gate.sh", "82-session-sanity.sh"]
+    assert names.index("80-cleanup.sh") < names.index("81-unrecognisable-gate.sh")
     purge = _text("build/chroot/76-mint-purge.sh")
     for pkg in ("mint-meta-*", "mint-artwork*", "mint-themes*", "mint-x-icons", "mint-y-icons", "mint-l-icons", "mint-l-theme",
                 "mint-cursor-themes", "mint-backgrounds-*", "mintbackup", "mintdesktop", "mintchat", "webapp-manager", "thingy",

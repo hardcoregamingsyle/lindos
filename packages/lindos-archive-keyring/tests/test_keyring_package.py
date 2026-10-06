@@ -319,6 +319,123 @@ def test_a_missing_source_file_is_refused(tmp_path: Path) -> None:
     assert t.run().returncode == 1
 
 
+# --- what else is in the package root: an exact allow-list (review: another blob could still ship a trusted key) ---
+#: files a commit could add next to the three expected ones; each is packed by mkdeb (it packs the whole root/) and would
+#: be installed as root on every Lindos system
+EXTRA_FILES = [
+    "etc/apt/trusted.gpg.d/lindos-extra.gpg",              # trusted for EVERY apt source on the system
+    "etc/apt/trusted.gpg.d/x.asc",
+    "usr/share/keyrings/another-keyring.gpg",
+    "etc/apt/sources.list.d/second.sources",               # a second source
+    "etc/apt/sources.list.d/lindos.list",
+    "etc/apt/apt.conf.d/99-no-checks",                     # e.g. Acquire::AllowInsecureRepositories
+    "etc/apt/preferences.d/pin",
+    "usr/share/lindos/archive-key.fingerprint.bak",        # next to an allowed name
+    "usr/bin/helper",
+    "opt/blob.bin",
+    ".hidden",
+]
+
+
+@needs_bash
+@pytest.mark.parametrize("extra", EXTRA_FILES)
+@pytest.mark.parametrize("state", ["placeholder", "real"])
+def test_any_file_that_is_not_on_the_allow_list_is_refused(tmp_path: Path, extra: str, state: str) -> None:
+    """The guard used to inspect only the keyring, the source and the fingerprint; everything else in root/ shipped unseen."""
+    if state == "real":
+        tree = Tree(tmp_path, key=REAL_KEY_BYTES, fpr=REAL_FPR, enabled="yes", uri="https://apt.example.test/stable/")
+        tree.fake_gpg(REAL_FPR)
+    else:
+        tree = Tree(tmp_path)
+    assert tree.run().returncode == 0, "the tree is fine before the extra file is added"
+    path = tree.root / extra
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x99\x01\x0dsomething nobody reviewed")
+    proc = tree.run()
+    assert proc.returncode == 1, (extra, proc.stdout, proc.stderr)
+    assert proc.stdout.strip() == "", "nothing is reported as fine"
+    assert "REFUSED" in proc.stderr and extra in proc.stderr and "allow-list" in proc.stderr, proc.stderr
+
+
+@needs_bash
+def test_every_extra_file_is_named_not_just_the_first(tmp_path: Path) -> None:
+    tree = Tree(tmp_path)
+    for extra in ("etc/apt/trusted.gpg.d/a.gpg", "etc/apt/sources.list.d/b.sources"):
+        (tree.root / extra).parent.mkdir(parents=True, exist_ok=True)
+        (tree.root / extra).write_text("x\n", encoding="utf-8")
+    proc = tree.run()
+    assert proc.returncode == 1
+    assert "trusted.gpg.d/a.gpg" in proc.stderr and "sources.list.d/b.sources" in proc.stderr
+
+
+@needs_bash
+def test_empty_directories_ship_nothing_and_are_fine(tmp_path: Path) -> None:
+    tree = Tree(tmp_path)
+    (tree.root / "etc/apt/trusted.gpg.d").mkdir(parents=True)
+    (tree.root / "usr/share/doc/lindos-archive-keyring").mkdir(parents=True)
+    proc = tree.run()
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "placeholder"
+
+
+@needs_bash
+def test_a_staging_copy_with_the_committed_debian_files_is_fine_but_not_with_more(tmp_path: Path) -> None:
+    tree = Tree(tmp_path)
+    for name in ("control", "conffiles", "postinst"):
+        (tree.root / "DEBIAN").mkdir(exist_ok=True)
+        (tree.root / "DEBIAN" / name).write_text("x\n", encoding="utf-8")
+    assert tree.run().returncode == 0
+    (tree.root / "DEBIAN" / "preinst").write_text("#!/bin/sh\n", encoding="utf-8")
+    proc = tree.run()
+    assert proc.returncode == 1 and "DEBIAN/preinst" in proc.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("name", ["etc/apt/sources.list.d/lindos.sources", "usr/share/keyrings/lindos-archive-keyring.gpg",
+                                  "usr/share/lindos/archive-key.fingerprint"])
+def test_an_allowed_name_that_is_a_symbolic_link_is_refused(tmp_path: Path, name: str) -> None:
+    tree = Tree(tmp_path)
+    target = tmp_path / "elsewhere"
+    target.write_bytes((tree.root / name).read_bytes())
+    (tree.root / name).unlink()
+    try:
+        os.symlink(target, tree.root / name)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create symbolic links")
+    proc = tree.run()
+    assert proc.returncode == 1 and "not a regular file" in proc.stderr and name in proc.stderr, proc.stderr
+
+
+@needs_bash
+def test_a_symbolic_link_to_a_directory_cannot_smuggle_a_tree_in(tmp_path: Path) -> None:
+    tree = Tree(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.gpg").write_bytes(b"\x99\x01\x0devil")
+    (tree.root / "etc/apt").mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(outside, tree.root / "etc/apt/trusted.gpg.d", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create symbolic links")
+    proc = tree.run()
+    assert proc.returncode == 1 and "trusted.gpg.d" in proc.stderr, proc.stderr
+
+
+@needs_bash
+def test_a_trailing_slash_on_the_package_root_changes_nothing(tmp_path: Path) -> None:
+    tree = Tree(tmp_path)
+    (tree.root / "etc/apt/trusted.gpg.d").mkdir(parents=True)
+    (tree.root / "etc/apt/trusted.gpg.d/x.gpg").write_bytes(b"\x99\x01\x0dx")
+    proc = subprocess.run([BASH, str(CHECK), _msys(str(tree.root)) + "/"], capture_output=True, text=True)
+    assert proc.returncode == 1 and "etc/apt/trusted.gpg.d/x.gpg" in proc.stderr
+    assert "root//" not in proc.stderr
+
+
+def test_the_guard_documents_its_allow_list_in_its_header() -> None:
+    text = CHECK.read_text(encoding="utf-8")
+    assert "allow-list" in text and "ALLOWED_FILES" in text and "trusted.gpg.d" in text
+
+
 @needs_bash
 def test_usage_errors(tmp_path: Path) -> None:
     assert subprocess.run([BASH, str(CHECK)], capture_output=True, text=True).returncode == 2

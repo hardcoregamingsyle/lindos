@@ -37,6 +37,10 @@ FAKE_TOOLS = r'''
 #   manual.txt     packages apt-mark manual saw   log.txt    "tool args" of every call
 #   sim_empty (file)  apt-get -s purge gives no answer     fail_purge.txt  packages whose real purge fails
 #   audit.txt      what 'dpkg --audit' prints
+#   unneeded.txt   packages 'apt-get -s autoremove' lists (unless apt-mark manual saw them)
+#   orphans.txt    name#packages that a purge of NAME leaves unneeded: 'apt-get -s --auto-remove purge' lists them
+#   nomanual.txt   packages whose 'apt-mark manual' is silently ignored (the mark never sticks)
+#   flaky.txt      packages whose FIRST 'apt-mark manual' is silently ignored
 S="${LINDOS_FAKE_STATE}"
 printf '%s %s\n' "${TOOL}" "$*" >> "${S}/log.txt"
 
@@ -70,12 +74,22 @@ dq() {
     return "${rc}"
 }
 
+is_manual() { grep -qx -- "$1" "${S}/manual.txt" 2>/dev/null; }
+
 ag() {
-    local sim=0 pos=() skip=0 a names=() gone=() n r k v line name
+    local sim=0 auto=0 pos=() skip=0 a names=() gone=() n r k v line name o
     for a in "$@"; do
         if [ "${skip}" = 1 ]; then skip=0; continue; fi
-        case "${a}" in -o) skip=1 ;; -s|--simulate) sim=1 ;; -*) ;; *) pos+=("${a}") ;; esac
+        case "${a}" in -o) skip=1 ;; -s|--simulate) sim=1 ;; --auto-remove|--autoremove) auto=1 ;; -*) ;; *) pos+=("${a}") ;; esac
     done
+    if [ "${pos[0]:-}" = "autoremove" ]; then
+        if [ "${sim}" = 1 ] && [ -f "${S}/unneeded.txt" ]; then
+            while IFS= read -r n; do
+                if [ -n "${n}" ] && is_installed "${n}" && ! is_manual "${n}"; then printf 'Remv %s [1.0]\n' "${n}"; fi
+            done < "${S}/unneeded.txt"
+        fi
+        return 0
+    fi
     [ "${pos[0]:-}" = "purge" ] || return 0
     names=("${pos[@]:1}")
     if [ "${sim}" = 1 ] && [ -e "${S}/sim_empty" ]; then return 100; fi
@@ -93,6 +107,16 @@ ag() {
     done
     if [ "${sim}" = 1 ]; then
         for n in "${gone[@]}"; do printf 'Purg %s [1.0] \n' "${n}"; done
+        if [ "${auto}" = 1 ] && [ -f "${S}/orphans.txt" ]; then
+            for n in "${names[@]}"; do
+                while IFS='#' read -r k v; do
+                    [ "${k}" = "${n}" ] || continue
+                    for o in ${v}; do
+                        if is_installed "${o}" && ! is_manual "${o}" && ! in_list "${o}" "${gone[@]}"; then printf 'Remv %s [1.0]\n' "${o}"; fi
+                    done
+                done < "${S}/orphans.txt"
+            done
+        fi
         return 0
     fi
     if [ -f "${S}/fail_purge.txt" ]; then
@@ -119,7 +143,13 @@ am() {
     for n in "$@"; do
         if ! is_installed "${n}"; then echo "E: Unable to locate package ${n}" >&2; return 100; fi
     done
-    printf '%s\n' "$@" >> "${S}/manual.txt"
+    for n in "$@"; do
+        if grep -qx -- "${n}" "${S}/nomanual.txt" 2>/dev/null; then continue; fi
+        if grep -qx -- "${n}" "${S}/flaky.txt" 2>/dev/null && ! grep -qx -- "${n}" "${S}/flaky.seen" 2>/dev/null; then
+            printf '%s\n' "${n}" >> "${S}/flaky.seen"; continue      # the first mark of a flaky package does not stick
+        fi
+        printf '%s\n' "${n}" >> "${S}/manual.txt"
+    done
     return 0
 }
 
@@ -232,6 +262,14 @@ def _write_state(sd: Path, installed: Dict[str, Dict[str, str]], extra: Dict[str
         (sd / "fail_purge.txt").write_bytes(("\n".join(extra["fail_purge"]) + "\n").encode("utf-8"))
     if extra.get("audit"):
         (sd / "audit.txt").write_bytes(extra["audit"].encode("utf-8"))
+    if extra.get("unneeded"):
+        (sd / "unneeded.txt").write_bytes(("\n".join(extra["unneeded"]) + "\n").encode("utf-8"))
+    if extra.get("orphans"):
+        (sd / "orphans.txt").write_bytes(("\n".join("%s#%s" % (k, " ".join(v)) for k, v in extra["orphans"].items()) + "\n").encode("utf-8"))
+    if extra.get("nomanual"):
+        (sd / "nomanual.txt").write_bytes(("\n".join(extra["nomanual"]) + "\n").encode("utf-8"))
+    if extra.get("flaky"):
+        (sd / "flaky.txt").write_bytes(("\n".join(extra["flaky"]) + "\n").encode("utf-8"))
 
 
 def _read_state(sd: Path) -> Dict[str, Any]:
@@ -308,8 +346,11 @@ def test_hook_house_style() -> None:
     assert re.search(r"^\s*(sudo|pkexec)\s", t, flags=re.M) is None
     assert 'LINDOS_CHROOT:-}" != "1"' in t and "in_chroot" in t and "die " in t, "must refuse to run on a build host"
     body = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith("#"))
-    for forbidden in ("autoremove", "dpkg-divert", "apt-get remove", "sources.list", "partman", "grub-installer"):
+    for forbidden in ("dpkg-divert", "apt-get remove", "sources.list", "partman", "grub-installer"):
         assert forbidden not in body, forbidden
+    # it never runs an autoremove (it asks lib.sh's unneeded_pkgs, a simulation, and 'apt-get -s --auto-remove purge')
+    assert not [ln for ln in body.splitlines() if "apt-get" in ln and "autoremove" in ln]
+    assert "apt-get -s --auto-remove purge" in body and "unneeded_pkgs" in body
 
 
 def test_hook_runs_after_every_package_hook_and_before_the_sweep() -> None:
@@ -342,7 +383,8 @@ def _find_shellcheck() -> Optional[str]:
 
 @needs_bash
 @pytest.mark.parametrize("script", [HOOK, LIB, DEBLOAT, HOOK_DIR / "20-base.sh", HOOK_DIR / "40-theme.sh",
-                                    HOOK_DIR / "81-unrecognisable-gate.sh", REPO_ROOT / "build" / "fetch-assets.sh"],
+                                    HOOK_DIR / "81-unrecognisable-gate.sh", HOOK_DIR / "82-session-sanity.sh",
+                                    REPO_ROOT / "build" / "fetch-assets.sh"],
                          ids=lambda p: p.name)
 def test_syntax_and_shellcheck(script: Path) -> None:
     assert BASH is not None
@@ -369,7 +411,7 @@ def test_full_run_purges_mint_apps_and_artwork_and_keeps_everything_else(full_ru
     assert "MINT-PURGE-RESULT purged=%d skipped=0 failed=0" % len(GONE) in run.stderr, run.stderr
     # nothing but purges (and the dpkg audit's repair calls) touched apt
     for args in run.calls("apt-get"):
-        assert "purge" in args or "-f" in args, args
+        assert "purge" in args or "-f" in args or ("-s" in args and "autoremove" in args), args   # (the last one: the session guard)
     purged_names = {n for group in run.purges() for n in group}
     assert purged_names == set(GONE)
     assert not purged_names & set(KEPT)
@@ -562,3 +604,86 @@ def test_base_hook_installs_the_default_apps() -> None:
     nice = t.split("NICE=(")[1].split("\n)\n")[0]
     for pkg in ("mousepad", "ristretto", "evince", "vlc"):
         assert re.search(r"^\s*%s\s*$" % pkg, nice, flags=re.M), pkg
+
+
+# --------------------------------------------------------------------------- the session packages (CI boot test of 7fc3aae)
+SESSION = ("xfce4-session xfwm4 xfce4-panel xfdesktop4 xfconf xfce4-settings dbus-x11 dbus-user-session libpam-systemd lightdm "
+           "slick-greeter xorg xserver-xorg-core network-manager plymouth").split()
+
+
+def _with_session(img: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    out = dict(img)
+    for n in SESSION:
+        out.setdefault(n, {})
+    return out
+
+
+def _session_pkgs_from_lib() -> List[str]:
+    m = re.search(r"^SESSION_PKGS=\((.*?)\)$", _text(LIB), flags=re.M | re.S)
+    assert m
+    return m.group(1).split()
+
+
+def test_lib_names_the_session_packages_and_autoremove_protects_every_one() -> None:
+    assert sorted(_session_pkgs_from_lib()) == sorted(SESSION)
+    for n in SESSION:
+        assert _protect_re().match(n), f"AUTOREMOVE_PROTECT_RE must protect {n}"
+    for fn in ("session_pkg_re()", "mark_session_manual()", "unneeded_pkgs()"):
+        assert fn in _text(LIB), fn
+
+
+@needs_bash
+def test_the_session_packages_are_marked_manual_before_the_first_purge(tmp_path: Path) -> None:
+    run = run_hook(tmp_path, installed=_with_session(_small_image()))
+    assert run.proc.returncode == 0, run.stderr
+    log = run.state["log"]
+    first_purge = next(i for i, c in enumerate(log) if c["tool"] == "apt-get" and "purge" in c["args"] and "-s" not in c["args"])
+    marks = [i for i, c in enumerate(log) if c["tool"] == "apt-mark"]
+    assert marks and max(marks) < first_purge
+    for n in SESSION:
+        assert n in run.state["manual"], f"{n} must be explicitly manual"
+        assert n in run.installed
+    assert "MINT-SESSION-OK" in run.stderr and "MINT-PURGE-SESSION-KEPT" not in run.stderr
+    assert "mint-meta-xfce" not in run.installed
+
+
+@needs_bash
+def test_a_purge_that_would_leave_a_session_package_unneeded_is_skipped_when_apt_will_not_keep_it(tmp_path: Path) -> None:
+    """mint-meta-xfce's removal would make dbus-x11 an autoremove candidate and apt-mark does not stick: the group stays."""
+    img = _with_session(_small_image())
+    run = run_hook(tmp_path, installed=img, extra_state={"orphans": {"mint-meta-xfce": ["dbus-x11"]}, "nomanual": ["dbus-x11"]})
+    assert run.proc.returncode == 0, run.stderr
+    assert "MINT-PURGE-SKIPPED group 'metapackages'" in run.stderr
+    assert "autoremove candidates: dbus-x11" in run.stderr
+    assert "mint-meta-xfce" in run.installed and "mint-meta-core" in run.installed
+    assert ["mint-meta-core", "mint-meta-xfce"] not in run.purges()
+    assert "mint-artwork" not in run.installed, "the other groups go on"
+
+
+@needs_bash
+def test_a_session_package_that_apt_would_still_autoremove_is_kept_manual_and_the_purge_goes_on(tmp_path: Path) -> None:
+    """The first apt-mark of dbus-x11 did not stick; the guard sees it in the simulation, marks it again and purges."""
+    img = _with_session(_small_image())
+    run = run_hook(tmp_path, installed=img, extra_state={"orphans": {"mint-meta-xfce": ["dbus-x11"]}, "flaky": ["dbus-x11"]})
+    assert run.proc.returncode == 0, run.stderr
+    assert "MINT-PURGE-SESSION-KEPT group 'metapackages'" in run.stderr and "(dbus-x11)" in run.stderr
+    assert "MINT-PURGE-SKIPPED group 'metapackages'" not in run.stderr
+    assert "mint-meta-xfce" not in run.installed and "dbus-x11" in run.installed
+    assert run.state["manual"].count("dbus-x11") == 1
+
+
+@needs_bash
+def test_the_final_check_keeps_a_session_package_apt_still_lists_and_never_fails_the_build(tmp_path: Path) -> None:
+    img = _with_session(_small_image())
+    run = run_hook(tmp_path, installed=img, extra_state={"unneeded": ["lightdm", "libfoo1"], "nomanual": ["lightdm"]})
+    assert run.proc.returncode == 0, run.stderr
+    assert "MINT-SESSION-KEPT: apt would autoremove session package(s) (lightdm)" in run.stderr
+    assert "MINT-SESSION-AT-RISK" in run.stderr and "lightdm" in run.installed
+
+
+@needs_bash
+def test_the_final_check_is_quiet_when_the_session_packages_are_manual(tmp_path: Path) -> None:
+    img = _with_session(_small_image())
+    run = run_hook(tmp_path, installed=img, extra_state={"unneeded": ["xfce4-session", "xfwm4", "libfoo1"]})
+    assert run.proc.returncode == 0, run.stderr
+    assert "MINT-SESSION-OK" in run.stderr and "MINT-SESSION-KEPT" not in run.stderr

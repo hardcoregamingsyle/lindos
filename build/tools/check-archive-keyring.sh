@@ -9,6 +9,8 @@
 #     etc/apt/sources.list.d/lindos.sources     the source (Enabled:, URIs:, Signed-By:, ...)
 #     usr/share/keyrings/lindos-archive-keyring.gpg   the public keyring, or the text placeholder
 #     usr/share/lindos/archive-key.fingerprint  the pinned primary fingerprint, or PLACEHOLDER
+#  and at what ELSE is in there: those three are the whole package (an exact allow-list; a staging copy that
+#  carries DEBIAN/ may also hold DEBIAN/control, DEBIAN/conffiles and DEBIAN/postinst, nothing more).
 #
 #  Prints "placeholder" or "real" on stdout (what the keyring file is; the caller drops a
 #  placeholder from the package). Reasons for a refusal go to stderr.
@@ -16,6 +18,10 @@
 #  Test seam: LINDOS_GPG=<program> is run instead of gpg.
 #
 #  Refused, because each of these would ship a source that trusts nothing or the wrong thing:
+#     * ANY file, link or special file in the package root that is not on the allow-list above - another
+#       keyring in /etc/apt/trusted.gpg.d (trusted for EVERY apt source), a second *.sources file, an
+#       apt.conf.d snippet that switches checks off, a binary nobody can diff in review - and an allow-listed
+#       name that is a symbolic link instead of a regular file (it could point anywhere on the build host)
 #     * the source is enabled but the keyring is a placeholder / missing / not a binary keyring
 #     * the source is enabled but the pinned fingerprint is not a 40-digit hex fingerprint
 #     * the source is enabled but its address is a reserved placeholder name
@@ -51,6 +57,39 @@ if [ ! -f "${SOURCES}" ]; then
     say "missing ${SOURCES}"
     exit 1
 fi
+
+# The package is exactly its allow-list. mkdeb packs the WHOLE root/ tree, so a file the checks above never look at
+# (a keyring in /etc/apt/trusted.gpg.d is trusted for every apt source; a second .sources file, an apt.conf.d snippet)
+# would ship to every Lindos system and be installed as root. Every entry that is not a directory is looked at:
+# regular files that are not listed, and links or special files even when they carry a listed name.
+ALLOWED_FILES=(
+    "etc/apt/sources.list.d/lindos.sources"
+    "usr/share/keyrings/lindos-archive-keyring.gpg"
+    "usr/share/lindos/archive-key.fingerprint"
+    "DEBIAN/control"
+    "DEBIAN/conffiles"
+    "DEBIAN/postinst"
+)
+root_prefix="${ROOT%/}/"
+if ! find "${ROOT}" -mindepth 1 >/dev/null 2>&1; then
+    problems+=("the package root ${ROOT} cannot be listed, so what else it ships cannot be checked")
+fi
+while IFS= read -r -d '' entry; do
+    rel="${entry#"${root_prefix}"}"
+    shown="${rel//[^[:print:]]/?}"
+    listed=0
+    for allowed in "${ALLOWED_FILES[@]}"; do
+        if [ "${rel}" = "${allowed}" ]; then
+            listed=1
+            break
+        fi
+    done
+    if [ "${listed}" -eq 0 ]; then
+        problems+=("the package root holds ${shown}, which is not one of the files this package may ship (an exact allow-list: the source, the keyring, the pinned fingerprint)")
+    elif [ -L "${entry}" ] || [ ! -f "${entry}" ]; then
+        problems+=("${shown} is not a regular file (a link or special file; it could point anywhere on the build host)")
+    fi
+done < <(find "${ROOT}" -mindepth 1 ! -type d -print0 2>/dev/null || true)
 
 # deb822 stanzas (blank-line separated; comment lines skipped; continuation lines joined): "@stanzas|N", then
 # one "N|lowercased-field|value" line per field

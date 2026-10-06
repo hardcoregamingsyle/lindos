@@ -21,8 +21,9 @@
 #
 #  Test seams (unset on a real installation): LINDOS_TARGET, LINDOS_INSTALLER_LOG,
 #  LINDOS_PYTHON, LINDOS_EXTRAS_JSON, LINDOS_TARGET_RUNNER, LINDOS_INSTALL_BUDGET,
-#  LINDOS_TIMEOUT_PCT, LINDOS_TIMEOUT_MIN, LINDOS_FREE_KB, LINDOS_TEST_CMDLINE, LINDOS_MANIFEST_REMOVE, LINDOS_RESOLV_SOURCES,
-#  LINDOS_SYS_EFI.
+#  LINDOS_TIMEOUT_PCT, LINDOS_TIMEOUT_MIN, LINDOS_FREE_KB, LINDOS_TOTAL_KB (both: a fixed answer instead of 'df'),
+#  LINDOS_INSTALL_RESERVE_GB (the kernel word lindos.install_reserve=GB wins over it), LINDOS_TEST_CMDLINE,
+#  LINDOS_MANIFEST_REMOVE, LINDOS_RESOLV_SOURCES, LINDOS_SYS_EFI.
 # ============================================================================
 
 LI_LIB="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
@@ -47,9 +48,11 @@ LI_DIRTY=0
 LI_AUDIT=""
 LI_MSG_ID="lindos-installer/msg"
 
-# The steps of install-state.json, in the order the installer runs them: what matters most to a new
-# user first (the default browser, working hardware), the big optional downloads last.
-LI_STEPS=(browser drivers updates compat gaming mode_extras flatpaks)
+# The steps of install-state.json, in the order the installer runs them - which is also the order in which they get
+# the disk when it is too small for all of them (every step is run only if it fits above the reserve, li_space_gate):
+# the system updates first (security fixes), then what a new user needs at once (the default browser, working
+# hardware), the big optional downloads after that, the Flatpaks last (the biggest and the first to be skipped).
+LI_STEPS=(updates browser drivers compat gaming mode_extras flatpaks)
 # test seam: run only some of the steps (a space separated list of step ids)
 [ -z "${LINDOS_INSTALLER_STEPS:-}" ] || read -r -a LI_STEPS <<<"${LINDOS_INSTALLER_STEPS}"
 
@@ -163,6 +166,51 @@ li_mark_missing() {
     local s
     for s in "${LI_STEPS[@]}"; do
         [ -n "${LI_ST[${s}]:-}" ] || li_mark "${s}" "$1" "$2"
+    done
+    return 0
+}
+
+# The state file is armed (the hook got past its early exits, so there is an installed system whose steps it owns):
+# from then on every exit path leaves a truthful status for every step (li_preseed_state, li_mark_unfinished).
+LI_STATE_ARMED=0
+LI_CUR_STEP=""    # the step that is running right now ('' between steps)
+
+# li_preseed_state - write 'pending: the installer ended before this step' for every step that has no record yet, BEFORE
+# the first step runs.  Each write is atomic (lindos.installstate: temp file, fsync, rename).  If the machine hangs hard
+# or the power goes, nothing can be written any more - but the file already tells the truth: Settings lists these steps
+# as left to finish.  Steps record their real result over it; LI_ST is not touched (li_step still sees "no result yet").
+li_preseed_state() {
+    "${LI_PY}" -c '
+import sys
+
+try:
+    from lindos import installstate as st
+
+    root = sys.argv[1]
+    known = st.load(root)["steps"]
+    for step in sys.argv[2:]:
+        if step not in known:
+            st.mark(step, "pending", "the installer ended before this step", root)
+except Exception as exc:
+    sys.stderr.write("could not pre-write the install state: %s\n" % exc)
+    sys.exit(1)
+' "${TGT}" "${LI_STEPS[@]}" </dev/null >>"${LI_LOG_LIVE}" 2>&1 3>&- || li_log "could not pre-write the steps in install-state.json"
+    return 0
+}
+
+# li_mark_unfinished - last word on every exit path (the exit trap, a signal): a step that never started is 'pending: the
+# installer ended before this step', the one that was running is 'pending: the installer was stopped during this step'.
+# Only once the state file is armed.
+li_mark_unfinished() {
+    local s
+    [ "${LI_STATE_ARMED}" = 1 ] || return 0
+    for s in "${LI_STEPS[@]}"; do
+        [ -z "${LI_ST[${s}]:-}" ] || continue
+        if [ "${s}" = "${LI_CUR_STEP}" ]; then
+            li_mark "${s}" pending "the installer was stopped during this step"
+        else
+            li_mark "${s}" pending "the installer ended before this step"
+        fi
     done
     return 0
 }
@@ -303,7 +351,8 @@ li_run() {
 }
 
 # li_dl SECONDS CMD... - a killable job (download, package lists): clamped to what is left of the
-# budget; 125 = no time left.
+# budget; 125 = no time left (also in LI_RC, like every other status of li_child: a caller that reads LI_RC
+# after a failed download must see "no time left" and not the status of some earlier command).
 li_dl() {
     local secs left
     secs="$(li_scale "$1")"
@@ -312,6 +361,7 @@ li_dl() {
     [ "${secs}" -le "${left}" ] || secs="${left}"
     if [ "${secs}" -lt "$(li_scale 10)" ]; then
         li_log "no time left for: $*"
+        LI_RC=125
         return 125
     fi
     li_child "${secs}" "$@"
@@ -470,20 +520,380 @@ li_candidates() {
 }
 
 # --- disk space --------------------------------------------------------------------------
-li_free_kb() {
-    if [ -n "${LINDOS_FREE_KB:-}" ]; then
-        printf '%s\n' "${LINDOS_FREE_KB}"
-        return 0
-    fi
-    df -Pk "${TGT}" 2>/dev/null </dev/null | awk 'NR==2 {print $4}'
+# The target's root filesystem is what every step spends and nothing gives back: the full install adds roughly 15-25 GB
+# (a few hundred upgrades, Chrome, Wine, LibreOffice/GIMP/Krita/Kdenlive, four Flatpaks), and a disk that fills up in the
+# middle of a dpkg run leaves a half-unpacked system (the first real laptop install ended in "Unable to load failsafe
+# session / xfconfd isn't running" at the first start).  So the hook measures the target at the start, estimates what
+# each step needs (ONE table, below), keeps a RESERVE free for the person who will use the PC, and runs a step only when
+# it fits above that reserve at the moment its turn comes.  What does not fit is left 'pending' with the reason, never
+# started.  Units are KB (1024 bytes), like 'df -Pk'.
+LI_GB_KB=1048576
+LI_FLOOR_KB=$(( 2 * LI_GB_KB ))             # never leave less than this free, whatever the reserve is set to
+LI_RESERVE_MIN_KB=$(( 8 * LI_GB_KB ))       # the reserve is max(8 GB, 12 % of the partition) ...
+LI_RESERVE_PCT=12
+LI_SMALL_PART_KB=$(( 40 * LI_GB_KB ))       # a partition below this gets no extra apps and no Flatpaks
+LI_RESERVE_KB=${LI_RESERVE_MIN_KB}          # ... li_disk_init works it out (lindos.install_reserve=GB overrides it)
+LI_TOTAL_KB=""
+LI_START_FREE_KB=""
+LI_SMALL_PART=0
+LI_STEP_FREE0=""                            # the free space when the running step started (li_space_gate)
+LI_SPACE_WHY=""                             # why the last li_space_gate / li_sim_fits / li_room_left_ok said no
+LI_SPACE_SHORT=""                           # the same without the parenthesis: "not enough disk space: needs ~X GB, Y GB free"
+
+# What each step is expected to need at its peak - downloads plus unpacked files, before 'apt-get clean' - in KB.  This is
+# the ONE table of estimates; li_need_kb derives the figure it uses from it and from extras.json (a step with nothing to
+# install needs nothing, the Flatpak figure is per app).  They are estimates from the first real install, not promises:
+# apt's own simulation is consulted too wherever there is one (li_sim_fits).
+declare -A LI_NEED_KB=(
+    [updates]=3145728         # ~3 GB    a few hundred upgrades (316 in the first real install)
+    [browser]=629146          # ~0.6 GB  Google Chrome
+    [drivers]=838861          # ~0.8 GB  firmware and the free drivers
+    [compat]=2097152          # ~2 GB    WineHQ staging, winetricks, umu-launcher
+    [gaming]=1572864          # ~1.5 GB  Steam and Lutris
+    [mode_extras]=6291456     # ~6 GB    LibreOffice, GIMP, Krita, Kdenlive and the rest, of every Mode
+    [flatpaks]=5242880        # ~5 GB    LI_FLATPAK_APPS apps and the runtimes they share
+)
+LI_FLATPAK_APPS=4
+
+# li_gb KB - "12.3": gigabytes with one decimal, for the log and for the reasons the state file keeps.
+li_gb() {
+    local tenths=$(( ( ${1:-0} * 10 + LI_GB_KB / 2 ) / LI_GB_KB ))
+    printf '%s.%s\n' $(( tenths / 10 )) $(( tenths % 10 ))
 }
 
-# li_free_ok KILOBYTES - true when the target has at least that much free (or when df cannot tell).
-li_free_ok() {
-    local have
-    have="$(li_free_kb)"
-    [ -n "${have}" ] || return 0
-    [ "${have}" -ge "$1" ] 2>/dev/null
+# li_df_field N - column N of 'df -Pk TARGET' (2 = size, 4 = available) in KB; nothing when df cannot say (it is
+# time-boxed: a hung disk must not hang the hook here).
+li_df_field() {
+    local v
+    v="$(timeout -k 2 15 df -Pk "${TGT}" 2>/dev/null </dev/null 3>&- | awk -v n="$1" 'NR == 2 { print $n }')"
+    case "${v}" in ''|*[!0-9]*) return 0 ;; esac
+    printf '%s\n' "${v}"
+}
+
+# li_free_kb - the free space of the target (what 'df' calls Available: root's reserved blocks are not counted);
+# nothing when it cannot be measured.  LINDOS_FREE_KB is a fixed answer for the tests.
+li_free_kb() {
+    local v="${LINDOS_FREE_KB:-}"
+    if [ -z "${v}" ]; then
+        li_df_field 4
+        return 0
+    fi
+    case "${v}" in *[!0-9]*) return 0 ;; esac
+    printf '%s\n' "${v}"
+}
+
+# li_total_kb - the size of the partition the target is on (nothing when unknown).  LINDOS_TOTAL_KB: the test seam.
+li_total_kb() {
+    local v="${LINDOS_TOTAL_KB:-}"
+    if [ -z "${v}" ]; then
+        li_df_field 2
+        return 0
+    fi
+    case "${v}" in *[!0-9]*) return 0 ;; esac
+    printf '%s\n' "${v}"
+}
+
+# li_disk_init - once, at the start: size and free space of the target, the reserve, whether the partition is too small
+# for the optional extras.  The reserve is max(8 GB, 12 % of the partition); 'lindos.install_reserve=GB' on the kernel
+# command line (or LINDOS_INSTALL_RESERVE_GB) replaces it, but never with less than the 2 GB floor.
+li_disk_init() {
+    local gb="${LINDOS_INSTALL_RESERVE_GB:-}" word pct total free
+    local src="default: the larger of 8 GB and ${LI_RESERVE_PCT} % of the partition"
+    LI_TOTAL_KB="$(li_total_kb)"
+    LI_START_FREE_KB="$(li_free_kb)"
+    LI_RESERVE_KB="${LI_RESERVE_MIN_KB}"
+    if [ -n "${LI_TOTAL_KB}" ]; then
+        pct=$(( LI_TOTAL_KB * LI_RESERVE_PCT / 100 ))
+        [ "${pct}" -le "${LI_RESERVE_KB}" ] || LI_RESERVE_KB="${pct}"
+    fi
+    word="$(li_cmdline_value lindos.install_reserve)"
+    [ -z "${word}" ] || gb="${word}"
+    case "${gb}" in
+        '') ;;
+        *[!0-9]*) li_log "ignoring lindos.install_reserve=${gb}: a whole number of GB is expected" ;;
+        *)
+            if [ "${#gb}" -le 6 ]; then
+                LI_RESERVE_KB=$(( gb * LI_GB_KB ))
+                src="lindos.install_reserve=${gb}"
+            fi ;;
+    esac
+    if [ "${LI_RESERVE_KB}" -lt "${LI_FLOOR_KB}" ]; then
+        LI_RESERVE_KB="${LI_FLOOR_KB}"
+        src="${src}; raised to the 2 GB floor"
+    fi
+    LI_SMALL_PART=0
+    if [ -n "${LI_TOTAL_KB}" ] && [ "${LI_TOTAL_KB}" -lt "${LI_SMALL_PART_KB}" ]; then
+        LI_SMALL_PART=1
+    fi
+    total="unknown size"
+    [ -z "${LI_TOTAL_KB}" ] || total="$(li_gb "${LI_TOTAL_KB}") GB"
+    free="an unknown amount"
+    [ -z "${LI_START_FREE_KB}" ] || free="$(li_gb "${LI_START_FREE_KB}") GB"
+    li_log "disk: the target partition is ${total} with ${free} free; the reserve kept free for the user is $(li_gb "${LI_RESERVE_KB}") GB (${src})"
+    if [ "${LI_SMALL_PART}" = 1 ]; then
+        li_log "disk: the partition is below $(li_gb "${LI_SMALL_PART_KB}") GB - the extra apps and the Flatpaks are skipped"
+    fi
+    return 0
+}
+
+# li_need_kb STEP - what STEP is expected to need, from LI_NEED_KB and extras.json: 0 when it has nothing to install.
+# (li_extras_load has run before the first step.)
+li_need_kb() {
+    local n="${LI_NEED_KB[$1]:-0}"
+    case "$1" in
+        browser) [ "$(li_json_get "${TGT}/etc/lindos/system.json" browser chrome)" = chrome ] || n=0 ;;
+        compat) [ "${#LI_X_COMPAT[@]}" -gt 0 ] || n=0 ;;
+        gaming) [ "${#LI_X_GAMING[@]}" -gt 0 ] || n=0 ;;
+        mode_extras) [ "${#LI_X_APT[@]}" -gt 0 ] || n=0 ;;
+        flatpaks) n=$(( n * ${#LI_X_FLATPAKS[@]} / LI_FLATPAK_APPS )) ;;
+    esac
+    printf '%s\n' "${n}"
+}
+
+# li_space_fail WHAT NEED_KB FREE_KB - fill LI_SPACE_SHORT and LI_SPACE_WHY: WHAT needs NEED_KB, and the reserve has to
+# stay free on top of that, which is what the first number says.
+li_space_fail() {
+    local total=$(( $2 + LI_RESERVE_KB ))
+    LI_SPACE_SHORT="not enough disk space: needs ~$(li_gb "${total}") GB, $(li_gb "$3") GB free"
+    if [ "$2" -gt 0 ]; then
+        LI_SPACE_WHY="${LI_SPACE_SHORT} (about $(li_gb "$2") GB for $1 plus the $(li_gb "${LI_RESERVE_KB}") GB kept free for you)"
+    else
+        LI_SPACE_WHY="${LI_SPACE_SHORT} (only the $(li_gb "${LI_RESERVE_KB}") GB kept free for you is left, $1 stop here)"
+    fi
+}
+
+# li_space_unknown - the free space could not be measured: nothing is judged blind (that is how a disk gets filled).
+li_space_unknown() {
+    LI_SPACE_SHORT="the free disk space could not be measured"
+    LI_SPACE_WHY="${LI_SPACE_SHORT}, so nothing that needs room is started"
+}
+
+# li_space_gate STEP - may STEP run now?  Re-measures the free space and wants it to be at least the step's estimate
+# plus the reserve; a partition below 40 GB gets no extra apps and no Flatpaks at all.  Fills LI_SPACE_WHY when not.
+# A step with nothing to install always passes.  Remembers the free space the step starts with (LI_STEP_FREE0).
+li_space_gate() {
+    local step="$1" need free
+    LI_SPACE_WHY=""
+    LI_SPACE_SHORT=""
+    need="$(li_need_kb "${step}")"
+    LI_STEP_FREE0="$(li_free_kb)"
+    [ "${need}" -gt 0 ] || return 0
+    case "${step}" in
+        mode_extras|flatpaks)
+            if [ "${LI_SMALL_PART}" = 1 ]; then
+                LI_SPACE_SHORT="partition too small"
+                LI_SPACE_WHY="partition too small: $(li_gb "${LI_TOTAL_KB}") GB is below the $(li_gb "${LI_SMALL_PART_KB}") GB that the optional apps need to leave room for you"
+                return 1
+            fi ;;
+    esac
+    free="${LI_STEP_FREE0}"
+    if [ -z "${free}" ]; then
+        li_space_unknown
+        return 1
+    fi
+    if [ "${free}" -lt $(( need + LI_RESERVE_KB )) ]; then
+        li_space_fail "this step" "${need}" "${free}"
+        return 1
+    fi
+    return 0
+}
+
+# --- apt's own estimate -------------------------------------------------------------------------
+# 'apt-get -s' prints "Need to get 456 MB of archives." and "After this operation, 1,234 MB of additional disk space will
+# be used." (or "... 12 kB disk space will be freed.").  Sizes are powers of 1000 (B kB MB GB TB), a thousands separator
+# may be there.  Downloads and unpacked files are on the disk at the same time (the archives stay until 'apt-get clean'),
+# so the peak is the sum of the two.
+LI_SIM_KNOWN=0
+LI_SIM_GET_KB=0
+LI_SIM_ADD_KB=0
+
+# li_sim_parse TEXT - fills LI_SIM_GET_KB / LI_SIM_ADD_KB from a simulation's output; LI_SIM_KNOWN=1 when the
+# "After this operation" line was there.
+li_sim_parse() {
+    local row got added
+    LI_SIM_KNOWN=0
+    LI_SIM_GET_KB=0
+    LI_SIM_ADD_KB=0
+    row="$(printf '%s\n' "$1" | awk '
+        function kb(s,    n, u, m) {
+            gsub(/,/, "", s)
+            if (!match(s, /[0-9]+(\.[0-9]+)?/)) return -1
+            n = substr(s, RSTART, RLENGTH) + 0
+            u = substr(s, RSTART + RLENGTH)
+            gsub(/[ \t]/, "", u)
+            m = 1
+            if (u ~ /^[kK]/) m = 1000
+            else if (u ~ /^M/) m = 1000000
+            else if (u ~ /^G/) m = 1000000000
+            else if (u ~ /^T/) m = 1000000000000
+            return int(n * m / 1024 + 0.999)
+        }
+        /^Need to get / {
+            s = $0
+            sub(/^Need to get /, "", s)
+            sub(/ of archives.*$/, "", s)
+            n = split(s, parts, "/")
+            get = kb(parts[n])
+        }
+        /^After this operation, / {
+            s = $0
+            sub(/^After this operation, /, "", s)
+            if (s ~ /will be freed/) { add = 0; seen = 1 }
+            else if (s ~ /will be used/) { sub(/ (of )?additional.*$/, "", s); add = kb(s); if (add >= 0) seen = 1 }
+        }
+        END { if (seen) printf "%d %d\n", (get > 0 ? get : 0), add }')"
+    [ -n "${row}" ] || return 0
+    read -r got added <<<"${row}"
+    case "${got}${added}" in ''|*[!0-9]*) return 0 ;; esac
+    LI_SIM_GET_KB="${got}"
+    LI_SIM_ADD_KB="${added}"
+    LI_SIM_KNOWN=1
+    return 0
+}
+
+# li_sim_fits WHAT [FALLBACK_KB] - after li_sim_parse / li_guard: do the archives plus the added space of that
+# transaction fit above the reserve right now?  Without apt's figures FALLBACK_KB (an estimate; 0 = no opinion) is used.
+# Fills LI_SPACE_WHY / LI_SPACE_SHORT when it does not.
+li_sim_fits() {
+    local what="$1" fallback="${2:-0}" need free
+    LI_SPACE_WHY=""
+    LI_SPACE_SHORT=""
+    if [ "${LI_SIM_KNOWN}" = 1 ]; then
+        need=$(( LI_SIM_GET_KB + LI_SIM_ADD_KB ))
+    else
+        need="${fallback}"
+    fi
+    [ "${need}" -gt 0 ] || return 0
+    free="$(li_free_kb)"
+    if [ -z "${free}" ]; then
+        li_space_unknown
+        return 1
+    fi
+    [ "${free}" -ge $(( need + LI_RESERVE_KB )) ] && return 0
+    li_space_fail "${what}" "${need}" "${free}"
+    return 1
+}
+
+# li_above_reserve WHAT - between package groups and Flatpaks: true while the free space is still at least the reserve.
+li_above_reserve() {
+    local free
+    LI_SPACE_WHY=""
+    LI_SPACE_SHORT=""
+    free="$(li_free_kb)"
+    if [ -z "${free}" ]; then
+        li_space_unknown
+        return 1
+    fi
+    [ "${free}" -ge "${LI_RESERVE_KB}" ] && return 0
+    li_space_fail "$1" 0 "${free}"
+    return 1
+}
+
+# li_remaining_kb STEP - what is left of STEP's estimate after what it has used since it started (downloads are on the
+# disk by then), never negative.
+li_remaining_kb() {
+    local need now used
+    need="$(li_need_kb "$1")"
+    now="$(li_free_kb)"
+    if [ -z "${now}" ] || [ -z "${LI_STEP_FREE0}" ]; then
+        printf '%s\n' "${need}"
+        return 0
+    fi
+    used=$(( LI_STEP_FREE0 - now ))
+    [ "${used}" -gt 0 ] || used=0
+    if [ "${used}" -ge "${need}" ]; then
+        printf '0\n'
+    else
+        printf '%s\n' $(( need - used ))
+    fi
+}
+
+# li_room_left_ok REMAINING_KB - right before a dpkg run, which is never stopped half way: the free space still has to
+# cover what is left of the job plus the 2 GB floor (the reserve was checked before the download started).
+li_room_left_ok() {
+    local remaining="${1:-0}" free
+    LI_SPACE_WHY=""
+    LI_SPACE_SHORT=""
+    free="$(li_free_kb)"
+    if [ -z "${free}" ]; then
+        li_space_unknown
+        return 1
+    fi
+    [ "${free}" -ge $(( remaining + LI_FLOOR_KB )) ] && return 0
+    LI_SPACE_SHORT="not enough disk space: needs ~$(li_gb $(( remaining + LI_FLOOR_KB ))) GB, $(li_gb "${free}") GB free"
+    LI_SPACE_WHY="${LI_SPACE_SHORT} (about $(li_gb "${remaining}") GB still to unpack plus the $(li_gb "${LI_FLOOR_KB}") GB the installer never goes below)"
+    return 1
+}
+
+# li_cache_clean - the downloaded .deb files are installed by now: give their room back (they would stay until the very
+# end otherwise, and a big step leaves gigabytes of them).  Never fatal.
+li_cache_clean() {
+    li_run 120 apt-get "${LI_APTC[@]}" clean
+    return 0
+}
+
+# --- crash breadcrumbs ------------------------------------------------------------------------
+# One line in /var/lib/lindos/installer-progress, rewritten before and after every step and every package group: the
+# step, the phase, the free space and the UTC time.  It is written to a new file and renamed (never half a line), then the
+# target's filesystem is flushed ('sync -f', time-boxed, in the background so a stuck disk cannot block the hook), so when
+# the machine hangs hard the last thing the installer was doing is on the disk.
+LI_PROGRESS_REL="/var/lib/lindos/installer-progress"
+LI_SYNC_PID=""
+LI_SYNC_STUCK=0
+
+# li_sync_target - start 'sync -f' on the target's filesystem in the background (time-boxed by 'timeout').  At most one at
+# a time.  If the previous one is still running it gets a one second grace; if it is STILL running the disk is not
+# answering, no second one is piled on top of it and nothing waits for it again: a breadcrumb never blocks the hook.
+li_sync_target() {
+    local polls=0
+    if [ -n "${LI_SYNC_PID}" ]; then
+        if kill -0 "${LI_SYNC_PID}" 2>/dev/null; then
+            [ "${LI_SYNC_STUCK}" != 1 ] || return 0
+            while kill -0 "${LI_SYNC_PID}" 2>/dev/null && [ "${polls}" -lt 5 ]; do
+                sleep 0.2
+                polls=$(( polls + 1 ))
+            done
+            if kill -0 "${LI_SYNC_PID}" 2>/dev/null; then
+                LI_SYNC_STUCK=1
+                return 0
+            fi
+        fi
+        LI_SYNC_PID=""
+        LI_SYNC_STUCK=0
+    fi
+    timeout -k 2 "$(li_scale 20)" sync -f "${TGT}${LI_PROGRESS_REL}" </dev/null >/dev/null 2>&1 3>&- &
+    LI_SYNC_PID=$!
+    return 0
+}
+
+# li_sync_wait - at the end: give the last 'sync -f' a moment to finish (three seconds at most, none when it is stuck), so
+# the last breadcrumb is on the disk and nothing is left running behind us.
+li_sync_wait() {
+    local polls=0
+    [ -n "${LI_SYNC_PID}" ] || return 0
+    if [ "${LI_SYNC_STUCK}" != 1 ]; then
+        while kill -0 "${LI_SYNC_PID}" 2>/dev/null && [ "${polls}" -lt 15 ]; do
+            sleep 0.2
+            polls=$(( polls + 1 ))
+        done
+    fi
+    LI_SYNC_PID=""
+    return 0
+}
+
+# li_progress STEP PHASE [NOTE] - the breadcrumb.  STEP is a step id or '-' (the hook itself); NOTE is a few
+# 'key=value' words ('group=creator', 'result=done').  Best effort: a full disk can refuse even this one line.
+li_progress() {
+    local f="${TGT}${LI_PROGRESS_REL}" free line
+    free="$(li_free_kb)"
+    line="step=$1 phase=$2 free_kb=${free:-unknown} utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')${3:+ $3}"
+    if printf '%s\n' "${line}" >"${f}.new" 2>/dev/null && mv -f "${f}.new" "${f}" 2>/dev/null; then
+        li_sync_target
+    else
+        rm -f "${f}.new" 2>/dev/null
+        li_log "could not write ${LI_PROGRESS_REL} (is the disk full?)"
+    fi
+    return 0
 }
 
 # --- hardware facts for the drivers step -------------------------------------------------
@@ -813,12 +1223,14 @@ li_removal_allowed() {
 # li_guard PKG... - simulate 'apt-get install --no-install-recommends PKG...'.  0 = safe.  1 = it would remove an
 # installed package that has to stay (LI_REMOVES: everything it would remove, LI_GUARD_WHY: "would remove X Y").
 # 2 = apt cannot resolve the request at all (LI_GUARD_WHY: apt's first error line; what a held package that breaks
-# the request looks like) - the caller must not try to install it.
+# the request looks like) - the caller must not try to install it.  Also fills LI_SIM_KNOWN / LI_SIM_GET_KB /
+# LI_SIM_ADD_KB from the simulation's "Need to get" / "After this operation" lines (li_sim_parse).
 li_guard() {
     local out="" rc n
     local -a bad=()
     LI_REMOVES=()
     LI_GUARD_WHY=""
+    li_sim_parse ""
     if [ -n "${LI_TMPD:-}" ] && : >"${LI_TMPD}/guard.out" 2>/dev/null; then
         out="${LI_TMPD}/guard.out"
     else
@@ -837,6 +1249,8 @@ li_guard() {
         rm -f "${out}"
         return 2
     fi
+    # apt's own disk figures for this transaction (LI_SIM_*): the callers check them against the free space
+    li_sim_parse "$(cat "${out}" 2>/dev/null)"
     rm -f "${out}"
     for n in "${LI_REMOVES[@]}"; do
         li_removal_allowed "${n}" || bad+=("${n}")
@@ -854,15 +1268,27 @@ li_guard() {
 # that no longer holds into 'failed' - so the silent retry and Settings > Apps see the truth.
 declare -A LI_INSTALLED=()
 
-# li_installed_load - LI_INSTALLED[name]=1 for every installed package of the new system ('name:arch' for foreign
-# architectures).  Fails when the list cannot be read (then nothing is judged).
+# li_installed_load - LI_INSTALLED[name]=1 for every installed package of the new system, by its BARE name.  dpkg-query
+# prints ${binary:Package} as 'name:arch' not only for foreign architectures but for every Multi-Arch: same package too
+# (libvulkan1:amd64, mesa-vulkan-drivers:amd64 on the real system), so the qualified spelling is registered as well and
+# the bare name is registered for the native architecture (and 'all'): a package that is only installed for i386 does
+# not count as installed for amd64.  Fails when the list cannot be read (then nothing is judged).
 li_installed_load() {
-    local rows name status
+    local rows name status bare arch native
     LI_INSTALLED=()
     rows="$(li_run_out 30 dpkg-query -W -f='${binary:Package} ${db:Status-Status}\n')" || return 1
     [ -n "${rows}" ] || return 1
+    native="$(li_run_out 30 dpkg --print-architecture | tr -d '\r\n')"
     while read -r name status; do
-        [ "${status}" = installed ] && LI_INSTALLED["${name}"]=1
+        [ "${status}" = installed ] || continue
+        LI_INSTALLED["${name}"]=1
+        bare="${name%%:*}"
+        [ "${bare}" != "${name}" ] || continue
+        arch="${name#*:}"
+        # (the native architecture could not be read: do not fail the step for it, treat every spelling as installed)
+        if [ -z "${native}" ] || [ "${arch}" = "${native}" ] || [ "${arch}" = all ]; then
+            LI_INSTALLED["${bare}"]=1
+        fi
     done <<<"${rows}"
     return 0
 }

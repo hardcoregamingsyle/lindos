@@ -33,7 +33,9 @@ serial() {
 
 rc=0
 serial dpkg --configure -a --force-confdef --force-confold || rc=1
-serial apt-get -f install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold || rc=1
+# the lock wait is an option of this apt-get, not an APT_CONFIG in its environment: the repair runs the maintainer
+# scripts of half-configured packages (Google Chrome's among them, which breaks on an exported APT_CONFIG)
+serial apt-get -f install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=300 || rc=1
 
 if [ "${rc}" -eq 0 ]; then
     rm -f "${MARKER}"

@@ -563,7 +563,7 @@ def test_debian_metadata() -> None:
     assert fields["Architecture"] == "all"
     assert fields["Maintainer"] == "Lindos Team <team@lindos.dev>"
     depends = {d.strip().split()[0] for d in fields["Depends"].split(",")}
-    for pkg in ("xfce4-panel", "xfce4-whiskermenu-plugin", "xfwm4", "xfconf",
+    for pkg in ("xfce4-session", "xfdesktop4", "xfce4-panel", "xfce4-whiskermenu-plugin", "xfwm4", "xfconf",
                 "xfce4-settings", "xfce4-notifyd", "picom", "xfce4-panel-profiles", "xfce4-clipman-plugin",
                 "xfce4-screenshooter", "xfce4-taskmanager", "lightdm", "slick-greeter", "plymouth",
                 "fontconfig", "lindos-core"):
@@ -586,7 +586,13 @@ def test_debian_metadata() -> None:
         assert c.startswith("/etc/")
         assert (ROOT / c.lstrip("/")).is_file(), c
     shipped_etc = sorted("/" + p.relative_to(ROOT).as_posix() for p in (ROOT / "etc").rglob("*") if p.is_file())
-    assert sorted(conffiles) == shipped_etc
+    # every shipped /etc file is a conffile - except the four xfconf defaults that stock packages also ship as
+    # conffiles: as conffiles of this package dpkg would "keep" the deleted stock file and never install ours
+    # (test_session_defaults.py has the story)
+    shared = {"/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/" + n + ".xml"
+              for n in ("xfce4-session", "xsettings", "xfce4-keyboard-shortcuts", "xfce4-power-manager")}
+    assert sorted(conffiles) == [p for p in shipped_etc if p not in shared]
+    assert shared <= set(shipped_etc) and not shared & set(conffiles)
 
 
 def test_postinst_ensures_graphical_boot() -> None:

@@ -190,6 +190,7 @@ pkg_available pkgs_installed_matching mark_manual_installed mark_meta_deps_manua
 | `79-installer-flow.sh` | wires the installer flow into Ubiquity — see *Installer flow* below: refuses a host outside the chroot; **dies** if Chrome/Edge is installed in the image (SPEC §0.1), if the `lindos-installer` files or `/usr/lib/ubiquity` are missing, or if the deployed hook would be skipped by Ubiquity (a `.` in the name, not executable, a symlink, a syntax error, `set -e`); `install -m 0755` of `target-config.sh` as `/usr/lib/ubiquity/target-config/50lindos-install`; `install -m 0755` of `dm-noblank.sh` as `/usr/lib/ubiquity/dm-scripts/install/50lindos-noblank` (the ubiquity-dm hook that runs `xset s off s noblank -dpms` in the `only-ubiquity` session; the build **dies** if `xset` is not in the image, if the file would be skipped by ubiquity-dm — a `.` in the name, not executable, a symlink, CRs, not `#!/bin/sh`, a syntax error, `set -e` — or if it does not really set the three things); `debconf-set-selections` of `lindos.seed` and a read-back of `ubiquity/success_command`; logs the target-config directory and the ubiquity version; idempotent. Test seams `LINDOS_INSTALLER_ROOT`, `LINDOS_DEBCONF_SET`, `LINDOS_DEBCONF_COMMUNICATE`, `LINDOS_DPKG_QUERY` |
 | `80-cleanup.sh` | `apt-get autoremove --purge`, `apt-get clean`, drop apt lists (**on purpose, still**: the base ISO's lists are stale by install time and cost ~100 MB in the squashfs; the installer hook refreshes the new system's lists as its first step), machine-id reset, resolv.conf restore, logs truncated, root history/caches, `/tmp` `/var/tmp` emptied, crash reports/journal removed |
 | `81-unrecognisable-gate.sh` | read-only report of what still makes the image recognisable as Linux Mint (`out/hooks/81-unrecognisable-gate.log`); report-only unless `LINDOS_STRICT_UNRECOGNISABLE=1` — see *Unrecognisable* below |
+| `82-session-sanity.sh` | last hook, read-only: can the finished image start an XFCE session? **Fails the build** (`SESSION-FAIL`) when a session package, binary or the xfconf defaults xfce4-session needs are missing — see *Session sanity* below; `LINDOS_SESSION_SANITY=report` only reports, `=0` skips it |
 
 ### Installer branding (Ubiquity)
 
@@ -303,11 +304,20 @@ kept root-only in `/var/lib/lindos/oem-temporary-password` and printed on the ac
 password the user chose is left alone. It logs `CRITICAL` and writes the reason plus what it did to
 `/var/lib/lindos/oem-config-not-armed`.
 
-**Steps, states and switches.** Steps run `browser drivers updates compat gaming mode_extras flatpaks`
-and end in `/var/lib/lindos/install-state.json` as `done | pending | skipped | failed`
-(`lindos-config install-state [--json]`; `python3 -m lindos.installstate [--root DIR] show`). Kernel
-words: `lindos.install=off`, `lindos.install_budget=SECONDS` (default 2700),
-`lindos.proprietary_drivers=1` (consent, SPEC §17.5). The hook refreshes the new system's apt lists
+**Steps, states and switches.** Steps run `updates browser drivers compat gaming mode_extras flatpaks` (the order is
+also the priority when the disk is short) and end in `/var/lib/lindos/install-state.json` as
+`done | pending | skipped | failed` (`lindos-config install-state [--json]`; `python3 -m lindos.installstate [--root DIR]
+show`). Kernel words: `lindos.install=off`, `lindos.install_budget=SECONDS` (default 2700),
+`lindos.install_reserve=GB` (disk space kept free for the user; default the larger of 8 GB and 12 % of the partition,
+never below 2 GB), `lindos.proprietary_drivers=1` (consent, SPEC §17.5). **Disk policy** (`li_space_gate` and friends in
+`lib.sh`, one table of per-step estimates `LI_NEED_KB`): the free space of `/target` is measured at the start and before every
+step, a step runs only when it fits above the reserve, apt's "After this operation" figure is checked too (and again
+between package groups, before each Flatpak and before dpkg runs), the downloaded packages are cleaned after every
+step, and a partition below 40 GB gets no `mode_extras` and no `flatpaks`; what is left out is `pending` with the reason
+([INSTALLER.md](INSTALLER.md#disk-space-what-the-installer-does-when-the-disk-is-small)).
+**Crash breadcrumbs:** `/var/lib/lindos/installer-progress` is one line (step, phase, free space, UTC time) rewritten
+before and after every step and group and flushed with `sync -f`; every step is pre-written to `install-state.json` as
+`pending: the installer ended before this step`, so a hard hang still leaves the truth. The hook refreshes the new system's apt lists
 first, holds the families it must not touch, and does `apt-get upgrade` (never `dist-upgrade`). Stock
 `apt-get update` exits 0 after *transient* index failures, so the exit status alone is not the verdict
 (`li_apt_update` in `lib.sh`): the installer's apt.conf sets `APT::Update::Error-Mode "any"`, the output is
@@ -578,7 +588,7 @@ web app in `/etc/skel` goes with `mintchat` (and 76 deletes the entry if the pur
 `/usr/share/lindos/legal/open-source-notices.txt` (what Lindos is built on, licences, trademarks; `/usr/share/doc/*/copyright`
 stays intact); the accent `Mint Green` is `Meadow Green`.
 
-**8. `81-unrecognisable-gate.sh`** (last hook, read-only) reports what still makes the image recognisable in
+**8. `81-unrecognisable-gate.sh`** (read-only) reports what still makes the image recognisable in
 `out/hooks/81-unrecognisable-gate.log`: `UNRECOGNISABLE-FINDING [category] ...` lines (packages that should be gone, visible
 menu/autostart entries that show Mint or start a denied app, theme packs not hidden, `/etc/xdg/xdg-*` into `mint-artwork`,
 Mint's wrappers, "Linux Mint" in `/etc`, `/usr/local`, the menu and `/usr/share/lindos` outside an allow-list, the GRUB
@@ -586,6 +596,35 @@ drop-in order, a missing `.preserve`, the skel web app), `UNRECOGNISABLE-NOTE` l
 `UNRECOGNISABLE-GATE findings=N notes=M mode=...`. It is report-only; `LINDOS_STRICT_UNRECOGNISABLE=1` makes any finding fail the
 build. The hooks run under `env -i`, so the variable reaches the gate only when it is listed in `LINDOS_PASSTHRU_VARS`
 (`build/config.env`). The deny lists live at the top of the hook and are kept in step with 76 by a test.
+
+**8b. Session sanity (`82-session-sanity.sh`, the last hook, read-only).** The CI boot test of the ISO built from `7fc3aae` ended
+on xfce4-session's "Unable to load a failsafe session - Unable to determine failsafe session name" (no panel, no desktop manager,
+no window manager). Cause, read off the c020281 ISO's squashfs: `/etc/xdg/xfce4/xfconf/xfce-perchannel-xml` held
+`xfce4-session.xml.dpkg-dist` (Lindos's file) and `xfce4-session.xml.lindos-orig` (the stock one) but no `xfce4-session.xml`, and
+the same for `xsettings.xml`, `xfce4-keyboard-shortcuts.xml` and `xfce4-power-manager.xml`. Each of those four is a conffile of a
+stock package (`xfce4-session`, `xfce4-settings`, `libxfce4ui-common`, `xfce4-power-manager`) *and* was one of `lindos-desktop`:
+the preinst's `dpkg-divert --rename` moved the stock file away, dpkg took over the stock package's recorded hash, saw the file
+gone and — with `--force-confold`, "Keeping old config file as default" in the build log — left it deleted. Mint's
+`/etc/xdg/xdg-xfce` link, which carries an `xfce4-session.xml` of its own (and the Mint wallpaper and panel of the old live
+screenshot), had hidden it; removing that link (7fc3aae) removed the only definition of `/general/FailsafeSessionName`. Fix: the
+four files are plain files of `lindos-desktop` (not in `DEBIAN/conffiles`; still diverted), the postinst puts one back from its
+`*.dpkg-dist` copy if it is missing, `xfce4-session` and `xfdesktop4` are hard `Depends`, and the hook checks the image:
+`SESSION-FAIL [category] ...` (the build stops after the hook's report) for a missing session package (`xfce4-session`, `xfwm4`,
+`xfce4-panel`, `xfdesktop4`, `xfconf`, `xfce4-settings`, `lightdm`, a greeter, an X server, `dbus-x11` or `dbus-user-session`),
+for a missing binary or entry behind them (the `xfconfd` binary and `org.xfce.Xfconf.service`, `xfsettingsd`, the `.desktop`
+files `lightdm.conf` names), for a Lindos channel file that is missing (with the `*.dpkg-dist` hint) or does not parse, and for an
+`xfce4-session.xml` that does not define `/general/FailsafeSessionName` and `/sessions/<that name>` in `/etc/xdg/xdg-xfce` or
+`/etc/xdg`; `SESSION-WARN` for stock XML that does not parse, a symlinked or populated `/etc/xdg/xdg-xfce`, and missing
+`libpam-systemd`, `network-manager`, `plymouth`. `76-mint-purge.sh` marks the same session set (`lib.sh` `SESSION_PKGS`) manual and
+skips a purge group when `apt-get -s --auto-remove purge` would leave one as an autoremove candidate
+(`MINT-PURGE-SESSION-KEPT`, `MINT-SESSION-OK|KEPT|AT-RISK` in `out/hooks/76-mint-purge.log`). Hermetic tests:
+`build/tests/test_session_sanity_hook.py`, `build/tests/test_mint_purge_hook.py`, `packages/lindos-desktop/tests/test_session_defaults.py`.
+Not verified without a Linux host: dpkg's own conffile handling (the `.dpkg-dist` evidence is from the CI ISO; the fix is only
+proven by the next package build and boot). **If the live boot test fails again:** when `live-panel` or `live-desktop` fails,
+`ci-live-checks.sh` prints `LINDOS_DESKTOP_DIAG` lines (the liveuser processes, `.xsession-errors`, the environment of
+`xfce4-session` — `XDG_CONFIG_DIRS`, `DBUS_SESSION_BUS_ADDRESS` —, `ls -la` of `/etc/xdg/xdg-xfce` and the perchannel directory, the
+session packages' dpkg status, the `xfconfd` binary, an `xfconf-query` of `/general/FailsafeSessionName` as the live user, the
+user and lightdm journals) and `boot_test.py` prints a `diagnosis:` line when it recognises the cause.
 
 **9. The taskbar without Docklike, and the BIOS boot path.**
 
@@ -622,7 +661,8 @@ build. The hooks run under `env -i`, so the variable reaches the gate only when 
   `lightdm.conf.d`. With the `60-` drop-in winning, the next `update-grub` should title the entries `Lindos GNU/Linux` with
   `--class lindos` — read `/boot/grub/grub.cfg` after an install to confirm.
 
-**Checking a build.** `out/hooks/76-mint-purge.log` (grep `MINT-`), `out/hooks/81-unrecognisable-gate.log`, then a boot:
+**Checking a build.** `out/hooks/76-mint-purge.log` (grep `MINT-`), `out/hooks/81-unrecognisable-gate.log`,
+`out/hooks/82-session-sanity.log` (grep `SESSION-`), then a boot:
 `echo $XDG_CONFIG_DIRS`, `xfconf-query -c xsettings -p /Net/ThemeName` (Lindos-Dark), `/Gtk/FontName` (Selawik),
 `/Gtk/CursorThemeName`, `dpkg -l | grep -i mint`, `apt` (plain apt), no Update Manager wording apart from *Lindos Updates*,
 `cat /usr/lib/firefox/distribution/distribution.ini` after a reboot, the Appearance/Mouse pickers, `lsb_release -a`.

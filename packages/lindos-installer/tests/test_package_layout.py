@@ -246,6 +246,10 @@ def test_the_seed_bakes_the_oem_flow_and_matches_the_boot_entries() -> None:
     # the window of the installer and (the same debconf database is copied to the new system) of the first-boot wizard
     assert seed["ubiquity/custom_title_text"] == ("ubiquity", "string", "Lindos Setup")
     assert seed["user-setup/allow-password-empty"][2] == "true"
+    # user-setup-apply sets an EMPTY password with chpasswd, which PAM refuses (the install stopped at "Creating user"):
+    # a pre-crypted locked value takes the usermod path instead, whatever the person types on the temporary-account page
+    assert seed["passwd/user-password-crypted"] == ("d-i", "password", "!")
+    assert seed["user-setup/allow-password-weak"][2] == "true"
     assert all(k in ("string", "boolean", "select", "password") for _o, k, _v in seed.values())
     grub = _text(REPO / "build" / "overlay" / "boot" / "grub" / "grub.cfg")
     assert "ubiquity/success_command=/usr/libexec/lindos/installer/finalize.sh" in grub

@@ -22,7 +22,8 @@
 # apt discipline: the Chrome retry (lindos-browser-firstboot.service) wakes up at the same moment and
 # the unit is ordered after it, but apt does not queue by itself, so the retry command also runs through
 # lindos-core's apt-serialise helper: it takes its turn behind every other Lindos apt job (flock) and
-# exports DPkg::Lock::Timeout, so the apt-get inside lindos-drivers / ubuntu-drivers waits for a dpkg lock
+# exports DPkg::Lock::Timeout (APT_CONFIG, asked for with --apt-config), so the apt-get inside lindos-drivers /
+# ubuntu-drivers waits for a dpkg lock
 # somebody else holds instead of failing at once - a lost attempt would be counted against the three tries.
 #
 # Never runs in the live session, in a chroot/container, or while Ubiquity's oem-config first-boot
@@ -187,7 +188,10 @@ run_retry() {
         cmd=(timeout -k 30 "${RETRY_TIMEOUT}" "${cmd[@]}")
     fi
     if [ -f "${APT_SERIALISE}" ]; then
-        cmd=(bash "${APT_SERIALISE}" --wait "${LOCK_WAIT}" -- "${cmd[@]}")
+        # --apt-config: the apt-get inside lindos-drivers / ubuntu-drivers cannot be given '-c FILE' from here, so this
+        # command (and only this one) gets the lock wait as APT_CONFIG; install-browser.sh and the repair never do (a
+        # maintainer script that assigns APT_CONFIG itself, Google Chrome's, would break on the exported value)
+        cmd=(bash "${APT_SERIALISE}" --wait "${LOCK_WAIT}" --apt-config -- "${cmd[@]}")
     fi
     log "retrying: ${cmd[*]}"
     local rc=0

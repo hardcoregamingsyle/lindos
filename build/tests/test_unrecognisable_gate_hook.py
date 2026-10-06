@@ -106,7 +106,7 @@ def test_hook_house_style_and_position() -> None:
     i = names.index(HOOK.name)
     for h in ("76-mint-purge.sh", "77-mint-sweep.sh", "79-installer-flow.sh", "80-cleanup.sh"):
         assert h in names[:i], f"the gate must see the image after {h}"
-    assert names[-1] == HOOK.name, "nothing runs after the gate"
+    assert names[i + 1:] == ["82-session-sanity.sh"], "only the session sanity check runs after the gate (it reads the finished image too)"
 
 
 def test_hook_only_reads() -> None:

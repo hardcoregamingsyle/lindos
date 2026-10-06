@@ -30,8 +30,10 @@ built and unit-tested without a Linux machine and has not yet been run end to en
   runtimes are the biggest part) and something between ten minutes and most of an hour on a good link;
   after 45 minutes the installer starts no more downloads and leaves the remaining steps *pending* (a
   package install that has already begun is allowed to finish; `lindos.install_budget=SECONDS` changes the
-  45 minutes). Give the target disk several GB more than the base
-  system needs; a step is skipped, and recorded as *pending*, when the disk is too small for it.
+  45 minutes). **Give the target disk room**: the full install adds roughly 15-25 GB to the base system. The
+  installer never fills the disk: it keeps a share free for you and leaves a step *pending* when it does not fit
+  ([Disk space](#disk-space-what-the-installer-does-when-the-disk-is-small)); on a partition below **40 GB** the extra
+  apps and the Flatpaks are skipped altogether.
 * Use a **compatibility mode** entry (`nomodeset`) only if the normal entry shows no picture.
 * Everything the installer downloads comes from the vendors' own sources: the Ubuntu and Linux Mint
   package archives, Google's Chrome repository, the WineHQ and Valve (Steam) repositories, the pinned
@@ -59,8 +61,10 @@ wizard for you.
 **The temporary-account page.** Lindos uses Ubiquity's *OEM mode*, in which the installer creates a
 **temporary** account (named `oem`) and the real account is created at the first boot. Ubiquity shows a
 page for that temporary account (computer name and a password) that cannot be hidden: **leave the
-password empty and press Continue.** The temporary account is locked when the installation ends and is
-deleted at the first boot. (If the account setup could not be prepared, the account cannot be locked away
+password empty and press Continue.** The installer creates the account with a locked password whatever you
+type, so nothing needs to be chosen. (An earlier build created it with the typed password, and an empty one
+stopped the installer at "Creating user" - if a build of yours still does, type any password on that page; the
+account is deleted at the first boot anyway.) It is deleted at the first boot. (If the account setup could not be prepared, the account cannot be locked away
 because it is then your only way in: it gets a random password instead, see the troubleshooting table.) The window title may say "OEM mode, for manufacturers only": that is
 Ubiquity's own text and it does not mean anything is wrong.
 
@@ -70,18 +74,21 @@ Google Chrome...", "Installing system updates..."); that this renders as intende
 unverified. The progress bar barely moves during this stage; only the text changes. Do not turn the PC off
 and do not remove the stick until the installer says so.
 
-**What it does, in order** (each step is time-boxed; a problem in one never stops the others or the install):
+**What it does, in order** (each step is time-boxed; a problem in one never stops the others or the install). The
+order is also the **priority** when the disk is too small for everything: the first steps get the room, the last one is
+the first to be skipped ([Disk space](#disk-space-what-the-installer-does-when-the-disk-is-small)). The third column is
+what the installer *estimates* the step needs (an estimate from the first real install, not a measurement).
 
-| Step | What | If it cannot |
-|---|---|---|
-| Package lists | refreshes the new system's apt lists | later steps are left *pending* |
-| `browser` | Google Chrome from Google's apt repository, set as the system default browser for new users | *pending* (offline, timeout) or *failed*; *skipped* if the system default is another browser |
-| `drivers` | firmware and the free drivers (`ubuntu-drivers install --free-only`); a proprietary GPU driver only with your consent ([below](#drivers-proprietary-consent-and-secure-boot)) | *pending*, *failed* or *skipped* with the reason |
-| `updates` | `apt-get upgrade` of what is installed (never a `dist-upgrade`); the kernel, the boot loader and the installer's own packages are left alone | *pending* / *failed* |
-| `compat` | Wine (WineHQ staging), winetricks, umu-launcher | *pending* / *failed* |
-| `gaming` | Steam and Lutris | *pending* / *failed* |
-| `mode_extras` | the apt apps of **every** Mode (the Mode is only chosen after the install), one Mode's apps at a time: LibreOffice, Thunderbird, GIMP, Krita, Kdenlive, GameMode, MangoHud and friends | *pending* / *failed*, naming each app that was left out and why |
-| `flatpaks` | Prism Launcher, Sober, Heroic and Bottles from Flathub (best effort) | *pending* |
+| Step | What | Needs (est.) | If it cannot |
+|---|---|---|---|
+| Package lists | refreshes the new system's apt lists | - | later steps are left *pending* |
+| `updates` | `apt-get upgrade` of what is installed (never a `dist-upgrade`); the kernel, the boot loader and the installer's own packages are left alone. First, because these are the security fixes | ~3 GB | *pending* (also: not enough disk space) / *failed* |
+| `browser` | Google Chrome from Google's apt repository, set as the system default browser for new users | ~0.6 GB | *pending* (offline, timeout, disk) or *failed*; *skipped* if the system default is another browser |
+| `drivers` | firmware and the free drivers (`ubuntu-drivers install --free-only`); a proprietary GPU driver only with your consent ([below](#drivers-proprietary-consent-and-secure-boot)) | ~0.8 GB | *pending*, *failed* or *skipped* with the reason |
+| `compat` | Wine (WineHQ staging), winetricks, umu-launcher | ~2 GB | *pending* / *failed* |
+| `gaming` | Steam and Lutris | ~1.5 GB | *pending* / *failed* |
+| `mode_extras` | the apt apps of **every** Mode (the Mode is only chosen after the install), one Mode's apps at a time: LibreOffice, Thunderbird, GIMP, Krita, Kdenlive, GameMode, MangoHud and friends | ~6 GB | *pending* / *failed*, naming each app that was left out and why; not on a partition below 40 GB |
+| `flatpaks` | Prism Launcher, Sober, Heroic and Bottles from Flathub (best effort) | ~5 GB | *pending*; not on a partition below 40 GB |
 
 A step is recorded as **done** only after the result was checked (Chrome really is installed, and so
 on). Anything else is recorded honestly: *pending* (wanted, could not: offline, timed out, no time or disk
@@ -111,7 +118,49 @@ on) are held only while the *updates* step runs - held at any other time an exac
 pack on `libreoffice-common` made apt refuse every LibreOffice app. apt is given the installer's settings
 (no `cdrom:` source, no list clean-up, waiting for locks) as `-c FILE` on its command line, never as the
 `APT_CONFIG` environment variable: every package's maintainer scripts would inherit that, and Google Chrome's
-own post-install script then ran `apt-config` with the binary as its configuration file.
+own post-install script then ran `apt-config` with the binary as its configuration file. On the installed system
+the helper that queues the first-boot apt jobs (`apt-serialise`: the Chrome retry, *Install now* in Settings, the
+update repair) follows the same rule: it hands its lock-wait setting over as `LINDOS_APT_CONF` (for `-c FILE`) and exports
+`APT_CONFIG` only on request (`--apt-config`), which only the driver retry does - it starts apt through
+`ubuntu-drivers` / `lindos-drivers`, whose command line it cannot change.
+
+## Disk space: what the installer does when the disk is small
+
+The full install adds roughly **15-25 GB** (a few hundred upgrades, Chrome, Wine, LibreOffice/GIMP/Krita/Kdenlive, four
+Flatpaks). A disk that fills up in the middle of a package install leaves a half-unpacked system (the first real laptop
+install ended at the first boot in "Unable to load failsafe session / xfconfd isn't running", which is what a full or
+half-written root filesystem looks like; the logs are still to be read, so this is a precaution against the most likely
+cause, not a diagnosis). So the installer **never runs a step it cannot afford**:
+
+* **Measured at the start and again before every step.** The size and the free space of the partition `/target` is on
+  (`df`, the "available" figure) go into `/var/log/lindos/installer.log` as `disk: ...`.
+* **A reserve is kept free for you**: the larger of **8 GB** and **12 %** of the partition (30 GB for a 250 GB disk,
+  8 GB for anything up to 66 GB). `lindos.install_reserve=GB` on the kernel command line changes it; **less than 2 GB
+  is never accepted**, whatever you write, and the installer never leaves less than about 2 GB free.
+* **A step runs only if `free >= its estimate + the reserve`.** Otherwise it is left *pending* with the reason in plain
+  words, e.g. `not enough disk space: needs ~13.0 GB, 11.1 GB free (about 5.0 GB for this step plus the 8.0 GB kept free
+  for you)`, and the steps after it still get their turn (a cheaper one may fit). The order is the priority: the
+  updates first (security fixes), then Chrome, the drivers, Wine, the game launchers, the extra apps and, last, the Flatpaks
+  (the biggest, so the first to be skipped).
+* **A partition below 40 GB** (the size of the whole partition, not the free part) gets **no extra apps and no Flatpaks**:
+  those two steps are *pending* with the reason `partition too small`.
+* **apt's own figure is used too.** Before any download the simulation's "Need to get ... After this operation, ... of
+  additional disk space" is read: the archives and the unpacked files are on the disk at the same time, and both have to
+  fit above the reserve, or the step (or, for the extra apps, that Mode's group of apps) is left out without downloading
+  anything.
+* **Looked at again in the middle.** Between the groups of extra apps and before each Flatpak the free space is measured
+  again and the step stops cleanly, *pending*, naming what was left out, as soon as it is down to the reserve (or the
+  next app would not fit above it). Before a package install starts (which is never interrupted half way) what is still to
+  be unpacked plus the 2 GB floor has to fit once more.
+* **Downloaded packages are cleaned out after every step** (`apt-get clean`), not only at the very end: they are
+  gigabytes of files that would otherwise sit on the disk until the installer ends.
+* **If `df` cannot say**, nothing that needs room is started (the steps are *pending*: "the free disk space could not be
+  measured").
+
+What was left out is not lost: it is listed in **Lindos Settings › Apps › Left to finish from setup**, to install
+later when there is room (free some space, or add a disk, first). The numbers are **estimates**: the real sizes on real
+mirrors have not been measured, and a PC with a very small disk may still end with less free space than the reserve if
+the estimates are too low (the 2 GB floor is checked before every package install, not guaranteed).
 
 ## Offline installs and pending items
 
@@ -195,6 +244,7 @@ Add these words to the kernel command line (GRUB: press `e` on the entry; no spa
 |---|---|
 | `lindos.install=off` | The installer step does nothing; every step is recorded *skipped*. |
 | `lindos.install_budget=SECONDS` | How long the whole download/install step may take (default `2700`). |
+| `lindos.install_reserve=GB` | How much disk space the installer keeps free for you (a whole number of GB; default the larger of 8 and 12 % of the partition; never less than 2). |
 | `lindos.proprietary_drivers=1` | Consent to proprietary GPU drivers (still never with Secure Boot on). |
 
 Logs: while installing, `/var/log/lindos/installer-hook.log` (open a terminal in a *Try Lindos* session and
@@ -202,9 +252,33 @@ Logs: while installing, `/var/log/lindos/installer-hook.log` (open a terminal in
 `/var/log/installer/`. Silent retries log to `/var/log/lindos/browser-firstboot.log` and
 `driver-firstboot.log`.
 
+**The progress note.** If the installer crashes or the PC hangs during the install, read
+`/var/lib/lindos/installer-progress` (on the installed disk; `/target/var/lib/lindos/installer-progress` while the
+installer still runs). It is **one line**, rewritten before and after every step and every group of extra apps, and
+flushed to the disk (`sync -f`) each time, so it still says what the installer was doing when the machine stopped:
+
+```
+step=mode_extras phase=group-start free_kb=14376960 utc=2026-10-02T14:03:17Z group=creator
+```
+
+`step` is the step id (`-` for the installer itself), `phase` is `start`, `end`, `skipped`, `repair`, `group-start`,
+`group-end`, `package`, `app`, `package-lists`, `finishing`, `finished` (the installer ended normally) or `interrupted`
+(it was told to stop), `free_kb` is the free space of the target in KB (`unknown` when `df` could not say) and
+`utc` the time. A line whose `phase` is not `finished` means the installer did not get to the end. The file is a
+diagnostic aid, nothing reads it; it is written as a whole new file and renamed, so it is never half a line. A full
+disk can refuse even this line.
+
+**The install state is true even after a crash.** Before the first step runs, every step is written to
+`install-state.json` as `pending: the installer ended before this step` (each write is atomic: a temporary file, a flush,
+a rename), and each step then records its real result over it. So after a hard hang or a power cut the file already tells
+the truth, and Settings lists the steps as left to finish. If the installer is stopped cleanly the step that was running
+says `pending: the installer was stopped during this step`.
+
 | Symptom | What to look at |
 |---|---|
 | The installer looks stuck on "Configuring target system" / a status line | It is probably downloading; the log says what. It stops by itself after the 45-minute budget. |
+| The installer crashed or the PC hung during the install, or the first boot cannot start the desktop ("Unable to load failsafe session", "xfconfd isn't running") | Boot the live stick again, mount the installed system and read `var/lib/lindos/installer-progress` (the last thing the installer was doing and the free space then) and `var/log/lindos/installer.log` (`disk:` lines, the reasons). A very low `free_kb` points at a full disk. Please report both files. |
+| A step says *pending* with "not enough disk space" or "partition too small" | The installer did not have room for it and left it out on purpose ([Disk space](#disk-space-what-the-installer-does-when-the-disk-is-small)). Free some space, then Settings › Apps › Left to finish from setup. |
 | The first boot lands on a desktop as the user `oem` instead of the account wizard | The wizard could not be armed. `/var/lib/lindos/oem-config-not-armed` holds the reason (line 1) and what was done to the account (line 2), `/var/log/lindos/installer.log` the details (`CRITICAL`). The desktop is kept, but the temporary account is **not left open**: its password was empty (the page told you to leave it so), so it gets a **random password** — printed in `LINDOS-ACCOUNT-SETUP-FAILED.txt` on that desktop (readable by that account only; change it with `passwd`, then delete the note) and kept root-only in `/var/lib/lindos/oem-temporary-password`; a password you typed yourself is kept, and if none can be set the account is locked (administrator tasks then need the wizard fixed first). If oem-config is installed, `sudo oem-config-prepare` (then reboot) arms it by hand — it also deletes saved Wi-Fi profiles; if the reason says oem-config is missing, it cannot. Please report it. |
 | Updates, drivers or extra apps say *pending* although the PC was online | The package lists could not be refreshed completely (a source timed out or the connection dropped during `apt-get update`): the installer does not trust an "up to date" or "no drivers" answer from incomplete lists, records the step as pending and retries it later. `/var/log/lindos/installer.log` names the failed fetches. |
 | The installer screen goes dark after about ten minutes | Input wakes it. It should not happen: the *Install Lindos* session runs `50lindos-noblank` (`xset s off s noblank -dpms`); `grep lindos-noblank /var/log/installer/dm` in a terminal shows what it did. Please report it. |
@@ -231,7 +305,7 @@ that one QEMU run". Real hardware will find more; expect several fix rounds.
 
 * **The installer still shows a temporary-account page** and Ubiquity's "OEM mode, for manufacturers
   only" wording (a preseed cannot hide it; the alternative is patching Ubiquity, a maintenance and product
-  decision). Leave the password empty and press Continue.
+  decision). Leave the password empty and press Continue (if the installer stops at "Creating user", type any password).
 * **The first-boot account wizard is still Ubiquity's**: it asks for language, keyboard and time zone again
   (the installer's answers are carried over as defaults) and, at its end, may show a small package clean-up
   window. It has the Lindos-Setup skin and the title "Lindos Setup" now ([above](#the-look-of-the-installer-and-the-account-wizard)),
@@ -313,7 +387,16 @@ These are the unverified assumptions; each one has a check in the QEMU procedure
   the 45-minute default on real links.
 * Flatpak inside the installer's chroot (bwrap, triggers): it fails soft to *pending* by design but is
   unproven.
-* **OEM mode**: that the temporary-account page appears as described and accepts an empty password;
+* **The disk policy** ([Disk space](#disk-space-what-the-installer-does-when-the-disk-is-small)) was only run against a
+  fake disk: that `df -Pk /target` in the live session reports the partition Ubiquity mounted at `/target` (and not,
+  say, the live overlay), that the "available" figure is a fair measure on the real file system, that the per-step
+  estimates (3 / 0.6 / 0.8 / 2 / 1.5 / 6 / 5 GB; Flatpaks ~1.25 GB each) are about right on real mirrors (they come from
+  the first QEMU install and from guesses), that real `apt-get -s` prints the "Need to get ..." and "After this
+  operation, ..." lines in the formats the parser reads (powers of 1000, thousands separators; nothing is judged from
+  a simulation without them), that `apt-get clean` between the steps does not disturb Ubiquity's later steps, and that
+  `sync -f` on the target is quick enough to be done a few dozen times. **Whether a full disk is what actually broke
+  the first laptop install is not known** - the logs and `installer-progress` of the next failure will say.
+* **OEM mode**: that the temporary-account page appears as described and accepts an empty password (the account is then created from the preseeded locked hash `passwd/user-password-crypted`; a real install with an EMPTY password stopped at "Creating user" before that seed existed, and CI now runs this path by default, `--typed-password` is the other);
   that `systemctl --root=/target enable` / `set-default oem-config.target` works and the first start really
   shows the account wizard; that a locked `oem` account (`passwd -l`) does not stop `ubiquity-dm` from running
   the wizard as `oem`; that no autologin is left in `lightdm.conf`; that resetting

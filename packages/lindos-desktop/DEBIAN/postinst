@@ -91,6 +91,28 @@ case "${1:-}" in
                 || log "merge-mimeapps.py reported a problem (ignored)"
         fi
 
+        # 5d. the four xfconf defaults that stock packages also ship as conffiles (xfce4-session.xml, xsettings.xml,
+        #     xfce4-keyboard-shortcuts.xml, xfce4-power-manager.xml - see the preinst) are plain files of this package.
+        #     Should one still be missing - the state an older Lindos build's dpkg run left behind: it kept the stock
+        #     conffile as "deleted" and parked this package's copy as *.dpkg-dist - the copy is put back.  Without
+        #     xfce4-session.xml the session ends in "Unable to determine failsafe session name".  Never fatal; the ISO
+        #     build's 82-session-sanity.sh fails the build when a Lindos channel file is missing.
+        XFCONF_DIR="${LINDOS_ROOT:-}/etc/xdg/xfce4/xfconf/xfce-perchannel-xml"
+        for ch in xfce4-session xsettings xfce4-keyboard-shortcuts xfce4-power-manager; do
+            if [ -s "$XFCONF_DIR/$ch.xml" ]; then
+                continue
+            fi
+            if [ -s "$XFCONF_DIR/$ch.xml.dpkg-dist" ]; then
+                if cp -f "$XFCONF_DIR/$ch.xml.dpkg-dist" "$XFCONF_DIR/$ch.xml"; then
+                    log "restored $ch.xml from $ch.xml.dpkg-dist (dpkg had kept the stock conffile as deleted)"
+                else
+                    log "WARNING: could not restore $XFCONF_DIR/$ch.xml from $ch.xml.dpkg-dist"
+                fi
+            else
+                log "WARNING: $XFCONF_DIR/$ch.xml is missing - the session loses its Lindos defaults"
+            fi
+        done
+
         # 6. desktop database for the launcher shims
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database -q /usr/share/applications 2>/dev/null || true

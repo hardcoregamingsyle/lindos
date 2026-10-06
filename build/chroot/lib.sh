@@ -25,6 +25,9 @@
 #      mark_manual_installed PKG…      apt-mark manual, installed names only
 #      meta_deps_installed META…       installed Depends/Recommends of installed metapackages
 #      mark_meta_deps_manual           keep everything mint-meta-* pulled in before it goes
+#      SESSION_PKGS / session_pkg_re   the packages a graphical XFCE session cannot start without
+#      mark_session_manual             apt-mark manual for those (installed ones)
+#      unneeded_pkgs                   what 'apt-get -s autoremove' would remove right now (changes nothing)
 #      svc_disable UNIT…        systemctl disable (offline, chroot-safe)
 #      svc_mask UNIT…           systemctl mask
 #      fetch URL DEST           curl/wget download to a temp file, atomic move
@@ -214,6 +217,30 @@ mark_meta_deps_manual() {
     return 0
 }
 
+# The packages a graphical XFCE session cannot start without: the session, window manager, panel, desktop and settings
+# daemons, xfconf (xfce4-session asks it for its failsafe session), the session bus (dbus-x11 or dbus-user-session, with
+# libpam-systemd), the display manager with its greeter, an X server, the network and boot-splash basics.
+# 76-mint-purge.sh marks them manual and skips a purge that would leave one an autoremove candidate; 82-session-sanity.sh
+# requires them in the finished image.
+SESSION_PKGS=(xfce4-session xfwm4 xfce4-panel xfdesktop4 xfconf xfce4-settings dbus-x11 dbus-user-session libpam-systemd
+    lightdm slick-greeter xorg xserver-xorg-core network-manager plymouth)
+
+# session_pkg_re - SESSION_PKGS as an anchored extended regular expression
+session_pkg_re() {
+    local IFS='|'
+    printf '^(%s)$' "${SESSION_PKGS[*]}"
+}
+
+# mark_session_manual - the installed SESSION_PKGS become manually installed (idempotent)
+mark_session_manual() {
+    mark_manual_installed "${SESSION_PKGS[@]}"
+}
+
+# unneeded_pkgs - names 'apt-get -s autoremove' would remove right now, one per line (a simulation: nothing changes)
+unneeded_pkgs() {
+    { apt-get -s autoremove 2>/dev/null | awk '/^(Remv|Purg) /{print $2}' | sed 's/:.*$//' | sort -u; } || true
+}
+
 apt_purge() {
     local p
     local todo=()
@@ -238,7 +265,7 @@ apt_purge() {
 # any purge; this pattern is the second line of defence.  It names what must stay instead of the blanket 'mint',
 # 'gnome-' and 'mate-' prefixes, so the Mint artwork and apps that 76-mint-purge.sh removes are not protected here
 # (they go through its guarded, simulated purge, not through an autoremove sweep).
-AUTOREMOVE_PROTECT_RE='^(xfce4|xfwm4|xfdesktop4|xfconf|thunar|tumbler|lightdm|slick-greeter|light-locker|linuxmint-keyring|mintupdate|mintinstall|mintdrivers|mintsources|mintreport|mintsystem|mintlocale|mint-common|mint-info|mint-mirrors|mint-translations|ubuntu-system-adjustments|aptitude|aptkit|timeshift|network-manager|nm-|cups|system-config-printer|avahi|casper|ubiquity|linux-|grub|shim|plymouth|pulseaudio|pipewire|wireplumber|mesa|libgl|libegl|libdrm|xserver|xorg|xinit|x11|python3|gir1\.2|libgtk|gtk|glib|gvfs|udisks|upower|policykit|polkit|systemd|dbus|firefox|thunderbird|blueman|bluez|gnome-(keyring|themes|calculator|disk-utility|system-tools|online-accounts|font-viewer)|libreoffice|fonts-|hicolor|adwaita|mate-polkit|xdg-|initramfs|busybox|lupin|memtest|efibootmgr|os-prober|file-roller|mousepad|ristretto|evince|vlc|lindos-)'
+AUTOREMOVE_PROTECT_RE='^(xfce4|xfwm4|xfdesktop4|xfconf|thunar|tumbler|lightdm|slick-greeter|light-locker|linuxmint-keyring|mintupdate|mintinstall|mintdrivers|mintsources|mintreport|mintsystem|mintlocale|mint-common|mint-info|mint-mirrors|mint-translations|ubuntu-system-adjustments|aptitude|aptkit|timeshift|network-manager|nm-|cups|system-config-printer|avahi|casper|ubiquity|linux-|grub|shim|plymouth|pulseaudio|pipewire|wireplumber|mesa|libgl|libegl|libdrm|xserver|xorg|xinit|x11|python3|gir1\.2|libgtk|gtk|glib|gvfs|udisks|upower|policykit|polkit|systemd|libpam-systemd|libxfce4|libxfconf|dbus|firefox|thunderbird|blueman|bluez|gnome-(keyring|themes|calculator|disk-utility|system-tools|online-accounts|font-viewer)|libreoffice|fonts-|hicolor|adwaita|mate-polkit|xdg-|initramfs|busybox|lupin|memtest|efibootmgr|os-prober|file-roller|mousepad|ristretto|evince|vlc|lindos-)'
 
 # safe_autoremove — apt-get autoremove --purge that cannot dismantle the
 # desktop: candidates matching AUTOREMOVE_PROTECT_RE are marked "manually

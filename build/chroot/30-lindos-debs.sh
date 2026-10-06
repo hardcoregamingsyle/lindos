@@ -101,6 +101,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# The xfconf defaults of lindos-desktop that stock packages also ship as conffiles (xfce4-session.xml, xsettings.xml,
+# xfce4-keyboard-shortcuts.xml, xfce4-power-manager.xml) must really have been installed.  An earlier build's dpkg run kept
+# the stock conffile as "deleted" and parked ours as *.dpkg-dist, and the live session then ended in xfce4-session's "Unable to
+# determine failsafe session name" (CI boot test of 7fc3aae).  lindos-desktop's postinst restores one that is missing; when it
+# is still not there the build stops here, not at 82-session-sanity.sh an hour later.  LINDOS_XFCONF_DIR: test seam.
+# ---------------------------------------------------------------------------
+if pkg_installed lindos-desktop; then
+    XFCONF_DIR="${LINDOS_XFCONF_DIR:-/etc/xdg/xfce4/xfconf/xfce-perchannel-xml}"
+    for ch in xfce4-session xsettings xfce4-keyboard-shortcuts xfce4-power-manager; do
+        [ -s "${XFCONF_DIR}/${ch}.xml" ] \
+            || die "${XFCONF_DIR}/${ch}.xml is missing after the install (dpkg kept another package's conffile of that name as deleted?) - see docs/BUILDING.md, Session sanity"
+    done
+    log "lindos-desktop's xfconf defaults are in place"
+fi
+
+# ---------------------------------------------------------------------------
 # The Lindos update source (SPEC-UPDATE.md, docs/UPDATES.md): lindos.sources and its key come from the
 # lindos-archive-keyring package installed above; nothing is fetched from the network. It ships switched OFF
 # until a real key and server exist. LINDOS_APT_REPO_REQUIRE=1 (release images) fails the build unless the
