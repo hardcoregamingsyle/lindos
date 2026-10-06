@@ -635,3 +635,49 @@ Local verification for this change (Windows host, run by the implementing stream
 -gaming / -setup / -settings suites — 0 failures, only POSIX-only skips — and `bash tests/run.sh --quick` (bash
 -n, sh -n, py_compile, ShellCheck, JSON/XML/`.desktop`, CRLF). The full `bash tests/run.sh` gate was not re-run
 after the last edits.
+
+---
+
+## 2026-10-06 — run `37454691394` ✅ ALL GREEN: boot-test and install-test pass on `a3ed065`
+
+Dispatched on `feature/windows-transfer-updates-boottest` with `build_iso=true build_kernel=false boot_test=true
+menu_test=true install_test=true install_test_offline=false repo_e2e=off`. The kernel job was skipped on purpose (the
+fix is userspace and no kernel file changed), so the ISO carries the **stock** kernel; a full run with
+`build_kernel=true` is still owed before a release.
+
+Previous run `36976109782` (`7fc3aae`): boot-test ❌ 12m52s (xfce4-session "Unable to load a failsafe session") and
+install-test ❌ 17m41s. Commit `a3ed065` is the fix (Lindos xfconf defaults installed instead of parked as `*.dpkg-dist`,
+`82-session-sanity.sh` build gate, OEM temp account with a locked pre-crypted password, installer disk-space policy,
+Mint-purge session-package safety).
+
+| Job | Result |
+|---|---|
+| lint + pytest (Ubuntu) | ✅ 8m31s |
+| pytest (Windows, gi stub) | ✅ 32m29s |
+| build .deb packages | ✅ 1m5s |
+| build ISO | ✅ 25m12s (`lindos-1.0.0-xfce-64bit.iso`, 3.16 GiB) |
+| boot-test (QEMU/KVM) | ✅ 5m10s; 0 `failsafe`/`xfconfd` errors in `serial.log`, reaches `LINDOS_DESKTOP_READY` |
+| boot-loader menu test | ✅ 3m14s; 14 checks, 0 failed, 0 warnings |
+| install-test (real network) | ✅ 15m40s; `report.json` verdict **PASS**, install phase 694 s, installed disk boots, first-boot 11 checks passed |
+
+Read the artifacts, not the tick: the install test "never fails the run", so its verdict is in
+`lindos-install-test/report.json` and `summary.md`.
+
+**Open point (not a failure).** In the install test `mode_extras` and `flatpaks` ended `pending`:
+"partition too small: 30.8 GB is below the 40.0 GB that the optional apps need". The CI guest disk is 32 GB
+(`build/qa/install_test.py --disk-size`, default `32G`), below the installer's new 40 GB floor, so the QA reports a WARN.
+The small-disk path is therefore proven end to end; the **large-disk path (extras + Flatpaks installed) is covered only
+by `packages/lindos-installer/tests/test_disk_space.py` with a fake disk**. A run with `--disk-size 64G` would exercise
+it but lengthens the install and may exceed the 2400 s `install_budget`; not done yet.
+
+Expected noise: `Unable to download artifact(s): Artifact not found for name: lindos-kernel-debs` is the optional
+kernel download failing harmlessly when `build_kernel=false`.
+
+Artifacts of the run: `lindos-iso` (expires ~13 Oct), `lindos-install-test`, `lindos-boot-test`, `lindos-menu-test`,
+`lindos-debs`, `lindos-apt-repo-TEST-ephemeral-key`.
+
+Local-PC notes (new PC, `C:\Users\Baatman\Projects\Lindos`): the full `bash tests/run.sh` takes more than 40 minutes
+here and is killed by the 30-minute background limit. What was run instead: `bash tests/run.sh --skip-pytest` (all
+static stages incl. ShellCheck 0.11 over 99 files: clean) plus pytest on the files of the commit in two halves
+(381 + 455 passed, 18 skipped, 0 failed). `gh run download` of the 3.5 GB ISO artifact runs at about 1 MB/s (~60 min);
+give it a 2 h timeout and no partial resume exists.
